@@ -18,7 +18,8 @@ After initialization, the host project looks like this:
 my-project/
 ├── tess/                    # Submodule (standard) or symlink (alternative)
 │   ├── agent-rules/
-│   │   └── tickets.md       # Canonical ticket workflow rules
+│   │   ├── tickets.md       # Canonical ticket workflow rules
+│   │   └── root.md          # Tess section for project root AGENTS.md / CLAUDE.md
 │   ├── scripts/
 │   │   ├── init.mjs         # Project initialization
 │   │   ├── run-tickets.mjs  # Ticket runner
@@ -109,18 +110,7 @@ The init script detects that `tess/` is a submodule (see detection logic below) 
 
    This avoids symlinks entirely in submodule mode, eliminating Windows compatibility issues. Agents that discover these files via convention will follow the reference. The runner reads `tess/agent-rules/tickets.md` directly (it knows where it lives).
 
-3. **Ensures root `AGENTS.md` and `CLAUDE.md` mention tess** — For each root convention file, the script checks whether it contains a `<!-- tess -->` marker. If not, it appends a section:
-
-   ```markdown
-   <!-- tess -->
-   ## Tickets
-
-   This project uses [tess](tess/) for AI-driven ticket management.
-   Ticket workflow rules: [tess/agent-rules/tickets.md](tess/agent-rules/tickets.md).
-   Tickets are in the [tickets/](tickets/) directory.
-   ```
-
-   The `<!-- tess -->` marker lets the script detect its own section reliably (avoiding false positives from other mentions of "tess"). If no root file exists, the script creates one with just this section.
+3. **Ensures root `AGENTS.md` and `CLAUDE.md` mention tess** — For each root convention file, the script checks whether it contains a `<!-- tess -->` marker. If not, it appends the contents of `tess/agent-rules/root.md` (which includes the marker). If no root file exists, the script creates one with just this section.
 
 ### Why stub files instead of symlinks (submodule mode)
 

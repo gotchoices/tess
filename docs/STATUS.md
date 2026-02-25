@@ -24,12 +24,13 @@
 
 ## Phase 2: Core Package
 
-- [ ] Adopt and adapt `run-tasks.mjs` → `run-tickets.mjs`
-- [ ] Adopt and adapt `AGENTS.md` → agent rules file(s)
-- [ ] Create `scripts/init.mjs` (project initialization — Node.js, cross-platform)
-- [ ] Define `tickets/` scaffold structure
-- [ ] Create `.gitignore` template for tickets
-- [ ] Fix known bugs in runner (typos in formatClaudeJsonLine, formatCursorJsonLine)
+- [x] Adopt and adapt `run-tasks.mjs` → `run-tickets.mjs`
+- [x] Adopt and adapt `AGENTS.md` → `agent-rules/tickets.md`
+- [x] Create `scripts/init.mjs` (project initialization — Node.js, cross-platform)
+- [x] Create `agent-rules/root.md` (tess section for project root convention files)
+- [x] Define `tickets/` scaffold structure (in init.mjs)
+- [x] Define `.gitignore` for tickets (in init.mjs)
+- [x] Verify runner source (reported bugs were subagent transcription errors, source is clean)
 - [ ] Review and clean up agent adapter configs
 - [ ] Create `scripts/detach.mjs` (tess removal — Node.js, cross-platform)
 
