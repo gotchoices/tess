@@ -31,8 +31,8 @@
 - [x] Define `tickets/` scaffold structure (in init.mjs)
 - [x] Define `.gitignore` for tickets (in init.mjs)
 - [x] Verify runner source (reported bugs were subagent transcription errors, source is clean)
-- [ ] Review and clean up agent adapter configs
-- [ ] Create `scripts/detach.mjs` (tess removal — Node.js, cross-platform)
+- [x] Agent adapters — adopted as-is from working optimystic source; revisit if tests fail
+- [x] Create `scripts/detach.mjs` (tess removal — Node.js, cross-platform)
 
 ## Phase 3: Testing and Validation
 
