@@ -96,7 +96,7 @@ A single init script (`node tess/scripts/init.mjs`) auto-detects which method is
 
 See [INSTALLATION.md](INSTALLATION.md) for the full design, detection logic, and comparison.
 
-**Decision:** *Pending — approach designed, needs final sign-off*
+**Decision:** Resolved — adopt dual installation mode (git submodule standard, symlink alternative). See [INSTALLATION.md](INSTALLATION.md).
 
 ---
 
@@ -122,7 +122,7 @@ See [INSTALLATION.md](INSTALLATION.md) for the full design, detection logic, and
 
 **Recommendation:** Keep separate. The test-first parallel makes the stages more alike in *pattern* but their intent, agent instructions, and output character remain distinct. Combining them would require the agent to branch on a metadata field mid-prompt, adding complexity without reducing folder count meaningfully (you'd still have `implement/`, `review/`, `complete/`, `blocked/`). The fix/plan split is also immediately legible in `ls` — you can see at a glance whether the pipeline is bug-heavy or feature-heavy. Consider formalizing the test-first expectation for `plan` as well: "where feasible, begin with a test expressing the desired API/behavior."
 
-**Decision:** *Pending*
+**Decision:** Resolved — keep `fix/` and `plan/` as separate intake stages.
 
 ---
 
@@ -136,7 +136,7 @@ See [INSTALLATION.md](INSTALLATION.md) for the full design, detection logic, and
 
 **Recommendation:** Option B. The runner is tess's code, not the project's. In both installation methods (submodule and symlink), tess appears at `project_root/tess/`, so `node tess/scripts/run-tickets.mjs` works uniformly. The runner resolves `tickets/` relative to cwd (the project root) and reads rules from its own `agent-rules/` directory via `import.meta.url`. No copies, no symlinks of the runner itself, always up to date.
 
-**Decision:** *Pending*
+**Decision:** Resolved — runner lives at `tess/scripts/run-tickets.mjs`. The user can create their own symlink or shell wrapper in the project root if they want a shorter invocation (e.g., `./run-tickets` → `node tess/scripts/run-tickets.mjs`), but tess doesn't manage that.
 
 ---
 
@@ -186,7 +186,7 @@ This means `LOCAL_RULES.md` support is straightforward: the runner can read `tic
 
 **Recommendation:** Option B. The runner can trivially check for a `tickets/LOCAL_RULES.md` and append its contents to the prompt after the base rules. This is zero-config (if the file doesn't exist, nothing changes), requires no template parsing, and lets projects add things like "use `pnpm` not `npm`" or project-specific review criteria without forking tess's rules. The base `AGENTS.md` stays a symlink to tess (always up to date); local customization lives in a file the project owns.
 
-**Decision:** *Pending*
+**Decision:** Resolved — no built-in override mechanism for now. Users who need project-specific customization can handle it themselves (e.g., edit their own root AGENTS.md, add project-level agent rules, or create a wrapper script). If this becomes a friction point across projects, we'll revisit and add `LOCAL_RULES.md` support to the runner.
 
 ---
 
@@ -243,7 +243,7 @@ This matters in two scenarios:
 - **B. User creates CLAUDE.md themselves** — Keep tess simple; users who use Claude Code add their own `CLAUDE.md` referencing the ticket rules.
 - **C. Single canonical file, runner handles it** — Don't rely on convention-based discovery at all. The runner always injects rules explicitly. For ad-hoc use, the user is expected to know the rules exist.
 
-**Recommendation:** Option A. It's trivial — one extra symlink in the init script. There's no cost, and it removes a gotcha for Claude Code users. The init script already creates symlinks; adding `CLAUDE.md → same target` is one line. Both symlinks can be gitignored alongside the others. For the project root, it's the user's responsibility to set up their own root-level `CLAUDE.md` or `AGENTS.md` (that's about the project, not about tess).
+**Recommendation:** Option A. It's trivial — one extra symlink in the init script. There's no cost, and it removes a gotcha for Claude Code users. The init script already creates symlinks; adding `CLAUDE.md → same target` is one line. Both symlinks can be gitignored alongside the others. For the project root, init also creates/appends a tess section to both `AGENTS.md` and `CLAUDE.md` (see [INSTALLATION.md](INSTALLATION.md)).
 
 **Decision:** Resolved — create both `AGENTS.md` and `CLAUDE.md` symlinks in `tickets/`. The init script should define the list of convention filenames at the top of the file (e.g., `AGENT_RULE_NAMES = ['AGENTS.md', 'CLAUDE.md']`) so that adding future variants (if another agent tool introduces its own convention) is a single-line change rather than scattered logic.
 
@@ -299,12 +299,10 @@ This matters in two scenarios:
 **Both methods:** Optionally remove the `<!-- tess -->` section from root `AGENTS.md`/`CLAUDE.md`. Optionally remove `tickets/` entirely (but it may contain tickets the user wants to keep).
 
 **Recommendation:** Yes, provide a `scripts/detach.mjs` but keep it minimal. It should:
-1. Remove tess-created symlinks or stub files (`tickets/AGENTS.md`, `tickets/CLAUDE.md`)
-2. Remove the `<!-- tess -->` section from root convention files
-3. In symlink mode: remove the `tess` symlink and clean `.gitignore` entries
+1. Remove tess-created files in `tickets/` (`AGENTS.md`, `CLAUDE.md`) — but only after verifying they're tess-created (check for `<!-- Generated by tess init -->` marker in stubs, or confirm they're symlinks pointing into tess). Skip with a warning if the file appears user-modified.
+2. Remove the `<!-- tess -->` section from root convention files (using the marker for precise extraction)
+3. In symlink mode: remove the `tess` symlink and clean tess-related `.gitignore` entries
 4. In submodule mode: print the `git submodule` removal commands (don't run them — let the user control destructive git operations)
 5. Never delete `tickets/` or its contents — that's the user's data
 
-Low priority for initial implementation. The git submodule removal is well-documented and the tess artifacts are harmless if left behind.
-
-**Decision:** *Pending*
+**Decision:** Resolved — implement `scripts/detach.mjs`.

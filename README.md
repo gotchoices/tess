@@ -20,6 +20,8 @@ tickets/
 ├── review/        # Code review and validation
 ├── complete/      # Archived completed work
 ├── blocked/       # Parked — unresolved questions
+├── AGENTS.md      # Points to tess agent rules
+├── CLAUDE.md      # Points to tess agent rules
 └── .logs/         # Agent execution logs (git-ignored)
 ```
 

@@ -10,16 +10,17 @@
 - [x] Create STATUS.md (this file)
 - [x] Create docs/README.md — docs vs usage documentation split
 - [x] Resolve Q1: Stage folder naming — keep current names
-- [ ] Resolve Q2: Integration method — dual-mode designed (INSTALLATION.md), needs final sign-off
-- [ ] Resolve Q3: Combine fix/plan or keep separate
-- [ ] Resolve Q4: Runner location — recommendation is tess/scripts/run-tickets.mjs, needs sign-off
+- [x] Resolve Q2: Dual installation mode (submodule standard, symlink alternative)
+- [x] Resolve Q3: Keep fix/plan separate
+- [x] Resolve Q4: Runner at tess/scripts/run-tickets.mjs; user can wrapper/symlink
 - [x] Resolve Q5: Single AGENTS.md for now; agent-rules/ folder in tess keeps architecture open
 - [x] Resolve Q6: .gitignore — `.logs/` only
-- [ ] Resolve Q7: Project-local rule overrides (LOCAL_RULES.md)
+- [x] Resolve Q7: No built-in overrides; user handles customization; revisit if needed
 - [x] Resolve Q8: Keep priority-in-filename convention
 - [x] Resolve Q9: Create both AGENTS.md and CLAUDE.md symlinks; configurable variant list
 - [x] Resolve Q10: Keep Node.js for runner and init script
-- [ ] Resolve Q11: Detach/uninstall script
+- [x] Resolve Q11: Implement detach script (scripts/detach.mjs)
+- [x] Resolve Sub-Q: Version detection — git submodule handles it; runner prints commit hash in banner
 
 ## Phase 2: Core Package
 
@@ -30,6 +31,7 @@
 - [ ] Create `.gitignore` template for tickets
 - [ ] Fix known bugs in runner (typos in formatClaudeJsonLine, formatCursorJsonLine)
 - [ ] Review and clean up agent adapter configs
+- [ ] Create `scripts/detach.mjs` (tess removal — Node.js, cross-platform)
 
 ## Phase 3: Testing and Validation
 
