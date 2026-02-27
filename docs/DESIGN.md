@@ -10,7 +10,7 @@ Tickets are markdown files in stage folders. Moving a ticket to the next stage m
 
 ### 2. Agents own transitions
 
-The runner doesn't move tickets — agents do. An agent reads a ticket, does the work, creates the next-stage file(s), deletes the source, and commits. This gives agents freedom to split tickets, adjust priorities, or redirect to `blocked/` when questions arise.
+The runner doesn't move tickets — agents do. An agent reads a ticket, does the work, creates the next-stage file(s), and deletes the source. The runner handles the git commit after the agent completes. This keeps commits out of interactive agent sessions while ensuring clean commit-per-ticket history when running the pipeline. Agents still have freedom to split tickets, adjust priorities, or redirect to `blocked/` when questions arise.
 
 ### 3. One stage per run
 

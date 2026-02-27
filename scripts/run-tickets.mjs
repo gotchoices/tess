@@ -9,9 +9,10 @@
  *   - The ticket list is snapshotted once at startup.  Tickets created by the agent
  *     during this run are NOT picked up, ensuring each ticket advances exactly one
  *     stage per invocation of the runner.
- *   - The agent owns the full stage transition: it creates next-stage file(s),
- *     deletes the source ticket file, and commits everything.  This allows the agent
- *     to split one ticket into multiple next-stage tickets, adjust priorities, etc.
+ *   - The agent owns the stage transition: it creates next-stage file(s) and
+ *     deletes the source ticket file.  The runner commits after the agent completes.
+ *     This keeps commits out of interactive agent sessions while ensuring clean
+ *     commit-per-ticket history when running the pipeline.
  *   - Agent logs are captured in tickets/.logs/ (git-ignored), one per ticket per stage.
  *
  * Usage:
@@ -26,6 +27,7 @@
  *                          --stages review:5,implement:3
  *                          --stages fix:4,implement,review:5  (uses --min-priority for bare names)
  *   --agent <name>       Agent adapter to use: claude | auggie | cursor  (default: claude)
+ *   --no-commit          Skip automatic git commit after each ticket
  *   --dry-run            List tickets that would be processed, don't invoke agent
  *   --help               Show this help
  */
@@ -279,7 +281,7 @@ async function buildPrompt(ticket, ticketsDir) {
 		'',
 		'## End',
 		'Work the ticket as described above.',
-		'When you are done, commit everything with a message like: "ticket(<stage>): <short description>"',
+		'Do NOT commit — the runner handles commits after you complete.',
 	].join('\n');
 }
 
@@ -389,6 +391,25 @@ async function runAgent(agentName, prompt, cwd, logFile, { stage } = {}) {
 	}
 }
 
+// ─── Git commit ────────────────────────────────────────────────────────────────
+
+/** Stage and commit all changes for a completed ticket.  Returns true if a commit was created. */
+function commitTicket(ticket, cwd) {
+	try {
+		// Check if there are any changes to commit
+		const status = execSync('git status --porcelain', { cwd, encoding: 'utf-8' }).trim();
+		if (!status) return false;
+
+		execSync('git add -A', { cwd, encoding: 'utf-8' });
+		const msg = `ticket(${ticket.stage}): ${ticket.file.replace(/^\d+-/, '').replace(/\.md$/, '')}`;
+		execSync(`git commit -m "${msg}"`, { cwd, encoding: 'utf-8' });
+		return true;
+	} catch (err) {
+		console.error(`[runner] Git commit failed: ${err.message}`);
+		return false;
+	}
+}
+
 // ─── CLI ───────────────────────────────────────────────────────────────────────
 
 function printHelp() {
@@ -407,6 +428,7 @@ function printHelp() {
 		'                       as  stage:n  (default: fix,plan,implement,review)',
 		'                       e.g.  --stages review:5,implement:3,fix',
 		'  --agent <name>       claude | auggie | cursor              (default: claude)',
+		'  --no-commit          Skip automatic git commit after each ticket',
 		'  --dry-run            List tickets without invoking agent',
 		'  --help               Show this help',
 	];
@@ -430,6 +452,7 @@ function parseArgs(argv) {
 		minPriority: 3,
 		agent: 'claude',
 		dryRun: false,
+		noCommit: false,
 		stagesRaw: null,
 	};
 
@@ -444,6 +467,9 @@ function parseArgs(argv) {
 				break;
 			case '--dry-run':
 				opts.dryRun = true;
+				break;
+			case '--no-commit':
+				opts.noCommit = true;
 				break;
 			case '--stages':
 				opts.stagesRaw = argv[++i];
@@ -549,6 +575,10 @@ async function main() {
 			console.error(`Log: ${currentLog}`);
 			console.error('Stopping to avoid cascading failures. Re-run to retry.');
 			process.exit(exitCode);
+		}
+
+		if (!opts.noCommit && commitTicket(ticket, repoRoot)) {
+			console.log(`  Committed.`);
 		}
 
 		console.log(`\n  [${i + 1}/${allTickets.length}] Complete: ${ticket.file}\n`);

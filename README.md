@@ -89,6 +89,7 @@ node tess/scripts/run-tickets.mjs --agent cursor
 | `--min-priority <n>` | `3` | Minimum priority threshold (1-5, 5 = highest) |
 | `--stages <list>` | `fix,plan,implement,review` | Stages to process, with optional per-stage priority (`review:5,implement:3`) |
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, or `auggie` |
+| `--no-commit` | — | Skip automatic git commit after each ticket |
 | `--dry-run` | — | List tickets without invoking the agent |
 
 ## Ticket Lifecycle
@@ -123,7 +124,7 @@ files: <optional list of relevant files>
 ## Design Philosophy
 
 - **Snapshot-based** — Ticket list captured once per run; newly created tickets wait for the next run
-- **Agent-owned transitions** — The agent creates, deletes, and commits; the runner just orchestrates
+- **Agent-owned transitions** — The agent creates and deletes ticket files; the runner handles commits
 - **Commit per ticket** — Clean git history for human review between runs
 - **Priority-driven** — Tickets processed highest-priority-first within each stage
 - **Non-interactive** — Batch processing with human review between runs
