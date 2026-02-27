@@ -21,6 +21,7 @@ import { constants } from 'node:fs';
 // ─── Configuration ─────────────────────────────────────────────────────────────
 
 const AGENT_RULE_NAMES = ['AGENTS.md', 'CLAUDE.md'];
+const ROOT_AGENT_RULE = 'AGENTS.md';
 
 const TICKET_STAGES = ['fix', 'plan', 'implement', 'review', 'complete', 'blocked'];
 
@@ -185,20 +186,18 @@ async function createTicketsSymlinks(projectRoot) {
 
 async function ensureRootAgentRules(projectRoot) {
 	const rootSection = await readFile(join(TESS_ROOT, 'agent-rules', 'root.md'), 'utf-8');
+	const name = ROOT_AGENT_RULE;
+	const filePath = join(projectRoot, name);
+	const existing = await readTextOrEmpty(filePath);
 
-	for (const name of AGENT_RULE_NAMES) {
-		const filePath = join(projectRoot, name);
-		const existing = await readTextOrEmpty(filePath);
-
-		if (existing.includes('## Tickets (tess)')) {
-			log(`${name} already has tess section, skipping`);
-			continue;
-		}
-
-		const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n\n' : existing.length > 0 ? '\n' : '';
-		await writeFile(filePath, existing + separator + rootSection, 'utf-8');
-		log(existing.length > 0 ? `Appended tess section to ${name}` : `Created ${name}`);
+	if (existing.includes('## Tickets (tess)')) {
+		log(`${name} already has tess section, skipping`);
+		return;
 	}
+
+	const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n\n' : existing.length > 0 ? '\n' : '';
+	await writeFile(filePath, existing + separator + rootSection, 'utf-8');
+	log(existing.length > 0 ? `Appended tess section to ${name}` : `Created ${name}`);
 }
 
 async function updateGitignoreForSymlinks(projectRoot) {
