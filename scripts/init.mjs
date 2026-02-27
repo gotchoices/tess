@@ -190,7 +190,7 @@ async function ensureRootAgentRules(projectRoot) {
 		const filePath = join(projectRoot, name);
 		const existing = await readTextOrEmpty(filePath);
 
-		if (existing.includes('<!-- tess -->')) {
+		if (existing.includes('## Tickets (tess)')) {
 			log(`${name} already has tess section, skipping`);
 			continue;
 		}

@@ -31,7 +31,7 @@ tickets/
 
 ```bash
 # Standard method (git submodule):
-git submodule add <tess-repo-url> tess
+git submodule add https://github.com/gotchoices/tess.git tess
 node tess/scripts/init.mjs
 
 # Alternative (symlink — tess cloned elsewhere):
