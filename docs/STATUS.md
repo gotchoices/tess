@@ -12,7 +12,7 @@
 - [x] Resolve Q1: Stage folder naming — keep current names
 - [x] Resolve Q2: Dual installation mode (submodule standard, symlink alternative)
 - [x] Resolve Q3: Keep fix/plan separate
-- [x] Resolve Q4: Runner at tess/scripts/run-tickets.mjs; user can wrapper/symlink
+- [x] Resolve Q4: Runner at tess/scripts/run.mjs; user can wrapper/symlink
 - [x] Resolve Q5: Single AGENTS.md for now; agent-rules/ folder in tess keeps architecture open
 - [x] Resolve Q6: .gitignore — `.logs/` only
 - [x] Resolve Q7: No built-in overrides; user handles customization; revisit if needed
@@ -24,7 +24,7 @@
 
 ## Phase 2: Core Package
 
-- [x] Adopt and adapt `run-tasks.mjs` → `run-tickets.mjs`
+- [x] Adopt and adapt `run-tasks.mjs` → `run.mjs`
 - [x] Adopt and adapt `AGENTS.md` → `agent-rules/tickets.md`
 - [x] Create `scripts/init.mjs` (project initialization — Node.js, cross-platform)
 - [x] Create `agent-rules/root.md` (tess section for project root convention files)

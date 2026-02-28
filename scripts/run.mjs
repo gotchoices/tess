@@ -16,7 +16,7 @@
  *   - Agent logs are captured in tickets/.logs/ (git-ignored), one per ticket per stage.
  *
  * Usage:
- *   node tess/scripts/run-tickets.mjs [options]
+ *   node tess/scripts/run.mjs [options]
  *
  * Options:
  *   --min-priority <n>   Default min priority for all stages  (default: 3)
@@ -39,7 +39,7 @@ import { constants, createWriteStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // ─── Path resolution ───────────────────────────────────────────────────────────
-// The runner lives at tess/scripts/run-tickets.mjs.
+// The runner lives at tess/scripts/run.mjs.
 // tess root = ../../ from this file.  tickets/ and repo root are resolved from cwd.
 
 const __filename = fileURLToPath(import.meta.url);
@@ -420,7 +420,7 @@ function printHelp() {
 		'during this run are NOT picked up until the next run.  This ensures each',
 		'ticket advances exactly one stage per run.',
 		'',
-		'Usage: node tess/scripts/run-tickets.mjs [options]',
+		'Usage: node tess/scripts/run.mjs [options]',
 		'',
 		'Options:',
 		'  --min-priority <n>   Default min priority for all stages  (default: 3)',

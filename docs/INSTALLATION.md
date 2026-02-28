@@ -22,7 +22,7 @@ my-project/
 │   │   └── root.md          # Tess section for project root AGENTS.md / CLAUDE.md
 │   ├── scripts/
 │   │   ├── init.mjs         # Project initialization
-│   │   ├── run-tickets.mjs  # Ticket runner
+│   │   ├── run.mjs          # Ticket runner
 │   │   └── detach.mjs       # Tess removal
 │   └── ...
 ├── tickets/
@@ -190,7 +190,7 @@ Note on the "plain directory" case: if someone manually copies tess into their p
 In both modes, tess appears at `project_root/tess/`, so the runner is always invoked the same way:
 
 ```bash
-node tess/scripts/run-tickets.mjs [options]
+node tess/scripts/run.mjs [options]
 ```
 
 The runner resolves paths relative to cwd:

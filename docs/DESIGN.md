@@ -38,7 +38,7 @@ Tess provides three things to the host project:
 
 1. **The `tickets/` directory scaffold** — stage subdirectories, `.gitignore` for logs
 2. **Agent rules** — canonical rules in `tess/agent-rules/tickets.md`, surfaced to agents via stub files or symlinks in `tickets/`
-3. **The runner script** — `node tess/scripts/run-tickets.mjs`, invoked from the project root
+3. **The runner script** — `node tess/scripts/run.mjs`, invoked from the project root
 
 ---
 
@@ -130,13 +130,13 @@ See [INSTALLATION.md](INSTALLATION.md) for the full design, detection logic, and
 
 **Context:** In the current optimystic system, `run-tasks.mjs` lives inside `tasks/` and resolves paths relative to itself. Options for tess:
 
-- **A. Copy/symlink the runner into `tickets/`** — Host project runs `node tickets/run-tickets.mjs`. Self-contained, familiar.
-- **B. Run from tess directly** — Host project runs `node tess/scripts/run-tickets.mjs` (or a wrapper). Avoids duplication, always up to date.
+- **A. Copy/symlink the runner into `tickets/`** — Host project runs `node tickets/run.mjs`. Self-contained, familiar.
+- **B. Run from tess directly** — Host project runs `node tess/scripts/run.mjs` (or a wrapper). Avoids duplication, always up to date.
 - **C. npm/npx approach** — Publish tess to npm, run via `npx tess` or add as a dev dependency. Most "standard" but adds registry overhead.
 
-**Recommendation:** Option B. The runner is tess's code, not the project's. In both installation methods (submodule and symlink), tess appears at `project_root/tess/`, so `node tess/scripts/run-tickets.mjs` works uniformly. The runner resolves `tickets/` relative to cwd (the project root) and reads rules from its own `agent-rules/` directory via `import.meta.url`. No copies, no symlinks of the runner itself, always up to date.
+**Recommendation:** Option B. The runner is tess's code, not the project's. In both installation methods (submodule and symlink), tess appears at `project_root/tess/`, so `node tess/scripts/run.mjs` works uniformly. The runner resolves `tickets/` relative to cwd (the project root) and reads rules from its own `agent-rules/` directory via `import.meta.url`. No copies, no symlinks of the runner itself, always up to date.
 
-**Decision:** Resolved — runner lives at `tess/scripts/run-tickets.mjs`. The user can create their own symlink or shell wrapper in the project root if they want a shorter invocation (e.g., `./run-tickets` → `node tess/scripts/run-tickets.mjs`), but tess doesn't manage that.
+**Decision:** Resolved — runner lives at `tess/scripts/run.mjs`. The user can create their own symlink or shell wrapper in the project root if they want a shorter invocation (e.g., `./run` → `node tess/scripts/run.mjs`), but tess doesn't manage that.
 
 ---
 
@@ -251,7 +251,7 @@ This matters in two scenarios:
 
 ### Q10: Is Node.js the right language for the runner, or would bash be better?
 
-**Context:** The runner (`run-tasks.mjs` / `run-tickets.mjs`) is currently ~550 lines of Node.js. It handles task discovery, CLI arg parsing, process spawning, JSON stream parsing, log file management, and idle timeout detection.
+**Context:** The runner (`run-tasks.mjs` / `run.mjs`) is currently ~550 lines of Node.js. It handles task discovery, CLI arg parsing, process spawning, JSON stream parsing, log file management, and idle timeout detection.
 
 **Node.js — pros:**
 - JSON stream parsing is native and robust (the Claude and Cursor adapters parse newline-delimited JSON)

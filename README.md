@@ -70,16 +70,16 @@ TODO
 
 ```bash
 # See what would be processed
-node tess/scripts/run-tickets.mjs --dry-run
+node tess/scripts/run.mjs --dry-run
 
 # Process all tickets (priority >= 3)
-node tess/scripts/run-tickets.mjs
+node tess/scripts/run.mjs
 
 # Only specific stages
-node tess/scripts/run-tickets.mjs --stages fix,implement
+node tess/scripts/run.mjs --stages fix,implement
 
 # Use a different agent
-node tess/scripts/run-tickets.mjs --agent cursor
+node tess/scripts/run.mjs --agent cursor
 ```
 
 ### Options
