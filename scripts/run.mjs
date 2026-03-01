@@ -204,11 +204,11 @@ const NEXT_STAGE = {
 
 // ─── Ticket discovery ──────────────────────────────────────────────────────────
 
-const PRIORITY_PREFIX = /^(\d+)-/;
-/** Parse priority number from filename like "3-some-ticket.md" → 3. Returns 0 if unparseable. */
+const PRIORITY_PREFIX = /^(\d+(?:\.\d+)?)-/;
+/** Parse priority number from filename like "3-some-ticket.md" → 3 or "3.5-ticket.md" → 3.5. Returns 0 if unparseable. */
 function parsePriority(filename) {
 	const match = basename(filename).match(PRIORITY_PREFIX);
-	return match ? parseInt(match[1], 10) : 0;
+	return match ? parseFloat(match[1]) : 0;
 }
 
 /** Discover all .md ticket files in a stage folder, filtered by min priority. */
