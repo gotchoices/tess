@@ -92,6 +92,15 @@ node tess/scripts/run.mjs --agent cursor
 | `--no-commit` | — | Skip automatic git commit after each ticket |
 | `--dry-run` | — | List tickets without invoking the agent |
 
+### Init Options
+
+| Option | Default | Description |
+|---|---|---|
+| `--ignore-stages` | — | Add ticket stage folders (fix/, plan/, etc.) to .gitignore |
+| `--no-ignore-stages` | — | Keep ticket stage folders tracked in git |
+
+When neither flag is passed, init will prompt interactively. The default is to **not** ignore stage folders. Use `--ignore-stages` when each developer maintains separate tickets that shouldn't be committed to the shared repo.
+
 ## Ticket Lifecycle
 
 ```

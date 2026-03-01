@@ -17,6 +17,7 @@ import { readFile, writeFile, mkdir, symlink, lstat, readlink, access } from 'no
 import { join, dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { constants } from 'node:fs';
+import { createInterface } from 'node:readline';
 
 // ─── Configuration ─────────────────────────────────────────────────────────────
 
@@ -78,6 +79,19 @@ async function addGitignoreEntry(gitignorePath, entry) {
 	return true;
 }
 
+async function promptYesNo(question, defaultNo = true) {
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	const hint = defaultNo ? '[y/N]' : '[Y/n]';
+	return new Promise((resolve) => {
+		rl.question(`  ${question} ${hint} `, (answer) => {
+			rl.close();
+			const a = answer.trim().toLowerCase();
+			if (a === '') resolve(!defaultNo);
+			else resolve(a === 'y' || a === 'yes');
+		});
+	});
+}
+
 // ─── Detection ─────────────────────────────────────────────────────────────────
 
 /**
@@ -130,7 +144,7 @@ async function createRootSymlink(projectRoot) {
 	}
 }
 
-async function createTicketsScaffold(projectRoot) {
+async function createTicketsScaffold(projectRoot, ignoreStages) {
 	const ticketsDir = join(projectRoot, 'tickets');
 
 	for (const stage of TICKET_STAGES) {
@@ -140,11 +154,28 @@ async function createTicketsScaffold(projectRoot) {
 
 	await ensureDir(join(ticketsDir, '.logs'));
 
-	await writeIfMissing(
-		join(ticketsDir, '.gitignore'),
-		TICKETS_GITIGNORE,
-		'tickets/.gitignore',
-	);
+	let gitignoreContent = TICKETS_GITIGNORE;
+	if (ignoreStages) {
+		gitignoreContent += TICKET_STAGES.map(s => `${s}/\n`).join('');
+	}
+
+	const gitignorePath = join(ticketsDir, '.gitignore');
+	if (await exists(gitignorePath)) {
+		// Update existing .gitignore — add any missing stage entries
+		if (ignoreStages) {
+			let added = false;
+			for (const stage of TICKET_STAGES) {
+				if (await addGitignoreEntry(gitignorePath, `${stage}/`)) {
+					added = true;
+				}
+			}
+			if (added) log('Added ticket stage folders to tickets/.gitignore');
+			else log('tickets/.gitignore already has stage entries, skipping');
+		}
+	} else {
+		await writeFile(gitignorePath, gitignoreContent, 'utf-8');
+		log('Created tickets/.gitignore');
+	}
 }
 
 async function createTicketsStubs(projectRoot) {
@@ -220,10 +251,14 @@ async function updateGitignoreForSymlinks(projectRoot) {
 // ─── CLI ───────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-	const opts = { projectRoot: process.cwd() };
+	const opts = { projectRoot: process.cwd(), ignoreStages: undefined };
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === '--project' && argv[i + 1]) {
 			opts.projectRoot = resolve(argv[++i]);
+		} else if (argv[i] === '--ignore-stages') {
+			opts.ignoreStages = true;
+		} else if (argv[i] === '--no-ignore-stages') {
+			opts.ignoreStages = false;
 		} else if (argv[i] === '--help') {
 			console.log([
 				'Tess project initialization',
@@ -232,6 +267,10 @@ function parseArgs(argv) {
 				'  node tess/scripts/init.mjs              # submodule mode',
 				'  node /path/to/tess/scripts/init.mjs     # symlink mode',
 				'  node tess/scripts/init.mjs --project /path/to/project',
+				'',
+				'Options:',
+				'  --ignore-stages      Add ticket stage folders to .gitignore',
+				'  --no-ignore-stages   Keep ticket stage folders tracked in git (default)',
 				'',
 				'Idempotent — safe to re-run at any time.',
 			].join('\n'));
@@ -264,20 +303,29 @@ async function main() {
 		await createRootSymlink(projectRoot);
 	}
 
-	// Step 2: Create tickets/ scaffold
-	await createTicketsScaffold(projectRoot);
+	// Step 2: Determine whether to gitignore ticket stage folders
+	let ignoreStages = opts.ignoreStages;
+	if (ignoreStages === undefined) {
+		console.log('');
+		console.log('  Ticket stage folders (fix/, plan/, implement/, etc.) can be');
+		console.log('  git-ignored if each developer maintains separate tickets.');
+		ignoreStages = await promptYesNo('Add ticket stage folders to .gitignore?');
+	}
 
-	// Step 3: Create agent-rule references in tickets/
+	// Step 3: Create tickets/ scaffold
+	await createTicketsScaffold(projectRoot, ignoreStages);
+
+	// Step 4: Create agent-rule references in tickets/
 	if (mode === 'submodule') {
 		await createTicketsStubs(projectRoot);
 	} else {
 		await createTicketsSymlinks(projectRoot);
 	}
 
-	// Step 4: Ensure root AGENTS.md / CLAUDE.md have tess section
+	// Step 5: Ensure root AGENTS.md / CLAUDE.md have tess section
 	await ensureRootAgentRules(projectRoot);
 
-	// Step 5: Update .gitignore (symlink mode only)
+	// Step 6: Update .gitignore (symlink mode only)
 	if (mode === 'symlink') {
 		await updateGitignoreForSymlinks(projectRoot);
 	}

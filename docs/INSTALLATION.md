@@ -197,12 +197,25 @@ The runner resolves paths relative to cwd:
 - `tickets/` — where ticket files live (cwd-relative)
 - `tess/agent-rules/tickets.md` — canonical rules (runner knows its own location via `import.meta.url`)
 
+## Ignoring Ticket Stage Folders
+
+By default, ticket stage folders (`fix/`, `plan/`, `implement/`, `review/`, `complete/`, `blocked/`) are tracked in git so the whole team shares a single ticket pipeline. However, some teams prefer each developer to maintain their own tickets locally — in that case, stage folders should be git-ignored.
+
+The init script handles this with a prompt or CLI flags:
+
+- **Interactive (default):** When neither flag is passed, init asks: `Add ticket stage folders to .gitignore? [y/N]`. The default answer is **No** (stage folders are tracked).
+- **`--ignore-stages`:** Adds all stage folder names to `tickets/.gitignore` without prompting.
+- **`--no-ignore-stages`:** Skips adding them without prompting.
+
+When stage folders are ignored, `tickets/.gitignore` will contain entries like `fix/`, `plan/`, etc. alongside the existing `.logs/` entry. Re-running init with `--ignore-stages` on an existing project will idempotently add any missing entries.
+
 ## Init Script: Idempotent and Non-Destructive
 
 The init script is safe to re-run at any time:
 - Creates directories only if they don't exist
 - Creates stub/symlink files only if they don't exist (never overwrites)
 - Appends to root `AGENTS.md` only if a tess section isn't already present
+- Idempotently adds gitignore entries for stage folders when `--ignore-stages` is used
 - Can be used to "refresh" after updating tess (in symlink mode, symlinks don't need refreshing; in submodule mode, stubs don't need refreshing since they're pointers)
 
 ## Comparison Summary
