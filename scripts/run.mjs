@@ -442,7 +442,7 @@ function printHelp() {
 function parseStages(raw, defaultMin) {
 	return raw.split(',').map(token => {
 		const [stage, pStr] = token.trim().split(':');
-		const minPriority = pStr !== undefined ? parseInt(pStr, 10) : defaultMin;
+		const minPriority = pStr !== undefined ? parseFloat(pStr) : defaultMin;
 		return { stage, minPriority };
 	});
 }
@@ -460,7 +460,7 @@ function parseArgs(argv) {
 		const arg = argv[i];
 		switch (arg) {
 			case '--min-priority':
-				opts.minPriority = parseInt(argv[++i], 10);
+				opts.minPriority = parseFloat(argv[++i]);
 				break;
 			case '--agent':
 				opts.agent = argv[++i];
