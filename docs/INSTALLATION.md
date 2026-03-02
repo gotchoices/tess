@@ -1,6 +1,6 @@
 # Installation Design
 
-How tess integrates into a host project. Tess supports two installation methods — git submodule (standard) and symlink (alternative) — and a single init script that detects which is in use and does the right thing.
+How tess integrates into a host project. Tess supports three installation methods — git submodule, git subtree, and symlink — and a single init script that detects which is in use and does the right thing.
 
 ## Requirements
 
@@ -16,7 +16,7 @@ After initialization, the host project looks like this:
 
 ```
 my-project/
-├── tess/                    # Submodule (standard) or symlink (alternative)
+├── tess/                    # Submodule, subtree, or symlink
 │   ├── agent-rules/
 │   │   ├── tickets.md       # Canonical ticket workflow rules
 │   │   └── root.md          # Tess section for project root AGENTS.md / CLAUDE.md
@@ -33,11 +33,11 @@ my-project/
 │   ├── complete/
 │   ├── blocked/
 │   ├── .logs/               # Git-ignored
-│   ├── AGENTS.md            # Stub file (submodule) or symlink (symlink mode)
-│   └── CLAUDE.md            # Stub file (submodule) or symlink (symlink mode)
+│   ├── AGENTS.md            # Stub file (submodule/subtree) or symlink (symlink mode)
+│   └── CLAUDE.md            # Stub file (submodule/subtree) or symlink (symlink mode)
 ├── AGENTS.md                # Project root — tess section added if missing
 ├── CLAUDE.md                # Project root — tess section added if missing
-├── .gitmodules              # Present if using submodule method
+├── .gitmodules              # Present only if using submodule method
 └── ...
 ```
 
@@ -122,7 +122,82 @@ The init script detects that `tess/` is a submodule (see detection logic below) 
 
 **Agent behavior dependency:** The stub files rely on agents following a markdown file reference to read the actual rules. This works for the runner (which reads rules directly) and for ad-hoc agent usage (Cursor, Claude Code, and Augment all follow explicit file references). If an agent only reads the stub literally, it gets a one-liner pointing to the rules — a graceful degradation rather than a failure.
 
-## Method 2: Symlinks (Alternative)
+### Submodules and git worktrees
+
+Git submodules do not work well with git worktrees. When you create a worktree, git does not clone or link submodules into the new working tree — the submodule directory will be empty. You must manually run `git submodule update --init` in each worktree, and even then the submodule state can become confused because all worktrees share a single `.git/modules` directory. This is a long-standing git limitation.
+
+If your workflow relies on git worktrees (e.g., for parallel branch work or agent-based workflows that use worktrees for isolation), consider using the **git subtree** or **symlink** methods instead.
+
+## Method 2: Git Subtree
+
+### What git subtrees are
+
+Git subtrees merge another repository's contents directly into a subdirectory of your project. Unlike submodules, the files are fully part of your repo's tree — there's no `.gitmodules` file and no separate fetch step. The subtree's history can optionally be squashed into a single commit.
+
+The key advantage is simplicity: cloning the project gives you everything, and standard git operations (checkout, worktree, branch) all work without special handling.
+
+### When to use
+
+- Your workflow uses **git worktrees** (subtrees work seamlessly; submodules do not)
+- You want a zero-friction clone experience — no `--recurse-submodules` needed
+- You prefer all dependencies to be self-contained in the repo
+
+### Setup (one-time per project)
+
+```bash
+# From project root:
+git subtree add --prefix=tess https://github.com/gotchoices/tess.git main --squash
+node tess/scripts/init.mjs
+git add .
+git commit -m "add tess ticketing system"
+```
+
+`--squash` collapses tess's history into a single merge commit. Omit it if you want full history.
+
+### Cloning a project that uses tess
+
+```bash
+# Nothing special — tess files are part of the repo
+git clone <project-url>
+```
+
+No extra steps required. The `tess/` directory is a normal part of the project tree.
+
+### Updating tess
+
+```bash
+# From project root:
+git subtree pull --prefix=tess https://github.com/gotchoices/tess.git main --squash
+```
+
+This fetches the latest tess and merges it into the `tess/` directory. As with setup, `--squash` keeps your history clean.
+
+To avoid typing the URL each time, you can add a remote:
+
+```bash
+git remote add tess <tess-repo-url>
+git subtree pull --prefix=tess tess main --squash
+```
+
+### How init works in subtree mode
+
+The init script detects that `tess/` is a plain directory (no `.git` file with `gitdir:`, no `.gitmodules` entry) and behaves identically to submodule mode:
+
+1. **Creates the `tickets/` scaffold** — same stage subdirectories and `.gitignore`.
+2. **Creates stub files in `tickets/`** — same `AGENTS.md` and `CLAUDE.md` stubs referencing the canonical rules.
+3. **Ensures root `AGENTS.md` and `CLAUDE.md` mention tess** — same as submodule mode.
+
+No symlinks or special handling needed — tess files are real files in the tree.
+
+### Trade-offs vs. submodules
+
+- **Pro:** Works with git worktrees, simpler clone, no submodule commands to learn
+- **Pro:** All files present in every checkout — no empty directories
+- **Con:** Tess files are committed into your repo (increases repo size slightly)
+- **Con:** Updating requires the `git subtree pull` command with the remote URL
+- **Con:** No automatic version pinning — you track updates via your own commit history
+
+## Method 3: Symlinks (Alternative)
 
 ### When to use
 
@@ -172,9 +247,10 @@ The init script determines the installation method automatically:
 
 ```
 if (project_root/tess exists) {
-    if (tess/.git is a file containing "gitdir:") → submodule mode
     if (tess is a symlink) → symlink mode
-    else → plain directory — treat as submodule mode (log a note)
+    if (tess/.git is a file containing "gitdir:") → submodule mode
+    if (.gitmodules references tess) → submodule mode (not yet initialized)
+    else → subtree mode (plain directory)
 } else {
     // init.mjs was invoked from an external tess checkout
     → symlink mode (create root symlink first)
@@ -183,11 +259,11 @@ if (project_root/tess exists) {
 
 The script's own location (`import.meta.url`) tells it where the tess checkout is. The cwd (or `--project` argument) tells it where the host project is.
 
-Note on the "plain directory" case: if someone manually copies tess into their project (rather than using a submodule or symlink), init treats it as submodule mode (stub files, no symlinks). This works correctly but the user loses the update mechanism. The script should log a message suggesting `git submodule add` instead.
+Note on the "plain directory" case: if someone manually copies tess into their project (rather than using a subtree, submodule, or symlink), init detects it as subtree mode and uses stub files. This works correctly but the user loses the update mechanism.
 
 ## Runner Invocation
 
-In both modes, tess appears at `project_root/tess/`, so the runner is always invoked the same way:
+In all modes, tess appears at `project_root/tess/`, so the runner is always invoked the same way:
 
 ```bash
 node tess/scripts/run.mjs [options]
@@ -220,15 +296,16 @@ The init script is safe to re-run at any time:
 
 ## Comparison Summary
 
-| Concern | Submodule | Symlink |
-|---|---|---|
-| Platform | All | macOS/Linux (Windows needs Developer Mode) |
-| Committing project | Only commits tess pointer (SHA) | tess symlink is gitignored |
-| Visibility to collaborators | `.gitmodules` shows tess dependency | Not visible — needs documentation |
-| Updating tess | `git submodule update --remote` | `cd tess && git pull` |
-| Clone setup | `--recurse-submodules` or `git submodule update --init` | Clone tess separately, run init |
-| Files in `tickets/` | Real stub files (committable) | Symlinks (gitignored) |
-| Re-init after tess update | Not needed for content; re-run for structural changes | Not needed (symlinks are live) |
+| Concern | Submodule | Subtree | Symlink |
+|---|---|---|---|
+| Platform | All | All | macOS/Linux (Windows needs Developer Mode) |
+| Git worktrees | Not compatible | Works seamlessly | Works (re-run init per worktree) |
+| Committing project | Only commits tess pointer (SHA) | Commits tess files into repo | tess symlink is gitignored |
+| Visibility to collaborators | `.gitmodules` shows tess dependency | Files visible in tree | Not visible — needs documentation |
+| Updating tess | `git submodule update --remote` | `git subtree pull --prefix=tess ...` | `cd tess && git pull` |
+| Clone setup | `--recurse-submodules` or `git submodule update --init` | Nothing — tess is in the tree | Clone tess separately, run init |
+| Files in `tickets/` | Real stub files (committable) | Real stub files (committable) | Symlinks (gitignored) |
+| Re-init after tess update | Not needed for content; re-run for structural changes | Not needed for content; re-run for structural changes | Not needed (symlinks are live) |
 
 ## Removing Tess
 
@@ -238,6 +315,7 @@ Run `node tess/scripts/detach.mjs` from the project root. This removes tess-crea
 2. Removes the `<!-- tess -->` section from root `AGENTS.md` and `CLAUDE.md`
 3. In symlink mode: removes the `tess` symlink and cleans tess-related `.gitignore` entries
 4. In submodule mode: prints the git commands to remove the submodule (doesn't execute them)
+5. In subtree mode: prints the command to remove the `tess/` directory (doesn't execute it)
 
 The detach script never deletes `tickets/` or any ticket files — that's the user's data.
 
@@ -248,5 +326,7 @@ The detach script never deletes `tickets/` or any ticket files — that's the us
 Git submodules handle versioning natively. The parent repo's submodule pointer *is* the version record — it pins the exact tess commit SHA. Standard git tooling already surfaces mismatches: `git status` shows `tess` as modified if the local checkout differs from the committed pointer, and `git submodule status` prints the SHA with a `+` prefix when out of sync.
 
 No custom version file or comparison logic is needed. The runner will print the current tess commit hash in its startup banner for quick visibility, but this is purely informational.
+
+In subtree mode, there's no pointer — the tess version is whatever was last pulled via `git subtree pull`. The commit history shows when tess was updated.
 
 In symlink mode there's no submodule pointer, but the developer is explicitly managing their own tess checkout and knows what version they're on.

@@ -2,11 +2,12 @@
 /**
  * Tess project initialization script.
  *
- * Detects how tess is installed (git submodule or symlink) and sets up the
- * tickets/ scaffold and agent-rules references in the host project.
+ * Detects how tess is installed (git submodule, git subtree, or symlink)
+ * and sets up the tickets/ scaffold and agent-rules references in the host
+ * project.
  *
  * Usage:
- *   node tess/scripts/init.mjs              # from project root (submodule mode)
+ *   node tess/scripts/init.mjs              # from project root (submodule/subtree mode)
  *   node /path/to/tess/scripts/init.mjs     # from project root (symlink mode)
  *   node tess/scripts/init.mjs --project /path/to/project
  *
@@ -96,7 +97,7 @@ async function promptYesNo(question, defaultNo = true) {
 
 /**
  * Determine installation mode.
- * Returns { mode: 'submodule' | 'symlink', needsRootSymlink: boolean }
+ * Returns { mode: 'submodule' | 'subtree' | 'symlink', needsRootSymlink: boolean }
  */
 async function detectMode(projectRoot) {
 	const tessInProject = join(projectRoot, 'tess');
@@ -116,8 +117,16 @@ async function detectMode(projectRoot) {
 			}
 		}
 
-		warn('tess/ exists but is not a submodule or symlink — treating as submodule mode');
-		return { mode: 'submodule', needsRootSymlink: false };
+		// tess/ is a plain directory — check .gitmodules to distinguish
+		// submodule (not yet initialized) from subtree / manual copy
+		const gitmodulesContent = await readTextOrEmpty(join(projectRoot, '.gitmodules'));
+		if (gitmodulesContent.includes('path = tess') || gitmodulesContent.includes('path=tess')) {
+			log('Detected: tess is a git submodule (not yet initialized)');
+			return { mode: 'submodule', needsRootSymlink: false };
+		}
+
+		log('Detected: tess is a git subtree (or plain directory)');
+		return { mode: 'subtree', needsRootSymlink: false };
 	}
 
 	// tess not in project — running from external path, symlink mode
@@ -264,7 +273,7 @@ function parseArgs(argv) {
 				'Tess project initialization',
 				'',
 				'Usage:',
-				'  node tess/scripts/init.mjs              # submodule mode',
+				'  node tess/scripts/init.mjs              # submodule or subtree mode',
 				'  node /path/to/tess/scripts/init.mjs     # symlink mode',
 				'  node tess/scripts/init.mjs --project /path/to/project',
 				'',
@@ -316,7 +325,7 @@ async function main() {
 	await createTicketsScaffold(projectRoot, ignoreStages);
 
 	// Step 4: Create agent-rule references in tickets/
-	if (mode === 'submodule') {
+	if (mode === 'submodule' || mode === 'subtree') {
 		await createTicketsStubs(projectRoot);
 	} else {
 		await createTicketsSymlinks(projectRoot);
