@@ -30,11 +30,15 @@ tickets/
 ### 1. Install tess into your project
 
 ```bash
-# Standard method (git submodule):
+# Git submodule:
 git submodule add https://github.com/gotchoices/tess.git tess
 node tess/scripts/init.mjs
 
-# Alternative (symlink — tess cloned elsewhere):
+# Git subtree (works with git worktrees; submodules do not):
+git subtree add --prefix=tess https://github.com/gotchoices/tess.git main --squash
+node tess/scripts/init.mjs
+
+# Symlink (tess cloned elsewhere):
 node /path/to/tess/scripts/init.mjs
 ```
 
