@@ -159,7 +159,7 @@ function formatCursorJsonLine(line) {
 
 const agents = {
 	claude: (instructionFile, _prompt, { stage }) => {
-		const effort = (stage === 'fix' || stage === 'plan' || stage === 'review') ? 'high' : 'medium';
+		const effort = 'high';
 		return {
 			cmd: 'claude',
 			args: [

@@ -17,13 +17,19 @@ Stages:
 
 Don't combine tickets unless they are tightly related.
 
+Efficiency tips:
+- Use the `files:` header in tickets — it saves the next agent from re-discovering paths.
+- When spawning sub-agents, give them specific file paths rather than asking them to explore.
+- Use the appropriate section of AGENTS.md for the project layout — don't guess paths.
+- Run tests and type checks during implement, not just during review.
+
 For new tickets: put a new file into fix/ or plan/ but focus on the description/requirements of the issue or feature, expected behavior, use case, etc.  Don't do planning, don't add TODO items, or get ahead, unless you already possess key information that would be useful.
 
 Ticket file template:
 
 description: <brief description>
 dependencies: <needed other tickets, modularity points, external libraries>
-files: <optional list of known relevant files>
+files: <list key files touched/relevant — saves the next agent significant discovery time>
 ----
 <timeless architecture description focused on prose, diagrams, and interfaces/types/schema>
 
