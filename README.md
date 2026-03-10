@@ -2,7 +2,9 @@
 
 *From Latin "tessera" — a ticket or token.*
 
-Tess is a lightweight, agent-driven ticketing system for software projects. It provides a structured pipeline where AI coding agents (Claude, Cursor, Augment) process tickets through workflow stages — from triage through implementation and review to completion.
+Tess is a lightweight, agent-driven ticketing system for software projects. It provides a structured pipeline where AI coding agents (Claude, Cursor, Augment, Codex) process tickets through workflow stages — from triage through implementation and review to completion.
+
+When using the Codex adapter, `codex-cli` must be version `0.112.0` or newer.
 
 Tess lives as its own repository and integrates into any project, giving every repo the same ticket pipeline without duplicating code.
 
@@ -92,7 +94,7 @@ node tess/scripts/run.mjs --agent cursor
 |---|---|---|
 | `--min-priority <n>` | `3` | Minimum priority threshold (1-5, 5 = highest) |
 | `--stages <list>` | `fix,plan,implement,review` | Stages to process, with optional per-stage priority (`review:5,implement:3`) |
-| `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, or `auggie` |
+| `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, `auggie`, or `codex` |
 | `--no-commit` | — | Skip automatic git commit after each ticket |
 | `--dry-run` | — | List tickets without invoking the agent |
 
