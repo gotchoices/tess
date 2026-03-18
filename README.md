@@ -142,6 +142,28 @@ files: <optional list of relevant files>
 - **Priority-driven** — Tickets processed highest-priority-first within each stage
 - **Non-interactive** — Batch processing with human review between runs
 
+## Web Dashboard
+
+Tess includes a web dashboard for browsing the ticket pipeline, viewing tickets by stage, and reading ticket details.
+
+### Running the Dashboard
+
+```bash
+cd tess/ui
+npm install
+npm run dev
+```
+
+The dashboard starts on `http://localhost:3004` by default.
+
+### Cross-Linking
+
+If a sibling system is detected (e.g., `teamos/` exists at the project root), the dashboard shows a link in the navigation bar. Both teamos and tess auto-detect each other and display reciprocal links. Override the project root with the `TESS_PROJECT_ROOT` environment variable:
+
+```bash
+TESS_PROJECT_ROOT=/path/to/project npm run dev
+```
+
 ## Further Reading
 
 - [docs/](docs/) — Design principles, installation architecture, and development status
