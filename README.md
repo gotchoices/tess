@@ -82,6 +82,9 @@ node tess/scripts/run.mjs
 # Only specific stages
 node tess/scripts/run.mjs --stages fix,implement
 
+# Priority specific at multiple stages
+node tess/scripts/run.mjs --stages fix:1,implement:1,review:1,plan:4
+
 # Use a different agent
 node tess/scripts/run.mjs --agent cursor
 ```
