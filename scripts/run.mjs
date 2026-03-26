@@ -569,6 +569,15 @@ async function main() {
 		}
 
 		const ticket = allTickets[i];
+
+		// Guard: a previous agent may have already moved this ticket
+		try {
+			await access(ticket.path, constants.R_OK);
+		} catch {
+			console.log(`\n  [${i + 1}/${allTickets.length}] Skipped (already moved): ${ticket.file}\n`);
+			continue;
+		}
+
 		const currentLog = logPath(logsDir, ticket);
 
 		const ticketBanner = [
