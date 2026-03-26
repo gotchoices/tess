@@ -137,6 +137,16 @@ files: <optional list of relevant files>
 <TODO list of sub-tasks, organized by phase if needed>
 ```
 
+## Stopping the Runner
+
+Create a `tickets/.stop` file to gracefully halt the runner between tickets:
+
+```bash
+touch tickets/.stop
+```
+
+The runner checks for this file before each ticket. When found, it finishes any in-progress commit, removes the stop file, and exits. The `.stop` file is git-ignored.
+
 ## Design Philosophy
 
 - **Snapshot-based** — Ticket list captured once per run; newly created tickets wait for the next run

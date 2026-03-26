@@ -46,6 +46,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TESS_ROOT = join(__dirname, '..');
 
+const STOP_FILE = '.stop';              // create tickets/.stop to halt the runner
+
 function getTessVersion() {
 	try {
 		const hash = execSync('git log -1 --format=%h', { cwd: TESS_ROOT, encoding: 'utf-8' }).trim();
@@ -256,6 +258,22 @@ function logPath(logsDir, ticket) {
 	const name = ticket.file.replace(/\.md$/, '');
 	const ts = new Date().toISOString().replace(/[:.]/g, '-');
 	return join(logsDir, `${name}.${ticket.stage}.${ts}.log`);
+}
+
+// ─── Stop file ─────────────────────────────────────────────────────────────────
+// Create tickets/.stop to gracefully halt the runner between tickets.
+
+async function pathExists(p) {
+	try { await access(p, constants.F_OK); return true; } catch { return false; }
+}
+
+async function checkStop(ticketsDir) {
+	const stopFile = join(ticketsDir, STOP_FILE);
+	if (await pathExists(stopFile)) {
+		await unlink(stopFile).catch(() => {});
+		return true;
+	}
+	return false;
 }
 
 // ─── Agent invocation ──────────────────────────────────────────────────────────
@@ -545,6 +563,11 @@ async function main() {
 	const logsDir = await ensureLogsDir(ticketsDir);
 
 	for (let i = 0; i < allTickets.length; i++) {
+		if (await checkStop(ticketsDir)) {
+			console.log('\n⏹  Stop file detected — halting before next ticket.');
+			break;
+		}
+
 		const ticket = allTickets[i];
 		const currentLog = logPath(logsDir, ticket);
 
@@ -589,7 +612,7 @@ async function main() {
 		}
 	}
 
-	console.log(`\nDone — ${allTickets.length} ticket(s) processed.`);
+	console.log(`\nDone.`);
 }
 
 main().catch((err) => {
