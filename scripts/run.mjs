@@ -27,6 +27,7 @@
  *                          --stages review:5,implement:3
  *                          --stages fix:4,implement,review:5  (uses --min-priority for bare names)
  *   --agent <name>       Agent adapter to use: claude | auggie | cursor  (default: claude)
+ *   --max <n>            Stop after processing at most n tickets  (default: unlimited)
  *   --no-commit          Skip automatic git commit after each ticket
  *   --dry-run            List tickets that would be processed, don't invoke agent
  *   --help               Show this help
@@ -517,10 +518,11 @@ function printHelp() {
 		'  --stages <list>      Comma-separated stages, optionally with per-stage min priority',
 		'                       as  stage:n  (default: fix,plan,implement,review)',
 		'                       e.g.  --stages review:5,implement:3,fix',
-		'  --agent <name>       claude | auggie | cursor              (default: claude)',
-		'  --no-commit          Skip automatic git commit after each ticket',
-		'  --dry-run            List tickets without invoking agent',
-		'  --help               Show this help',
+	'  --agent <name>       claude | auggie | cursor              (default: claude)',
+	'  --max <n>            Stop after at most n tickets          (default: unlimited)',
+	'  --no-commit          Skip automatic git commit after each ticket',
+	'  --dry-run            List tickets without invoking agent',
+	'  --help               Show this help',
 	];
 	console.log(lines.join('\n'));
 }
@@ -543,6 +545,7 @@ function parseArgs(argv) {
 		agent: 'claude',
 		dryRun: false,
 		noCommit: false,
+		maxTickets: Infinity,
 		stagesRaw: null,
 	};
 
@@ -560,6 +563,9 @@ function parseArgs(argv) {
 				break;
 			case '--no-commit':
 				opts.noCommit = true;
+				break;
+			case '--max':
+				opts.maxTickets = parseInt(argv[++i], 10);
 				break;
 			case '--stages':
 				opts.stagesRaw = argv[++i];
@@ -612,6 +618,9 @@ async function main() {
 		return b.priority - a.priority;
 	});
 
+	const totalFound = allTickets.length;
+	if (opts.maxTickets < totalFound) allTickets.splice(opts.maxTickets);
+
 	if (opts.dryRun) {
 		const stageSummary = opts.stages.map(({ stage, minPriority }) => `${stage}(>=${minPriority})`).join(', ');
 		console.log(`\ntess (${tessVersion})`);
@@ -619,7 +628,8 @@ async function main() {
 		for (const t of allTickets) {
 			console.log(`  [${t.stage.padEnd(9)}] P${t.priority}  ${t.file}`);
 		}
-		console.log(`\n${allTickets.length} ticket(s) would be processed.`);
+		const limitNote = totalFound > allTickets.length ? ` (limited to ${allTickets.length} of ${totalFound})` : '';
+		console.log(`\n${allTickets.length} ticket(s) would be processed${limitNote}.`);
 		return;
 	}
 
@@ -642,10 +652,11 @@ async function main() {
 		}
 	}
 
+	const limitNote = totalFound > allTickets.length ? `, limited to ${allTickets.length}` : '';
 	const banner = [
 		`${'═'.repeat(72)}`,
 		`  tess (${tessVersion})`,
-		`  Snapshotted ${allTickets.length} ticket(s) to process.`,
+		`  Snapshotted ${totalFound} ticket(s)${limitNote}.`,
 		`${'═'.repeat(72)}`,
 	].join('\n');
 	console.log(banner);
