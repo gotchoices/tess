@@ -47,6 +47,7 @@ const __dirname = dirname(__filename);
 const TESS_ROOT = join(__dirname, '..');
 
 const STOP_FILE = '.stop';              // create tickets/.stop to halt the runner
+const IN_PROGRESS_FILE = '.in-progress';  // tracks the currently-running ticket for resume
 
 function getTessVersion() {
 	try {
@@ -274,6 +275,76 @@ async function checkStop(ticketsDir) {
 		return true;
 	}
 	return false;
+}
+
+// ─── In-progress state ────────────────────────────────────────────────────────
+// Before each ticket, write tickets/.in-progress with ticket info and log path.
+// On success, delete it.  On next run, read and clear any leftover state so the
+// agent can be told to resume from a prior incomplete run.
+
+function inProgressPath(ticketsDir) {
+	return join(ticketsDir, IN_PROGRESS_FILE);
+}
+
+/** Read and clear any prior in-progress state. Returns parsed object or null. */
+async function readAndClearInProgress(ticketsDir) {
+	const p = inProgressPath(ticketsDir);
+	try {
+		const raw = await readFile(p, 'utf-8');
+		await unlink(p).catch(() => {});
+		return JSON.parse(raw);
+	} catch {
+		return null;
+	}
+}
+
+/** Write in-progress state before starting a ticket. */
+async function writeInProgress(ticketsDir, ticket, logFile, agent) {
+	const state = {
+		file: ticket.file,
+		stage: ticket.stage,
+		priority: ticket.priority,
+		path: ticket.path,
+		logFile,
+		agent,
+		startedAt: new Date().toISOString(),
+	};
+	await writeFile(inProgressPath(ticketsDir), JSON.stringify(state, null, '\t'), 'utf-8');
+}
+
+/** Clear in-progress state after successful completion. */
+async function clearInProgress(ticketsDir) {
+	await unlink(inProgressPath(ticketsDir)).catch(() => {});
+}
+
+const RESUME_MARKER_START = '<!-- resume-note -->';
+const RESUME_MARKER_END = '<!-- /resume-note -->';
+
+/** Build a resume note to prepend to a ticket file. */
+function buildResumeNote(priorRun) {
+	return [
+		RESUME_MARKER_START,
+		'RESUME: A prior agent run on this ticket did not complete.',
+		`  Prior run: ${priorRun.startedAt} (agent: ${priorRun.agent})`,
+		`  Log file: ${priorRun.logFile}`,
+		'Read the log to see what was done. Resume where it left off.',
+		'If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.',
+		RESUME_MARKER_END,
+		'',
+	].join('\n');
+}
+
+/** Prepend a resume note to a ticket file. Idempotent — replaces any existing note. */
+async function addResumeNote(ticketPath, priorRun) {
+	let content = await readFile(ticketPath, 'utf-8');
+	// Strip any existing resume note
+	const startIdx = content.indexOf(RESUME_MARKER_START);
+	const endIdx = content.indexOf(RESUME_MARKER_END);
+	if (startIdx !== -1 && endIdx !== -1) {
+		content = content.slice(0, startIdx) + content.slice(endIdx + RESUME_MARKER_END.length).replace(/^\n/, '');
+	}
+	const note = buildResumeNote(priorRun);
+	await writeFile(ticketPath, note + content, 'utf-8');
 }
 
 // ─── Agent invocation ──────────────────────────────────────────────────────────
@@ -552,6 +623,25 @@ async function main() {
 		return;
 	}
 
+	// ── Read prior in-progress state (incomplete previous run) ──
+	const priorRun = await readAndClearInProgress(ticketsDir);
+	if (priorRun) {
+		console.log(`\n  Prior incomplete run detected: ${priorRun.file} (${priorRun.stage})`);
+		console.log(`    Started: ${priorRun.startedAt}  |  Log: ${priorRun.logFile}`);
+		// If the ticket is still in the batch, annotate it with a resume note
+		const match = allTickets.find(t => t.file === priorRun.file && t.stage === priorRun.stage);
+		if (match) {
+			try {
+				await addResumeNote(match.path, priorRun);
+				console.log(`    Added resume note to ${match.file}`);
+			} catch (err) {
+				console.warn(`    Failed to add resume note: ${err.message}`);
+			}
+		} else {
+			console.log(`    Ticket no longer in batch — skipping resume note.`);
+		}
+	}
+
 	const banner = [
 		`${'═'.repeat(72)}`,
 		`  tess (${tessVersion})`,
@@ -600,6 +690,9 @@ async function main() {
 			'',
 		].join('\n'));
 
+		// Track this ticket as in-progress
+		await writeInProgress(ticketsDir, ticket, currentLog, opts.agent);
+
 		const prompt = await buildPrompt(ticket, ticketsDir);
 		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, { stage: ticket.stage });
 
@@ -609,6 +702,9 @@ async function main() {
 			console.error('Stopping to avoid cascading failures. Re-run to retry.');
 			process.exit(exitCode);
 		}
+
+		// Ticket completed — clear in-progress state
+		await clearInProgress(ticketsDir);
 
 		if (!opts.noCommit && commitTicket(ticket, repoRoot)) {
 			console.log(`  Committed.`);

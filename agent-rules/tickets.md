@@ -15,6 +15,8 @@ Stages:
 - Blocked - This is where to put tickets with unresolved questions, important decisions, or unclear requirements.  Include the question(s) and/or discussion of tradeoffs.
 - Complete - Archived summary of finished work.  Contains briefly what was built, key files, testing notes, and usage information.
 
+If the ticket contains a `<!-- resume-note -->` block, a prior agent run was interrupted before completion.  Read the referenced log file to understand what was already done, check the current codebase state for partial changes, and resume from where it left off.  If the prior run failed on a specific tool call or timed out, be careful not to just launch into the same situation.
+
 Don't combine tickets unless they are tightly related.
 
 Efficiency tips:

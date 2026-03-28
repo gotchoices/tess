@@ -22,7 +22,8 @@ tickets/
 ├── blocked/       # Parked — unresolved questions
 ├── AGENTS.md      # Points to tess agent rules
 ├── CLAUDE.md      # Points to tess agent rules
-└── .logs/         # Agent execution logs (git-ignored)
+├── .logs/         # Agent execution logs (git-ignored)
+└── .in-progress   # Current ticket state for resume (git-ignored)
 ```
 
 ## Quick Start
@@ -146,6 +147,18 @@ touch tickets/.stop
 ```
 
 The runner checks for this file before each ticket. When found, it finishes any in-progress commit, removes the stop file, and exits. The `.stop` file is git-ignored.
+
+## Incomplete Run Recovery
+
+The runner tracks which ticket is currently being processed in `tickets/.in-progress`. If a run is interrupted (disconnection, timeout, crash), the next run detects the incomplete state and prepends a resume note to the ticket file with:
+
+- When and which agent last attempted the ticket
+- A pointer to the prior run's log file
+- Instructions to read the log, assess progress, and resume rather than restart
+
+The agent sees this note as part of the ticket content and can read the log to understand what was already accomplished. The resume note is removed by the agent when it begins working.
+
+If the incomplete ticket is no longer in the batch (e.g., it was manually moved), the runner simply clears the stale state and proceeds normally.
 
 ## Design Philosophy
 
