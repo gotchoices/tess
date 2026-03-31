@@ -164,20 +164,23 @@ function formatCursorJsonLine(line) {
 const agents = {
 	claude: (instructionFile, _prompt, { stage }) => {
 		const effort = 'high';
-		return {
-			cmd: 'claude',
-			args: [
-				'-p',
-				'--dangerously-skip-permissions',
-				'--verbose',
-				'--no-session-persistence',
-				'--output-format', 'stream-json',
-				'--effort', effort,
-				'--append-system-prompt-file', instructionFile,
-				'Work the ticket as described in the appended system prompt.',
-			],
-			formatStream: formatClaudeJsonLine,
-		};
+		const args = [
+			'-p',
+			'--dangerously-skip-permissions',
+			'--verbose',
+			'--no-session-persistence',
+			'--output-format', 'stream-json',
+			'--effort', effort,
+			'--append-system-prompt-file', instructionFile,
+			'Work the ticket as described in the appended system prompt.',
+		];
+		// On Windows, spawn() with shell:false cannot resolve .cmd/.ps1 shims
+		// installed by npm. Use shellCmd so spawn() runs with shell:true instead.
+		if (process.platform === 'win32') {
+			const escaped = args.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ');
+			return { shellCmd: `claude ${escaped}`, formatStream: formatClaudeJsonLine };
+		}
+		return { cmd: 'claude', args, formatStream: formatClaudeJsonLine };
 	},
 
 	auggie: (instructionFile, _prompt) => ({
