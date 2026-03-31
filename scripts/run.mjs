@@ -181,8 +181,7 @@ const agents = {
 	},
 
 	auggie: (instructionFile, _prompt) => ({
-		cmd: 'auggie',
-		args: ['--print', '--instruction', instructionFile],
+		shellCmd: `auggie --print --instruction "${instructionFile}"`,
 	}),
 
 	cursor: (instructionFile, _prompt, { cwd }) => {
