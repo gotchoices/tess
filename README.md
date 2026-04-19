@@ -94,7 +94,7 @@ node tess/scripts/run.mjs --agent cursor
 
 | Option | Default | Description |
 |---|---|---|
-| `--min-priority <n>` | `3` | Minimum priority threshold (1-5, 5 = highest) |
+| `--min-priority <n>` | `3` | Minimum priority threshold (priorities can include decimals) |
 | `--stages <list>` | `fix,plan,implement,review` | Stages to process, with optional per-stage priority (`review:5,implement:3`) |
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, or `auggie` |
 | `--no-commit` | — | Skip automatic git commit after each ticket |
