@@ -37,7 +37,7 @@
  *                          --stages review:5,implement:3
  *                          --stages fix:4,implement,review:5  (uses --max-sequence for bare names)
  *                          --stages backlog:2                 (backlog is not in the default set)
- *   --agent <name>       Agent adapter to use: claude | auggie | cursor  (default: claude)
+ *   --agent <name>       Agent adapter to use: claude | auggie | cursor | codex  (default: claude)
  *   --max <n>            Stop after processing at most n tickets  (default: unlimited)
  *   --no-commit          Skip automatic git commit after each ticket
  *   --dry-run            List tickets that would be processed, don't invoke agent
@@ -168,6 +168,38 @@ function formatCursorJsonLine(line) {
 	return { text };
 }
 
+function formatCodexJsonLine(line) {
+	try {
+		const obj = JSON.parse(line);
+		if (obj.type === 'thread.started') {
+			return { text: `[session ${obj.thread_id ?? '?'}]\n` };
+		}
+		if (obj.type === 'turn.started') {
+			return { text: '\n[TURN STARTED]\n' };
+		}
+		if (obj.type === 'item.completed') {
+			const item = obj.item ?? {};
+			if (item.type === 'agent_message' && item.text) {
+				return { text: `\n[ASSISTANT]\n${item.text}\n` };
+			}
+		}
+		if (obj.type === 'turn.completed') {
+			const usage = obj.usage ?? {};
+			const input = usage.input_tokens != null ? ` in ${usage.input_tokens}` : '';
+			const output = usage.output_tokens != null ? ` out ${usage.output_tokens}` : '';
+			return {
+				text: `\n[RESULT ✓ DONE${input || output ? ` | tokens${input}${output}` : ''}]\n`,
+				done: true,
+				exitCode: 0,
+			};
+		}
+	} catch {
+		/* not JSON, pass through */
+	}
+	const text = line.endsWith('\n') ? line : line + '\n';
+	return { text };
+}
+
 // ─── Agent adapters ────────────────────────────────────────────────────────────
 // Each adapter returns { cmd, args } or { shellCmd } for spawning the agent process.
 // `instructionFile` is the path to a temp file containing the full prompt.
@@ -198,6 +230,24 @@ const agents = {
 	auggie: (instructionFile, _prompt) => ({
 		shellCmd: `auggie --print --instruction "${instructionFile}"`,
 	}),
+
+	codex: (instructionFile, _prompt, { cwd }) => {
+		const relPath = relative(cwd, instructionFile).replace(/\\/g, '/');
+		const prompt = `Read and follow all instructions in the file: ${relPath}`;
+		return {
+			cmd: 'codex',
+			args: [
+				'exec',
+				'--json',
+				'--color', 'never',
+				'--full-auto',
+				'--ephemeral',
+				'-C', cwd,
+				prompt,
+			],
+			formatStream: formatCodexJsonLine,
+		};
+	},
 
 	cursor: (instructionFile, _prompt, { cwd }) => {
 		const relPath = relative(cwd, instructionFile).replace(/\\/g, '/');
@@ -634,7 +684,7 @@ function printHelp() {
 		'                       as  stage:n  (default: fix,plan,implement,review)',
 		'                       e.g.  --stages review:5,implement:3,fix',
 		'                             --stages backlog:2  (backlog is not in the default set)',
-		'  --agent <name>       claude | auggie | cursor              (default: claude)',
+		'  --agent <name>       claude | auggie | cursor | codex      (default: claude)',
 		'  --max <n>            Stop after at most n tickets          (default: unlimited)',
 		'  --no-commit          Skip automatic git commit after each ticket',
 		'  --dry-run            List tickets without invoking agent',
