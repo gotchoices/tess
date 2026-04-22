@@ -29,10 +29,11 @@ For new tickets: put a new file into fix/ or plan/ but focus on the **descriptio
 
 Ticket file template:
 
+----
 description: <brief description>
 dependencies: <needed other tickets, modularity points, external libraries>
 files: <list key files touched/relevant — saves the next agent significant discovery time>
 ----
 <timeless architecture description focused on prose, diagrams, and interfaces/types/schema>
 
-<if applicable: TODO list of tasks - avoid numbering of tasks, besides phases>
+<if implement: TODO list of tasks - avoid numbering of tasks, besides phases>
