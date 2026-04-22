@@ -48,12 +48,15 @@ The pipeline stages, adapted from the original optimystic system:
 
 | Stage | Purpose | Output |
 |---|---|---|
+| `backlog` | Parked specs not ready to work yet | `plan/` (when promoted) |
 | `fix` | Bug triage: reproduce, research, hypothesize | `implement/` ticket(s) |
 | `plan` | Feature design: research, resolve questions | `implement/` ticket(s) |
 | `implement` | Build, test, validate | `review/` ticket |
 | `review` | Code quality, test coverage, docs | `complete/` ticket |
 | `complete` | Archived summary | — |
 | `blocked` | Parked — unresolved questions | Returns to any stage |
+
+`backlog` is excluded from the runner's default stage set. Include it explicitly via `--stages backlog:<max>` to promote tickets when ready to work them.
 
 ---
 
@@ -221,9 +224,9 @@ This means `LOCAL_RULES.md` support is straightforward: the runner can read `tic
 - **Directory-based** (`tickets/plan/p3/my-feature.md`) — adds nesting depth for little benefit
 - **Manifest file** (`tickets/manifest.json`) — single point of failure, sync issues, defeats "filesystem is the database"
 
-**Recommendation:** Keep the filename prefix. It's the right trade-off for a filesystem-based system: zero-cost discovery (no file reads needed to sort), visible at a glance, trivial to parse, easy to change. The con of "metadata in filenames" is real in systems with many metadata dimensions, but tess has exactly one: priority. One dimension fits cleanly in a prefix. If richer metadata is ever needed, the existing in-file header (`description:`, `dependencies:`, `files:`) can be extended without touching the filename convention.
+**Recommendation:** Keep the filename prefix. It's the right trade-off for a filesystem-based system: zero-cost discovery (no file reads needed to sort), visible at a glance, trivial to parse, easy to change. The con of "metadata in filenames" is real in systems with many metadata dimensions, but tess has exactly one: execution order. One dimension fits cleanly in a prefix. If richer metadata is ever needed, the in-file header (`description:`, `prereq:`, `files:`) can be extended without touching the filename convention.
 
-**Decision:** Resolved — keep priority-in-filename convention (`3-my-feature.md`).
+**Decision:** Resolved — keep the numeric-in-filename convention (`3-my-feature.md`). See Q12 for the *semantics* of that number (priority → sequence) and Q13 for cross-ticket references.
 
 ---
 
@@ -306,3 +309,37 @@ This matters in two scenarios:
 5. Never delete `tickets/` or its contents — that's the user's data
 
 **Decision:** Resolved — implement `scripts/detach.mjs`.
+
+---
+
+### Q12: What does the numeric prefix mean — priority or sequence?
+
+**Context:** The filename prefix (`3-my-feature.md`) originally encoded *priority* — higher = sooner — sorted descending. Over time this revealed two problems. First, priority naturally trends toward creeping inflation: when everything is P5, a new P6 slot gets invented. Second, humans reason about execution order as a queue, not a heap; "what comes next?" is a more natural question than "what is most important?".
+
+**Options:**
+- **A. Priority (descending)** — original semantics; higher number wins
+- **B. Sequence (ascending)** — lower number wins; number answers "when does this run?"
+- **C. Drop the number** — use only topological edges (`prereq:`) for ordering
+
+**Recommendation:** Option B. Sequence scales better (append-only numbering, no inflation), reads as a to-do queue, composes cleanly with `prereq:` topo edges (prereq must have sequence ≤ dependent), and allows an optional prefix for tickets that don't care about placement. Option C alone was considered but rejected: prereqs capture *relative* order only; humans still want an absolute slot to answer "what's next."
+
+**Decision:** Resolved — sequence semantics. Lower number runs sooner. The prefix is optional (unnumbered tickets follow numbered ones within a stage). `--max-sequence <n>` bounds the batch from the earliest-slot end. `tickets/.version` stamps the format so legacy v1 projects can be auto-migrated by inverting the numbering (`new = max + min - old`, preserving execution order) and rewriting headers (`dependencies:` → `prereq:`).
+
+---
+
+### Q13: How should cross-ticket references work, and do we need a `backlog/` stage?
+
+**Context:** Tickets frequently reference each other ("this depends on that landing first"). The v1 header was `dependencies:` and referenced tickets by full filename including the priority prefix (`3-some-ticket.md`). This conflated three concerns:
+1. The *name* of the ticket (what is it?)
+2. Its *scheduling slot* (the numeric prefix, which can change)
+3. Its *type of reference* (prereq? inspiration? external link?)
+
+Separately, the pipeline had no good place to park speculative specs. `blocked/` is for "this has an unresolved question" — not "we'll get to this eventually." Ad-hoc tickets piled up in `plan/` with `priority: 1` as a back-door backlog.
+
+**Recommendation:**
+- **`prereq:` header** — rename `dependencies:` to `prereq:` to make the semantic clear: these tickets must *land first*. External libraries and unrelated modules don't belong here.
+- **Slug-only references** — drop the numeric prefix when referencing other tickets. The sequence can change; the slug is the stable identity. `prereq: collection-api` not `prereq: 6-collection-api.md`.
+- **Topological ordering** — the runner builds a DAG from `prereq:` edges within each stage, topo-sorts, and errors on cycles or on explicit sequence numbers that contradict a prereq edge. Agents and humans can both trust that `prereq:` enforces order.
+- **`backlog/` stage** — add a parking-lot stage for specs that aren't ready. Not in the runner's default stage set; promote with `--stages backlog:<max>` when ready to work them. Agents may create backlog tickets when splitting work, so the pipeline has a "later" bucket that isn't a workflow dead-end like `blocked/`.
+
+**Decision:** Resolved — `prereq:` replaces `dependencies:`; references use slug only; `backlog/` is a new stage (parked by default). All three changes ship together as format v2 (see Q12 for the version-file mechanism).

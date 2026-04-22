@@ -26,12 +26,14 @@ my-project/
 │   │   └── detach.mjs       # Tess removal
 │   └── ...
 ├── tickets/
+│   ├── backlog/
 │   ├── fix/
 │   ├── plan/
 │   ├── implement/
 │   ├── review/
 │   ├── complete/
 │   ├── blocked/
+│   ├── .version             # Ticket format version (managed by tess)
 │   ├── .logs/               # Git-ignored
 │   ├── AGENTS.md            # Stub file (submodule/subtree) or symlink (symlink mode)
 │   └── CLAUDE.md            # Stub file (submodule/subtree) or symlink (symlink mode)
@@ -99,7 +101,7 @@ Each project pins its own tess version and updates when ready.
 
 The init script detects that `tess/` is a submodule (see detection logic below) and:
 
-1. **Creates the `tickets/` scaffold** — stage subdirectories (`fix/`, `plan/`, `implement/`, `review/`, `complete/`, `blocked/`), `.gitignore` for `.logs/`.
+1. **Creates the `tickets/` scaffold** — stage subdirectories (`backlog/`, `fix/`, `plan/`, `implement/`, `review/`, `complete/`, `blocked/`), `.gitignore` for `.logs/`, and a `.version` file stamping the ticket format.
 
 2. **Creates stub files in `tickets/`** — `AGENTS.md` and `CLAUDE.md` are small, real files (not symlinks) that reference the canonical rules:
 
@@ -275,7 +277,7 @@ The runner resolves paths relative to cwd:
 
 ## Ignoring Ticket Stage Folders
 
-By default, ticket stage folders (`fix/`, `plan/`, `implement/`, `review/`, `complete/`, `blocked/`) are tracked in git so the whole team shares a single ticket pipeline. However, some teams prefer each developer to maintain their own tickets locally — in that case, stage folders should be git-ignored.
+By default, ticket stage folders (`backlog/`, `fix/`, `plan/`, `implement/`, `review/`, `complete/`, `blocked/`) are tracked in git so the whole team shares a single ticket pipeline. However, some teams prefer each developer to maintain their own tickets locally — in that case, stage folders should be git-ignored.
 
 The init script handles this with a prompt or CLI flags:
 

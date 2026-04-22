@@ -6,6 +6,7 @@
 	let loading = $state(true);
 
 	const stages = [
+		{ key: 'backlog', label: 'Backlog', color: 'var(--text-muted)', desc: 'Parked specs' },
 		{ key: 'fix', label: 'Fix', color: 'var(--danger)', desc: 'Bug triage' },
 		{ key: 'plan', label: 'Plan', color: 'var(--warning)', desc: 'Feature design' },
 		{ key: 'implement', label: 'Implement', color: 'var(--primary)', desc: 'Build & test' },
@@ -14,8 +15,12 @@
 		{ key: 'complete', label: 'Complete', color: 'var(--success)', desc: 'Archived' },
 	] as const;
 
-	const activeStages = stages.filter(s => s.key !== 'complete' && s.key !== 'blocked');
-	const sideStages = stages.filter(s => s.key === 'blocked' || s.key === 'complete');
+	const sideKeys = new Set(['backlog', 'blocked', 'complete']);
+	const sideOrder = ['backlog', 'blocked', 'complete'];
+	const activeStages = stages.filter(s => !sideKeys.has(s.key));
+	const sideStages = sideOrder
+		.map(k => stages.find(s => s.key === k)!)
+		.filter(Boolean);
 
 	const total = $derived(counts ? Object.values(counts).reduce((a, b) => a + b, 0) : 0);
 

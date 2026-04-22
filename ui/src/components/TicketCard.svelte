@@ -3,34 +3,24 @@
 
 	let { ticket }: { ticket: TicketSummary } = $props();
 
-	function priorityLabel(p: number): string {
-		if (p >= 5) return 'critical';
-		if (p >= 4) return 'high';
-		if (p >= 3) return 'medium';
-		if (p >= 2) return 'low';
-		return 'minimal';
-	}
-
-	function priorityColor(p: number): string {
-		if (p >= 5) return 'var(--danger)';
-		if (p >= 4) return 'var(--warning)';
-		if (p >= 3) return 'var(--primary)';
+	function sequenceColor(s: number | null): string {
+		if (s === null) return 'var(--text-light)';
+		if (s <= 3) return 'var(--primary)';
+		if (s <= 5) return 'var(--info, var(--primary))';
+		if (s <= 8) return 'var(--text-muted)';
 		return 'var(--text-light)';
 	}
 </script>
 
 <a class="card" href="#/ticket/{ticket.stage}/{ticket.filename}">
 	<div class="card-header">
-		<span class="priority" style:color={priorityColor(ticket.priority)}>
-			P{ticket.priority}
+		<span class="priority" style:color={sequenceColor(ticket.sequence)}>
+			{ticket.sequence !== null ? `seq ${ticket.sequence}` : '—'}
 		</span>
 		<span class="slug">{ticket.slug}</span>
 	</div>
 	<div class="description">{ticket.description}</div>
 	<div class="card-footer">
-		<span class="priority-label" style:color={priorityColor(ticket.priority)}>
-			{priorityLabel(ticket.priority)}
-		</span>
 		{#if ticket.files?.length}
 			<span class="file-count">{ticket.files.length} file{ticket.files.length !== 1 ? 's' : ''}</span>
 		{/if}
@@ -83,12 +73,6 @@
 		display: flex;
 		gap: 0.75rem;
 		margin-top: 0.5rem;
-	}
-	.priority-label {
-		font-size: 0.65rem;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
 	}
 	.file-count {
 		font-size: 0.7rem;

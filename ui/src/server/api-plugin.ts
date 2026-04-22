@@ -10,7 +10,7 @@ interface ApiOptions {
 	siblingPort?: number;
 }
 
-const STAGES = ['fix', 'plan', 'implement', 'review', 'blocked', 'complete'] as const;
+const STAGES = ['backlog', 'fix', 'plan', 'implement', 'review', 'blocked', 'complete'] as const;
 
 function json(res: ServerResponse, data: unknown, status = 200) {
 	res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -21,10 +21,12 @@ async function dirExists(path: string): Promise<boolean> {
 	try { await access(path, constants.F_OK); return true; } catch { return false; }
 }
 
-function parseFilename(filename: string): { priority: number; slug: string } {
-	const match = filename.replace(/\.md$/, '').match(/^(\d+(?:\.\d+)?)-(.+)$/);
-	if (!match) return { priority: 0, slug: filename.replace(/\.md$/, '') };
-	return { priority: parseFloat(match[1]), slug: match[2] };
+// Extract optional numeric sequence prefix and slug from a ticket filename.
+function parseFilename(filename: string): { sequence: number | null; slug: string } {
+	const stem = filename.replace(/\.md$/, '');
+	const match = stem.match(/^(\d+(?:\.\d+)?)-(.+)$/);
+	if (!match) return { sequence: null, slug: stem };
+	return { sequence: parseFloat(match[1]), slug: match[2] };
 }
 
 function parseTicketMeta(content: string): { meta: Record<string, string | string[]>; body: string } {
@@ -79,6 +81,12 @@ function parseTicketMeta(content: string): { meta: Record<string, string | strin
 	return { meta, body };
 }
 
+// Normalize a meta value (string or string[]) into a comma-joined string, or undefined.
+function metaToString(val: string | string[] | undefined): string | undefined {
+	if (val === undefined) return undefined;
+	return Array.isArray(val) ? val.join(', ') : val;
+}
+
 async function listMdFiles(dir: string): Promise<string[]> {
 	try {
 		const files = await readdir(dir);
@@ -104,17 +112,18 @@ export function tessApi(opts: ApiOptions): Plugin {
 		return Promise.all(files.map(async filename => {
 			const content = await readFile(join(dir, filename), 'utf-8');
 			const { meta } = parseTicketMeta(content);
-			const { priority, slug } = parseFilename(filename);
+			const { sequence, slug } = parseFilename(filename);
 			const files = meta.files
 				? (Array.isArray(meta.files) ? meta.files : [meta.files])
 				: undefined;
+			const prereq = metaToString(meta.prereq) ?? metaToString(meta.dependencies);
 			return {
 				filename,
 				stage,
-				priority,
+				sequence,
 				slug,
 				description: (meta.description as string) ?? slug,
-				dependencies: (meta.dependencies as string) ?? undefined,
+				prereq,
 				files,
 			};
 		}));
@@ -124,17 +133,18 @@ export function tessApi(opts: ApiOptions): Plugin {
 		const filepath = join(ticketsDir, stage, filename);
 		const raw = await readFile(filepath, 'utf-8');
 		const { meta, body } = parseTicketMeta(raw);
-		const { priority, slug } = parseFilename(filename);
+		const { sequence, slug } = parseFilename(filename);
 		const files = meta.files
 			? (Array.isArray(meta.files) ? meta.files : [meta.files])
 			: undefined;
+		const prereq = metaToString(meta.prereq) ?? metaToString(meta.dependencies);
 		return {
 			filename,
 			stage,
-			priority,
+			sequence,
 			slug,
 			description: (meta.description as string) ?? slug,
-			dependencies: (meta.dependencies as string) ?? undefined,
+			prereq,
 			files,
 			body,
 			raw,
@@ -171,7 +181,10 @@ export function tessApi(opts: ApiOptions): Plugin {
 							return json(res, { error: 'Invalid stage' }, 400);
 						}
 						const tickets = await getStage(stage);
-						tickets.sort((a, b) => b.priority - a.priority);
+						tickets.sort((a, b) => {
+							const seqDiff = (a.sequence ?? Infinity) - (b.sequence ?? Infinity);
+							return seqDiff !== 0 ? seqDiff : a.slug.localeCompare(b.slug);
+						});
 						return json(res, tickets);
 					}
 

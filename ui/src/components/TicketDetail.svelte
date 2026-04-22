@@ -8,10 +8,11 @@
 	let ticket: TicketDetail | null = $state(null);
 	let loading = $state(true);
 
-	function priorityColor(p: number): string {
-		if (p >= 5) return 'var(--danger)';
-		if (p >= 4) return 'var(--warning)';
-		if (p >= 3) return 'var(--primary)';
+	function sequenceColor(s: number | null): string {
+		if (s === null) return 'var(--text-light)';
+		if (s <= 3) return 'var(--primary)';
+		if (s <= 5) return 'var(--info, var(--primary))';
+		if (s <= 8) return 'var(--text-muted)';
 		return 'var(--text-light)';
 	}
 
@@ -30,7 +31,7 @@
 	<div class="header">
 		<button class="back" onclick={() => router.navigate(`/stage/${stage}`)}>← {stage}</button>
 		<div class="header-info">
-			<span class="priority" style:color={priorityColor(ticket.priority)}>P{ticket.priority}</span>
+			<span class="priority" style:color={sequenceColor(ticket.sequence)}>seq {ticket.sequence ?? '—'}</span>
 			<h1 class="title">{ticket.slug}</h1>
 			<span class="stage-badge">{ticket.stage}</span>
 		</div>
@@ -41,10 +42,10 @@
 			<span class="meta-label">Description</span>
 			<span class="meta-value">{ticket.description}</span>
 		</div>
-		{#if ticket.dependencies}
+		{#if ticket.prereq}
 			<div class="meta-item">
-				<span class="meta-label">Dependencies</span>
-				<span class="meta-value">{ticket.dependencies}</span>
+				<span class="meta-label">Prereq</span>
+				<span class="meta-value">{ticket.prereq}</span>
 			</div>
 		{/if}
 	</div>

@@ -1,10 +1,10 @@
 export interface TicketSummary {
 	filename: string;
 	stage: string;
-	priority: number;
+	sequence: number | null;
 	slug: string;
 	description: string;
-	dependencies?: string;
+	prereq?: string;
 	files?: string[];
 }
 
@@ -14,6 +14,7 @@ export interface TicketDetail extends TicketSummary {
 }
 
 export interface PipelineCounts {
+	backlog: number;
 	fix: number;
 	plan: number;
 	implement: number;

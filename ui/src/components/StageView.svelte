@@ -10,6 +10,7 @@
 	let loading = $state(true);
 
 	const stageLabels: Record<string, string> = {
+		backlog: 'Backlog — Parked Specs',
 		fix: 'Fix — Bug Triage',
 		plan: 'Plan — Feature Design',
 		implement: 'Implement — Build & Test',

@@ -59,3 +59,15 @@
 - [ ] Integrate into fret
 - [ ] Integrate into remaining projects
 - [ ] Remove old `tasks/` systems from integrated projects
+
+## Phase 6: Ticket format v2 (sequence + prereq + backlog)
+
+- [x] Resolve Q12: Numeric prefix semantics — sequence (ascending, optional)
+- [x] Resolve Q13: `prereq:` header, slug-only references, `backlog/` stage
+- [x] Add `backlog/` to `init.mjs` stage scaffold
+- [x] Write `scripts/migrate.mjs` (auto-invert numbering, rename `dependencies:` → `prereq:`, strip prefixes from references, stamp `tickets/.version`)
+- [x] Update `scripts/run.mjs`: sequence-asc ordering, optional prefix, `--max-sequence`, topological sort with cycle/sequence-conflict detection, backlog excluded from `PENDING_STAGES`, auto-migration on startup
+- [x] Update `agent-rules/tickets.md` for v2 language
+- [x] Update README, DESIGN.md, INSTALLATION.md for v2 layout
+- [x] Update `ui/` dashboard (types, api-plugin, TicketCard, TicketDetail, StageView, Pipeline) — sequence + prereq + backlog; ascending sort; side-rail backlog
+- [ ] Migrate existing tess-consuming projects (lamina, …) and verify commit/test lanes remain green

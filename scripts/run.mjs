@@ -3,7 +3,7 @@
  * Ticket Runner — processes outstanding tickets through the pipeline stages
  * by invoking an agentic CLI tool for each one.
  *
- * Version: 1.0.0
+ * Version: 2.0.0
  *
  * Key design choices:
  *   - The ticket list is snapshotted once at startup.  Tickets created by the agent
@@ -14,18 +14,29 @@
  *     This keeps commits out of interactive agent sessions while ensuring clean
  *     commit-per-ticket history when running the pipeline.
  *   - Agent logs are captured in tickets/.logs/ (git-ignored), one per ticket per stage.
+ *   - Numeric filename prefix encodes *sequence* (lower runs sooner); the prefix is
+ *     optional — unnumbered tickets follow after all numbered ones in a stage.
+ *   - Tickets may declare `prereq: <slug>, <slug>` in the header.  Prereqs must
+ *     land (advance stage) before dependents; the runner topologically sorts the
+ *     snapshot and errors on cycles or sequence-number violations.
+ *   - If `tickets/.version` is missing or older than the current format, the runner
+ *     auto-migrates legacy v1 tickets (priority → inverted sequence, dependencies →
+ *     prereq, prefix stripped from references) and commits the migration.
  *
  * Usage:
  *   node tess/scripts/run.mjs [options]
  *
  * Options:
- *   --min-priority <n>   Default min priority for all stages  (default: 3)
+ *   --max-sequence <n>   Default max sequence for all stages   (default: unlimited)
+ *                        Tickets with sequence > n (and unnumbered tickets when n
+ *                        is finite) are skipped.
  *   --stages <list>      Comma-separated stages to process, optionally with per-stage
- *                        min priority as  stage:n  (default: fix,plan,implement,review)
+ *                        max sequence as  stage:n  (default: fix,plan,implement,review)
  *                        Examples:
  *                          --stages fix,implement
  *                          --stages review:5,implement:3
- *                          --stages fix:4,implement,review:5  (uses --min-priority for bare names)
+ *                          --stages fix:4,implement,review:5  (uses --max-sequence for bare names)
+ *                          --stages backlog:2                 (backlog is not in the default set)
  *   --agent <name>       Agent adapter to use: claude | auggie | cursor  (default: claude)
  *   --max <n>            Stop after processing at most n tickets  (default: unlimited)
  *   --no-commit          Skip automatic git commit after each ticket
@@ -38,6 +49,7 @@ import { join, basename, relative, dirname } from 'node:path';
 import { spawn, execSync } from 'node:child_process';
 import { constants, createWriteStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { migrate, needsMigration, FORMAT_VERSION } from './migrate.mjs';
 
 // ─── Path resolution ───────────────────────────────────────────────────────────
 // The runner lives at tess/scripts/run.mjs.
@@ -197,11 +209,15 @@ const agents = {
 	},
 };
 
-/** Stages from which to pull tickets. */
+/** Default stages from which to pull tickets (backlog excluded — parked by design). */
 const PENDING_STAGES = ['fix', 'review', 'implement', 'plan'];
+
+/** All valid stage names (for --stages validation). */
+const KNOWN_STAGES = ['backlog', 'fix', 'plan', 'implement', 'review', 'complete', 'blocked'];
 
 /** Map from stage → next stage in the pipeline (for prompt context). */
 const NEXT_STAGE = {
+	backlog: 'plan',
 	fix: 'implement',
 	plan: 'implement',
 	implement: 'review',
@@ -210,15 +226,38 @@ const NEXT_STAGE = {
 
 // ─── Ticket discovery ──────────────────────────────────────────────────────────
 
-const PRIORITY_PREFIX = /^(\d+(?:\.\d+)?)-/;
-/** Parse priority number from filename like "3-some-ticket.md" → 3 or "3.5-ticket.md" → 3.5. Returns 0 if unparseable. */
-function parsePriority(filename) {
-	const match = basename(filename).match(PRIORITY_PREFIX);
-	return match ? parseFloat(match[1]) : 0;
+const SEQUENCE_PREFIX = /^(\d+(?:\.\d+)?)-(.+)\.md$/;
+
+/** Parse sequence number from filename. Returns null when no numeric prefix is present. */
+function parseSequence(filename) {
+	const match = basename(filename).match(SEQUENCE_PREFIX);
+	return match ? parseFloat(match[1]) : null;
 }
 
-/** Discover all .md ticket files in a stage folder, filtered by min priority. */
-async function discoverTickets(ticketsDir, stage, minPriority) {
+/** Extract the canonical slug (filename without any numeric prefix or .md extension). */
+function parseSlug(filename) {
+	const base = basename(filename, '.md');
+	const match = base.match(/^\d+(?:\.\d+)?-(.+)$/);
+	return match ? match[1] : base;
+}
+
+/** Parse the `prereq:` header field into an array of slug strings.  Tolerates legacy `dependencies:`. */
+function parsePrereqs(content) {
+	// Header sits above the first `----` divider; parse only that region.
+	const divIdx = content.indexOf('\n----');
+	const header = divIdx === -1 ? content : content.slice(0, divIdx);
+	const match = header.match(/^(?:prereq|dependencies):\s*(.*)$/mi);
+	if (!match) return [];
+	return match[1]
+		.split(',')
+		.map(s => s.trim())
+		.filter(Boolean)
+		// Defensive: strip any lingering `N-` or `N.N-` prefix and `.md` suffix.
+		.map(ref => ref.replace(/^\d+(?:\.\d+)?-/, '').replace(/\.md$/, ''));
+}
+
+/** Discover all .md ticket files in a stage folder, filtered by max sequence. */
+async function discoverTickets(ticketsDir, stage, maxSequence) {
 	const stageDir = join(ticketsDir, stage);
 	try {
 		await access(stageDir, constants.R_OK);
@@ -230,21 +269,87 @@ async function discoverTickets(ticketsDir, stage, minPriority) {
 	const tickets = [];
 
 	for (const entry of entries) {
-		if (!entry.endsWith('.md') || !PRIORITY_PREFIX.test(entry)) continue;
+		if (!entry.endsWith('.md')) continue;
 
-		const priority = parsePriority(entry);
-		if (priority < minPriority) continue;
+		const sequence = parseSequence(entry);
+		// Unnumbered tickets are treated as sequence = +Infinity ("follows numbered").
+		const effective = sequence ?? Infinity;
+		if (effective > maxSequence) continue;
 
+		const path = join(stageDir, entry);
+		const content = await readFile(path, 'utf-8');
 		tickets.push({
 			file: entry,
-			path: join(stageDir, entry),
+			path,
 			stage,
-			priority,
+			sequence,            // raw: number or null
+			slug: parseSlug(entry),
+			prereqs: parsePrereqs(content),
 		});
 	}
 
-	tickets.sort((a, b) => b.priority - a.priority);
+	// Within a stage: ascending sequence (low first); unnumbered (null) sorts last.
+	tickets.sort((a, b) => (a.sequence ?? Infinity) - (b.sequence ?? Infinity));
 	return tickets;
+}
+
+// ─── Topological ordering ─────────────────────────────────────────────────────
+// Tickets may declare `prereq: <slug>` pointing at other tickets that must land
+// first.  Within the snapshot, we verify the DAG and sort so prereqs run before
+// dependents.  Explicit sequence numbers that conflict with a prereq edge (prereq
+// has a larger sequence than its dependent) are a hard error — the human needs
+// to re-number.  Cycles are also a hard error.
+
+/** Kahn's algorithm with sequence as the priority tiebreaker. */
+function topoSortAndCheck(tickets) {
+	const bySlug = new Map();
+	for (const t of tickets) {
+		// If two tickets in the batch share a slug (different stages), index by
+		// the first-seen copy; prereqs resolve to whichever is present.
+		if (!bySlug.has(t.slug)) bySlug.set(t.slug, t);
+	}
+	const graph = new Map(tickets.map(t => [t, []]));        // prereq-ticket → dependent-tickets
+	const indegree = new Map(tickets.map(t => [t, 0]));
+
+	for (const t of tickets) {
+		for (const ref of t.prereqs) {
+			const pt = bySlug.get(ref);
+			if (!pt || pt === t) continue;  // prereq outside snapshot (likely already complete) — ignore
+			graph.get(pt).push(t);
+			indegree.set(t, indegree.get(t) + 1);
+			if (pt.sequence != null && t.sequence != null && pt.sequence > t.sequence) {
+				throw new Error(
+					`Sequence conflict: "${pt.file}" (seq ${pt.sequence}) is a prereq of ` +
+					`"${t.file}" (seq ${t.sequence}) but has a later sequence number. ` +
+					`Re-number so the prereq comes first.`
+				);
+			}
+		}
+	}
+
+	const queue = tickets.filter(t => indegree.get(t) === 0);
+	const sorted = [];
+	while (queue.length > 0) {
+		queue.sort((a, b) => {
+			const sa = a.sequence ?? Infinity;
+			const sb = b.sequence ?? Infinity;
+			if (sa !== sb) return sa - sb;
+			return a.slug.localeCompare(b.slug);
+		});
+		const next = queue.shift();
+		sorted.push(next);
+		for (const dep of graph.get(next)) {
+			indegree.set(dep, indegree.get(dep) - 1);
+			if (indegree.get(dep) === 0) queue.push(dep);
+		}
+	}
+
+	if (sorted.length < tickets.length) {
+		const cyclic = tickets.filter(t => indegree.get(t) > 0).map(t => t.file).join(', ');
+		throw new Error(`Cycle detected in ticket prereqs involving: ${cyclic}`);
+	}
+
+	return sorted;
 }
 
 // ─── Logging ───────────────────────────────────────────────────────────────────
@@ -306,7 +411,8 @@ async function writeInProgress(ticketsDir, ticket, logFile, agent) {
 	const state = {
 		file: ticket.file,
 		stage: ticket.stage,
-		priority: ticket.priority,
+		sequence: ticket.sequence,
+		slug: ticket.slug,
 		path: ticket.path,
 		logFile,
 		agent,
@@ -360,7 +466,7 @@ async function buildPrompt(ticket, ticketsDir) {
 		readFile(rulesFile, 'utf-8'),
 	]);
 	return [
-		`# Ticket: ${ticket.file} (stage: ${ticket.stage}, priority: ${ticket.priority})`,
+		`# Ticket: ${ticket.file} (stage: ${ticket.stage}, sequence: ${formatSeq(ticket.sequence)})`,
 		`# Next stage: ${NEXT_STAGE[ticket.stage]}`,
 		'',
 		'## Ticket workflow rules:',
@@ -494,7 +600,7 @@ function commitTicket(ticket, cwd) {
 		if (!status) return false;
 
 		execSync('git add -A', { cwd, encoding: 'utf-8' });
-		const msg = `ticket(${ticket.stage}): ${ticket.file.replace(/^\d+-/, '').replace(/\.md$/, '')}`;
+		const msg = `ticket(${ticket.stage}): ${ticket.slug}`;
 		execSync(`git commit -m "${msg}"`, { cwd, encoding: 'utf-8' });
 		return true;
 	} catch (err) {
@@ -513,37 +619,45 @@ function printHelp() {
 		'during this run are NOT picked up until the next run.  This ensures each',
 		'ticket advances exactly one stage per run.',
 		'',
+		'Numeric filename prefix encodes sequence (lower runs sooner); prefix is optional.',
+		'Unnumbered tickets run after all numbered ones in a stage.  Tickets may declare',
+		'`prereq: <slug>, <slug>` in the header — prereqs run before dependents, and a',
+		'sequence number that conflicts with a prereq edge is a hard error.',
+		'',
 		'Usage: node tess/scripts/run.mjs [options]',
 		'',
 		'Options:',
-		'  --min-priority <n>   Default min priority for all stages  (default: 3)',
-		'  --stages <list>      Comma-separated stages, optionally with per-stage min priority',
+		'  --max-sequence <n>   Default max sequence for all stages  (default: unlimited)',
+		'                       Tickets with sequence > n are skipped; unnumbered tickets',
+		'                       are skipped whenever n is finite.',
+		'  --stages <list>      Comma-separated stages, optionally with per-stage max sequence',
 		'                       as  stage:n  (default: fix,plan,implement,review)',
 		'                       e.g.  --stages review:5,implement:3,fix',
-	'  --agent <name>       claude | auggie | cursor              (default: claude)',
-	'  --max <n>            Stop after at most n tickets          (default: unlimited)',
-	'  --no-commit          Skip automatic git commit after each ticket',
-	'  --dry-run            List tickets without invoking agent',
-	'  --help               Show this help',
+		'                             --stages backlog:2  (backlog is not in the default set)',
+		'  --agent <name>       claude | auggie | cursor              (default: claude)',
+		'  --max <n>            Stop after at most n tickets          (default: unlimited)',
+		'  --no-commit          Skip automatic git commit after each ticket',
+		'  --dry-run            List tickets without invoking agent',
+		'  --help               Show this help',
 	];
 	console.log(lines.join('\n'));
 }
 
 /**
- * Parse --stages value into an ordered array of { stage, minPriority } entries.
- * Bare stage names use the global defaultMin.
+ * Parse --stages value into an ordered array of { stage, maxSequence } entries.
+ * Bare stage names use the global defaultMax.
  */
-function parseStages(raw, defaultMin) {
+function parseStages(raw, defaultMax) {
 	return raw.split(',').map(token => {
 		const [stage, pStr] = token.trim().split(':');
-		const minPriority = pStr !== undefined ? parseFloat(pStr) : defaultMin;
-		return { stage, minPriority };
+		const maxSequence = pStr !== undefined ? parseFloat(pStr) : defaultMax;
+		return { stage, maxSequence };
 	});
 }
 
 function parseArgs(argv) {
 	const opts = {
-		minPriority: 3,
+		maxSequence: Infinity,
 		agent: 'claude',
 		dryRun: false,
 		noCommit: false,
@@ -554,8 +668,8 @@ function parseArgs(argv) {
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		switch (arg) {
-			case '--min-priority':
-				opts.minPriority = parseFloat(argv[++i]);
+			case '--max-sequence':
+				opts.maxSequence = parseFloat(argv[++i]);
 				break;
 			case '--agent':
 				opts.agent = argv[++i];
@@ -579,11 +693,11 @@ function parseArgs(argv) {
 	}
 
 	const stagesRaw = opts.stagesRaw ?? PENDING_STAGES.join(',');
-	const stages = parseStages(stagesRaw, opts.minPriority);
+	const stages = parseStages(stagesRaw, opts.maxSequence);
 
 	for (const { stage } of stages) {
-		if (!PENDING_STAGES.includes(stage)) {
-			console.error(`Unknown stage: "${stage}". Valid stages: ${PENDING_STAGES.join(', ')}`);
+		if (!KNOWN_STAGES.includes(stage)) {
+			console.error(`Unknown stage: "${stage}". Valid stages: ${KNOWN_STAGES.join(', ')}`);
 			process.exit(1);
 		}
 	}
@@ -593,6 +707,43 @@ function parseArgs(argv) {
 
 // ─── Main loop ─────────────────────────────────────────────────────────────────
 
+function formatSeq(seq) {
+	return seq == null ? '--' : String(seq);
+}
+
+function formatStageSummary(stages) {
+	return stages.map(({ stage, maxSequence }) =>
+		Number.isFinite(maxSequence) ? `${stage}(<=${maxSequence})` : stage
+	).join(', ');
+}
+
+/** Run migration if needed and commit the result.  Returns whether a commit was made. */
+async function runMigrationIfNeeded(ticketsDir, repoRoot, { noCommit, dryRun }) {
+	if (!await needsMigration(ticketsDir)) return false;
+	console.log('\n  Legacy ticket format detected — running migration to v' + FORMAT_VERSION + '...');
+	const result = await migrate(ticketsDir, { dryRun });
+	if (dryRun) {
+		console.log(`    [dry-run] Would migrate ${result.migrated} ticket(s), rewrite ${result.rewrites} body/bodies.`);
+		console.log('    Note: schedule below uses current (pre-migration) filenames and new ascending-seq');
+		console.log('          ordering — it is REVERSED from what a real run will actually execute. To');
+		console.log('          preview accurately: run `node tess/scripts/migrate.mjs`, commit, then re-dry-run.');
+		return false;
+	}
+	console.log(`    Renamed ${result.renamed} ticket(s); rewrote ${result.rewrites} body/bodies; stamped .version=${FORMAT_VERSION}.`);
+	if (noCommit) return false;
+	try {
+		const status = execSync('git status --porcelain', { cwd: repoRoot, encoding: 'utf-8' }).trim();
+		if (!status) return false;
+		execSync('git add -A', { cwd: repoRoot, encoding: 'utf-8' });
+		execSync(`git commit -m "tess: migrate ticket format to v${FORMAT_VERSION}"`, { cwd: repoRoot, encoding: 'utf-8' });
+		console.log('    Committed migration.');
+		return true;
+	} catch (err) {
+		console.error(`    Migration commit failed: ${err.message}`);
+		return false;
+	}
+}
+
 async function main() {
 	const opts = parseArgs(process.argv.slice(2));
 
@@ -600,35 +751,49 @@ async function main() {
 	const ticketsDir = join(repoRoot, 'tickets');
 	const tessVersion = getTessVersion();
 
+	// Auto-migrate legacy format before snapshotting tickets.
+	await runMigrationIfNeeded(ticketsDir, repoRoot, { noCommit: opts.noCommit, dryRun: opts.dryRun });
+
 	const allTickets = [];
-	for (const { stage, minPriority } of opts.stages) {
-		const tickets = await discoverTickets(ticketsDir, stage, minPriority);
+	for (const { stage, maxSequence } of opts.stages) {
+		const tickets = await discoverTickets(ticketsDir, stage, maxSequence);
 		allTickets.push(...tickets);
 	}
 
 	if (allTickets.length === 0) {
-		const stageSummary = opts.stages.map(({ stage, minPriority }) => `${stage}(>=${minPriority})`).join(', ');
-		console.log(`No tickets found in stages: ${stageSummary}`);
+		console.log(`No tickets found in stages: ${formatStageSummary(opts.stages)}`);
 		return;
 	}
 
-	const stageOrder = new Map(opts.stages.map(({ stage }, i) => [stage, i]));
-	allTickets.sort((a, b) => {
-		const sa = stageOrder.get(a.stage) ?? 999;
-		const sb = stageOrder.get(b.stage) ?? 999;
-		if (sa !== sb) return sa - sb;
-		return b.priority - a.priority;
-	});
+	// Within each stage: topologically sort by prereqs (sequence-asc as tiebreaker).
+	// Across stages: preserve the pipeline order declared via --stages.
+	const byStage = new Map();
+	for (const t of allTickets) {
+		if (!byStage.has(t.stage)) byStage.set(t.stage, []);
+		byStage.get(t.stage).push(t);
+	}
+	const ordered = [];
+	for (const { stage } of opts.stages) {
+		const bucket = byStage.get(stage);
+		if (!bucket) continue;
+		try {
+			ordered.push(...topoSortAndCheck(bucket));
+		} catch (err) {
+			console.error(`\n[runner] ${err.message}`);
+			process.exit(1);
+		}
+	}
+	allTickets.length = 0;
+	allTickets.push(...ordered);
 
 	const totalFound = allTickets.length;
 	if (opts.maxTickets < totalFound) allTickets.splice(opts.maxTickets);
 
 	if (opts.dryRun) {
-		const stageSummary = opts.stages.map(({ stage, minPriority }) => `${stage}(>=${minPriority})`).join(', ');
 		console.log(`\ntess (${tessVersion})`);
-		console.log(`Pending tickets in: ${stageSummary}\n`);
+		console.log(`Pending tickets in: ${formatStageSummary(opts.stages)}\n`);
 		for (const t of allTickets) {
-			console.log(`  [${t.stage.padEnd(9)}] P${t.priority}  ${t.file}`);
+			console.log(`  [${t.stage.padEnd(9)}] seq ${formatSeq(t.sequence).padStart(4)}  ${t.file}`);
 		}
 		const limitNote = totalFound > allTickets.length ? ` (limited to ${allTickets.length} of ${totalFound})` : '';
 		console.log(`\n${allTickets.length} ticket(s) would be processed${limitNote}.`);
@@ -686,7 +851,7 @@ async function main() {
 		const ticketBanner = [
 			`${'─'.repeat(72)}`,
 			`  [${i + 1}/${allTickets.length}] ${ticket.file}`,
-			`  Stage: ${ticket.stage} → ${NEXT_STAGE[ticket.stage]}  |  Priority: ${ticket.priority}`,
+			`  Stage: ${ticket.stage} → ${NEXT_STAGE[ticket.stage]}  |  Sequence: ${formatSeq(ticket.sequence)}`,
 			`  Log: ${currentLog}`,
 			`${'─'.repeat(72)}`,
 		].join('\n');
@@ -695,7 +860,7 @@ async function main() {
 		await writeFile(currentLog, [
 			`Ticket: ${ticket.file}`,
 			`Stage: ${ticket.stage} → ${NEXT_STAGE[ticket.stage]}`,
-			`Priority: ${ticket.priority}`,
+			`Sequence: ${formatSeq(ticket.sequence)}`,
 			`Agent: ${opts.agent}`,
 			`Tess: ${tessVersion}`,
 			`Started: ${new Date().toISOString()}`,

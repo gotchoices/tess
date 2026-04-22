@@ -19,13 +19,14 @@ import { join, dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { constants } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { migrate, FORMAT_VERSION } from './migrate.mjs';
 
 // ─── Configuration ─────────────────────────────────────────────────────────────
 
 const AGENT_RULE_NAMES = ['AGENTS.md', 'CLAUDE.md'];
 const ROOT_AGENT_RULE = 'AGENTS.md';
 
-const TICKET_STAGES = ['fix', 'plan', 'implement', 'review', 'complete', 'blocked'];
+const TICKET_STAGES = ['backlog', 'fix', 'plan', 'implement', 'review', 'complete', 'blocked'];
 
 const TICKETS_GITIGNORE = '.logs/\n.stop\n.in-progress\n';
 
@@ -337,6 +338,14 @@ async function main() {
 	// Step 6: Update .gitignore (symlink mode only)
 	if (mode === 'symlink') {
 		await updateGitignoreForSymlinks(projectRoot);
+	}
+
+	// Step 7: Stamp/migrate ticket format (handles v1 → v2 if needed)
+	const migrateResult = await migrate(join(projectRoot, 'tickets'));
+	if (migrateResult.status === 'stamped') {
+		log(`Stamped tickets/.version = ${FORMAT_VERSION}`);
+	} else if (migrateResult.status === 'migrated') {
+		log(`Migrated ${migrateResult.renamed} ticket(s) to format v${FORMAT_VERSION}.`);
 	}
 
 	console.log('\nDone.\n');

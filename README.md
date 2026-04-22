@@ -8,12 +8,13 @@ Tess lives as its own repository and integrates into any project, giving every r
 
 ## How It Works
 
-Tickets are markdown files organized into stage folders inside a project's `tickets/` directory. Each ticket file is named with a priority prefix (`3-my-feature.md`) and contains a lightweight metadata header followed by architecture notes and TODO items.
+Tickets are markdown files organized into stage folders inside a project's `tickets/` directory. Each ticket file is named with an optional sequence prefix (`3-my-feature.md` — lower runs sooner) and contains a lightweight metadata header followed by architecture notes and TODO items. The sequence prefix is optional; unnumbered tickets follow after all numbered ones in a stage.
 
 A runner script processes tickets one at a time, invoking an AI agent for each. The agent owns the full stage transition: it creates the next-stage file(s), deletes the source ticket, and commits. The runner snapshots the ticket list at startup so each ticket advances exactly one stage per run.
 
 ```
 tickets/
+├── backlog/       # Parked specs — not yet ready to work
 ├── fix/           # Bug triage and reproduction
 ├── plan/          # Feature design and research
 ├── implement/     # Ready for implementation
@@ -22,6 +23,7 @@ tickets/
 ├── blocked/       # Parked — unresolved questions
 ├── AGENTS.md      # Points to tess agent rules
 ├── CLAUDE.md      # Points to tess agent rules
+├── .version       # Ticket format version (managed by tess)
 ├── .logs/         # Agent execution logs (git-ignored)
 └── .in-progress   # Current ticket state for resume (git-ignored)
 ```
@@ -47,7 +49,7 @@ This creates the `tickets/` folder with stage subdirectories and connects tess's
 
 ### 2. Create a ticket
 
-Drop a markdown file into `tickets/fix/` or `tickets/plan/`:
+Drop a markdown file into `tickets/fix/`, `tickets/plan/`, or `tickets/backlog/`:
 
 ```
 tickets/plan/3-user-auth.md
@@ -55,7 +57,7 @@ tickets/plan/3-user-auth.md
 
 ```markdown
 description: Add JWT-based authentication
-dependencies: express, jsonwebtoken
+prereq: session-store, user-model
 files: src/server.ts, src/middleware/auth.ts
 ----
 Design a JWT auth flow with refresh tokens.
@@ -71,20 +73,25 @@ TODO
 - Write integration tests
 ```
 
+`prereq:` lists slugs of other tickets that must land (advance stage) first — no sequence prefix, no `.md` extension, since the sequence can change. The runner topologically sorts each stage to respect these edges and errors on cycles or sequence numbers that violate them.
+
 ### 3. Run the pipeline
 
 ```bash
 # See what would be processed
 node tess/scripts/run.mjs --dry-run
 
-# Process all tickets (priority >= 3)
+# Process all tickets
 node tess/scripts/run.mjs
 
 # Only specific stages
 node tess/scripts/run.mjs --stages fix,implement
 
-# Priority specific at multiple stages
-node tess/scripts/run.mjs --stages fix:1,implement:1,review:1,plan:4
+# Cap each stage to its own max sequence (work only the earliest slots)
+node tess/scripts/run.mjs --stages fix:5,implement:5,review:5,plan:5
+
+# Include backlog for a promote-from-backlog pass (not in the default set)
+node tess/scripts/run.mjs --stages backlog:2
 
 # Use a different agent
 node tess/scripts/run.mjs --agent cursor
@@ -94,10 +101,11 @@ node tess/scripts/run.mjs --agent cursor
 
 | Option | Default | Description |
 |---|---|---|
-| `--min-priority <n>` | `3` | Minimum priority threshold (priorities can include decimals) |
-| `--stages <list>` | `fix,plan,implement,review` | Stages to process, with optional per-stage priority (`review:5,implement:3`) |
+| `--max-sequence <n>` | _unlimited_ | Default sequence ceiling for all stages (sequences can include decimals). Unnumbered tickets are skipped whenever this is finite. |
+| `--stages <list>` | `fix,plan,implement,review` | Stages to process, with optional per-stage max (`review:5,implement:3`). `backlog` is a valid target but excluded from the default set. |
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, or `auggie` |
-| `--no-commit` | — | Skip automatic git commit after each ticket |
+| `--max <n>` | _unlimited_ | Stop after processing at most n tickets |
+| `--no-commit` | — | Skip automatic git commit after each ticket (also skips the migration commit) |
 | `--dry-run` | — | List tickets without invoking the agent |
 
 ### Init Options
@@ -112,13 +120,14 @@ When neither flag is passed, init will prompt interactively. The default is to *
 ## Ticket Lifecycle
 
 ```
-fix/ ──┐
-       ├──→ implement/ ──→ review/ ──→ complete/
-plan/ ─┘
-       ↕
-    blocked/
+backlog/ ─→ plan/ ─┐
+                   ├─→ implement/ ──→ review/ ──→ complete/
+            fix/ ──┘
+                   ↕
+               blocked/
 ```
 
+- **backlog** — Parked specifications that aren't ready to work yet (promoted to `plan/` when ready)
 - **fix** — Reproduce a bug, research cause, output implementation ticket(s)
 - **plan** — Design a feature, resolve questions, output implementation ticket(s)
 - **implement** — Build it, ensure tests pass, output review ticket
@@ -130,13 +139,15 @@ plan/ ─┘
 
 ```markdown
 description: <brief description>
-dependencies: <other tickets, modules, external libraries>
+prereq: <slugs of other tickets that must land first — comma-separated, no prefix, no .md>
 files: <optional list of relevant files>
 ----
 <Architecture description — prose, diagrams, interfaces/types>
 
 <TODO list of sub-tasks, organized by phase if needed>
 ```
+
+**Filename convention:** `<slug>.md` with an optional `<sequence>-` prefix where lower sequence runs sooner (integer or decimal, e.g. `3-my-feature.md` or `3.5-my-feature.md`). The sequence number is not part of the ticket's identity — reference tickets by slug only in `prereq:`.
 
 ## Stopping the Runner
 
@@ -165,8 +176,22 @@ If the incomplete ticket is no longer in the batch (e.g., it was manually moved)
 - **Snapshot-based** — Ticket list captured once per run; newly created tickets wait for the next run
 - **Agent-owned transitions** — The agent creates and deletes ticket files; the runner handles commits
 - **Commit per ticket** — Clean git history for human review between runs
-- **Priority-driven** — Tickets processed highest-priority-first within each stage
+- **Sequence-driven** — Tickets processed lowest-sequence-first within each stage (optional prefix; unnumbered tickets trail numbered ones)
+- **Prereq-aware** — `prereq:` edges topologically sort tickets; conflicts with explicit sequence numbers fail fast
 - **Non-interactive** — Batch processing with human review between runs
+
+## Ticket Format Migration
+
+`tickets/.version` records the ticket format. Legacy format v1 used numeric prefixes to encode *priority* (higher = sooner) and a `dependencies:` header; the current format v2 uses *sequence* (lower = sooner) with a `prereq:` header and slug-only references.
+
+The runner auto-migrates on first invocation against a v1 project: it inverts numbering (preserving execution order), renames `dependencies:` to `prereq:`, strips sequence prefixes from inter-ticket references, and commits the migration as its own commit. The migration is source-controlled — inspect the diff and revert if needed.
+
+To run the migration explicitly (with a dry-run preview):
+
+```bash
+node tess/scripts/migrate.mjs --dry-run
+node tess/scripts/migrate.mjs
+```
 
 ## Web Dashboard
 
