@@ -24,7 +24,8 @@ tickets/
 ├── blocked/       # Parked — unresolved questions
 ├── AGENTS.md      # Points to tess agent rules
 ├── CLAUDE.md      # Points to tess agent rules
-└── .logs/         # Agent execution logs (git-ignored)
+├── .logs/         # Agent execution logs (git-ignored)
+└── .in-progress   # Current ticket state for resume (git-ignored)
 ```
 
 ## Quick Start
@@ -84,6 +85,9 @@ node tess/scripts/run.mjs
 # Only specific stages
 node tess/scripts/run.mjs --stages fix,implement
 
+# Priority specific at multiple stages
+node tess/scripts/run.mjs --stages fix:1,implement:1,review:1,plan:4
+
 # Use a different agent
 node tess/scripts/run.mjs --agent cursor
 ```
@@ -92,7 +96,7 @@ node tess/scripts/run.mjs --agent cursor
 
 | Option | Default | Description |
 |---|---|---|
-| `--min-priority <n>` | `3` | Minimum priority threshold (1-5, 5 = highest) |
+| `--min-priority <n>` | `3` | Minimum priority threshold (priorities can include decimals) |
 | `--stages <list>` | `fix,plan,implement,review` | Stages to process, with optional per-stage priority (`review:5,implement:3`) |
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, `auggie`, or `codex` |
 | `--no-commit` | — | Skip automatic git commit after each ticket |
@@ -136,6 +140,28 @@ files: <optional list of relevant files>
 <TODO list of sub-tasks, organized by phase if needed>
 ```
 
+## Stopping the Runner
+
+Create a `tickets/.stop` file to gracefully halt the runner between tickets:
+
+```bash
+touch tickets/.stop
+```
+
+The runner checks for this file before each ticket. When found, it finishes any in-progress commit, removes the stop file, and exits. The `.stop` file is git-ignored.
+
+## Incomplete Run Recovery
+
+The runner tracks which ticket is currently being processed in `tickets/.in-progress`. If a run is interrupted (disconnection, timeout, crash), the next run detects the incomplete state and prepends a resume note to the ticket file with:
+
+- When and which agent last attempted the ticket
+- A pointer to the prior run's log file
+- Instructions to read the log, assess progress, and resume rather than restart
+
+The agent sees this note as part of the ticket content and can read the log to understand what was already accomplished. The resume note is removed by the agent when it begins working.
+
+If the incomplete ticket is no longer in the batch (e.g., it was manually moved), the runner simply clears the stale state and proceeds normally.
+
 ## Design Philosophy
 
 - **Snapshot-based** — Ticket list captured once per run; newly created tickets wait for the next run
@@ -143,6 +169,28 @@ files: <optional list of relevant files>
 - **Commit per ticket** — Clean git history for human review between runs
 - **Priority-driven** — Tickets processed highest-priority-first within each stage
 - **Non-interactive** — Batch processing with human review between runs
+
+## Web Dashboard
+
+Tess includes a web dashboard for browsing the ticket pipeline, viewing tickets by stage, and reading ticket details.
+
+### Running the Dashboard
+
+```bash
+cd tess/ui
+npm install
+npm run dev
+```
+
+The dashboard starts on `http://localhost:3004` by default.
+
+### Cross-Linking
+
+If a sibling system is detected (e.g., `teamos/` exists at the project root), the dashboard shows a link in the navigation bar. Both teamos and tess auto-detect each other and display reciprocal links. Override the project root with the `TESS_PROJECT_ROOT` environment variable:
+
+```bash
+TESS_PROJECT_ROOT=/path/to/project npm run dev
+```
 
 ## Further Reading
 

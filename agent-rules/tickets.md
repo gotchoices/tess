@@ -1,4 +1,4 @@
-The tickets/ folder at the project root contains fix, plan, implement, review, blocked, and complete subfolders.  Each ticket is an md file under these folders, having a descriptive filename prefixed with a 1-5 priority (5 being highest priority).
+The tickets/ folder at the project root contains fix, plan, implement, review, blocked, and complete subfolders.  Each ticket is an md file under these folders, having a descriptive filename prefixed with a 1-5 priority (any number and can contain decimals).
 
 You own the full stage transition.  When you are done:
   1. Create the next-stage output file(s) in the appropriate tickets/ subfolder.
@@ -9,11 +9,13 @@ You own the full stage transition.  When you are done:
 
 Stages:
 - Fix - for bugs.  Start with a reproducing test case, or a trace modality if the issue is intermittent.  Once reproduced and researched, form one or more hypotheses as to the cause and correction.  Output is one or more ticket file(s) in *implement/* (or blocked).  References should be made to key files and documentation.  TODO tasks should be at the bottom of the ticket file(s).  Split into multiple tickets if warranted.
-- Plan - for features and enhancements.  After research, provided no major questions/options remain, output is one or more design and implement/ tickets.  References should be made to key files and documentation.  TODO tasks should be at the bottom of the ticket file(s).  Don't switch to your agent's "planning mode" when working these tickets - that's too meta.  In the spirit of TDD, your plan may include bullets describing key tests that might come in later phases, and what the expected outputs should be.
+- Plan - specs for features and enhancements (not already designed/planned).  After research, provided no major questions/options remain, output is one or more plan and implement/ tickets.  References should be made to key files and documentation.  TODO tasks should be at the bottom of the ticket file(s).  Don't switch to your agent's "planning mode" when working these tickets - that's too meta.  In the spirit of TDD, your plan may include bullets describing key tests that might come in later phases, and what the expected outputs should be.
 - Implement - These tickets are ready for implementation (fix, build, update, ...whatever the ticket specifies).  If more than one agent would be useful, without stepping on toes, spawn sub-agents.  Be sure the build and tests pass when done.  Output is a distilled summary of the ticket, with emphasis on use cases for testing, validation and usage into the review/ folder.
-- Review - Inspect the code against all aspect-oriented criteria (SPP, DRY, modular, scalable, maintainable, performant, etc.).  Ensure there are tests for the ticket, and that the build and tests pass.  Try to look only at the interface points for the ticket initially to avoid biasing the tests towards the implementation.  Ensure that relevant docs are up-to-date.  Output to complete/ once the tests pass and code is solid.
+- Review - Inspect the code against all aspect-oriented criteria (SPP, DRY, modular, scalable, maintainable, performant, resource cleanup, etc.).  Ensure there are tests for the ticket, and that the build and tests pass.  Try to look only at the interface points for the ticket initially to avoid biasing the tests towards the implementation.  Ensure that relevant docs are up-to-date.  Output to complete/ once the tests pass and code is solid.
 - Blocked - This is where to put tickets with unresolved questions, important decisions, or unclear requirements.  Include the question(s) and/or discussion of tradeoffs.
 - Complete - Archived summary of finished work.  Contains briefly what was built, key files, testing notes, and usage information.
+
+If the ticket contains a `<!-- resume-note -->` block, a prior agent run was interrupted before completion.  Read the referenced log file to understand what was already done, check the current codebase state for partial changes, and resume from where it left off.  If the prior run failed on a specific tool call or timed out, be careful not to just launch into the same situation.
 
 Don't combine tickets unless they are tightly related.
 
@@ -23,14 +25,15 @@ Efficiency tips:
 - Use the appropriate section of AGENTS.md for the project layout — don't guess paths.
 - Run tests and type checks during implement, not just during review.
 
-For new tickets: put a new file into fix/ or plan/ but focus on the description/requirements of the issue or feature, expected behavior, use case, etc.  Don't do planning, don't add TODO items, or get ahead, unless you already possess key information that would be useful.
+For new tickets: put a new file into fix/ or plan/ but focus on the **description, requirements, and specifications** of the issue or feature, expected behavior, use case, etc.  **Don't do planning, don't add TODO items, or get ahead**, unless you already possess key information that would be useful.  Think use cases, expectations, and specifications.
 
 Ticket file template:
 
+----
 description: <brief description>
 dependencies: <needed other tickets, modularity points, external libraries>
 files: <list key files touched/relevant — saves the next agent significant discovery time>
 ----
 <timeless architecture description focused on prose, diagrams, and interfaces/types/schema>
 
-<if applicable: TODO list of tasks - avoid numbering of tasks, besides phases>
+<if implement: TODO list of tasks - avoid numbering of tasks, besides phases>

@@ -27,6 +27,7 @@
  *                          --stages review:5,implement:3
  *                          --stages fix:4,implement,review:5  (uses --min-priority for bare names)
  *   --agent <name>       Agent adapter to use: claude | auggie | cursor | codex  (default: claude)
+ *   --max <n>            Stop after processing at most n tickets  (default: unlimited)
  *   --no-commit          Skip automatic git commit after each ticket
  *   --dry-run            List tickets that would be processed, don't invoke agent
  *   --help               Show this help
@@ -45,6 +46,9 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TESS_ROOT = join(__dirname, '..');
+
+const STOP_FILE = '.stop';              // create tickets/.stop to halt the runner
+const IN_PROGRESS_FILE = '.in-progress';  // tracks the currently-running ticket for resume
 
 function getTessVersion() {
 	try {
@@ -192,25 +196,27 @@ function formatCodexJsonLine(line) {
 const agents = {
 	claude: (instructionFile, _prompt, { stage }) => {
 		const effort = 'high';
-		return {
-			cmd: 'claude',
-			args: [
-				'-p',
-				'--dangerously-skip-permissions',
-				'--verbose',
-				'--no-session-persistence',
-				'--output-format', 'stream-json',
-				'--effort', effort,
-				'--append-system-prompt-file', instructionFile,
-				'Work the ticket as described in the appended system prompt.',
-			],
-			formatStream: formatClaudeJsonLine,
-		};
+		const args = [
+			'-p',
+			'--dangerously-skip-permissions',
+			'--verbose',
+			'--no-session-persistence',
+			'--output-format', 'stream-json',
+			'--effort', effort,
+			'--append-system-prompt-file', instructionFile,
+			'Work the ticket as described in the appended system prompt.',
+		];
+		// On Windows, spawn() with shell:false cannot resolve .cmd/.ps1 shims
+		// installed by npm. Use shellCmd so spawn() runs with shell:true instead.
+		if (process.platform === 'win32') {
+			const escaped = args.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ');
+			return { shellCmd: `claude ${escaped}`, formatStream: formatClaudeJsonLine };
+		}
+		return { cmd: 'claude', args, formatStream: formatClaudeJsonLine };
 	},
 
 	auggie: (instructionFile, _prompt) => ({
-		cmd: 'auggie',
-		args: ['--print', '--instruction', instructionFile],
+		shellCmd: `auggie --print --instruction "${instructionFile}"`,
 	}),
 
 	codex: (instructionFile, _prompt, { cwd }) => {
@@ -306,6 +312,92 @@ function logPath(logsDir, ticket) {
 	const name = ticket.file.replace(/\.md$/, '');
 	const ts = new Date().toISOString().replace(/[:.]/g, '-');
 	return join(logsDir, `${name}.${ticket.stage}.${ts}.log`);
+}
+
+// ─── Stop file ─────────────────────────────────────────────────────────────────
+// Create tickets/.stop to gracefully halt the runner between tickets.
+
+async function pathExists(p) {
+	try { await access(p, constants.F_OK); return true; } catch { return false; }
+}
+
+async function checkStop(ticketsDir) {
+	const stopFile = join(ticketsDir, STOP_FILE);
+	if (await pathExists(stopFile)) {
+		await unlink(stopFile).catch(() => {});
+		return true;
+	}
+	return false;
+}
+
+// ─── In-progress state ────────────────────────────────────────────────────────
+// Before each ticket, write tickets/.in-progress with ticket info and log path.
+// On success, delete it.  On next run, read and clear any leftover state so the
+// agent can be told to resume from a prior incomplete run.
+
+function inProgressPath(ticketsDir) {
+	return join(ticketsDir, IN_PROGRESS_FILE);
+}
+
+/** Read and clear any prior in-progress state. Returns parsed object or null. */
+async function readAndClearInProgress(ticketsDir) {
+	const p = inProgressPath(ticketsDir);
+	try {
+		const raw = await readFile(p, 'utf-8');
+		await unlink(p).catch(() => {});
+		return JSON.parse(raw);
+	} catch {
+		return null;
+	}
+}
+
+/** Write in-progress state before starting a ticket. */
+async function writeInProgress(ticketsDir, ticket, logFile, agent) {
+	const state = {
+		file: ticket.file,
+		stage: ticket.stage,
+		priority: ticket.priority,
+		path: ticket.path,
+		logFile,
+		agent,
+		startedAt: new Date().toISOString(),
+	};
+	await writeFile(inProgressPath(ticketsDir), JSON.stringify(state, null, '\t'), 'utf-8');
+}
+
+/** Clear in-progress state after successful completion. */
+async function clearInProgress(ticketsDir) {
+	await unlink(inProgressPath(ticketsDir)).catch(() => {});
+}
+
+const RESUME_MARKER_START = '<!-- resume-note -->';
+const RESUME_MARKER_END = '<!-- /resume-note -->';
+
+/** Build a resume note to prepend to a ticket file. */
+function buildResumeNote(priorRun) {
+	return [
+		RESUME_MARKER_START,
+		'RESUME: A prior agent run on this ticket did not complete.',
+		`  Prior run: ${priorRun.startedAt} (agent: ${priorRun.agent})`,
+		`  Log file: ${priorRun.logFile}`,
+		'Read the log to see what was done. Resume where it left off.',
+		'If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.',
+		RESUME_MARKER_END,
+		'',
+	].join('\n');
+}
+
+/** Prepend a resume note to a ticket file. Idempotent — replaces any existing note. */
+async function addResumeNote(ticketPath, priorRun) {
+	let content = await readFile(ticketPath, 'utf-8');
+	// Strip any existing resume note
+	const startIdx = content.indexOf(RESUME_MARKER_START);
+	const endIdx = content.indexOf(RESUME_MARKER_END);
+	if (startIdx !== -1 && endIdx !== -1) {
+		content = content.slice(0, startIdx) + content.slice(endIdx + RESUME_MARKER_END.length).replace(/^\n/, '');
+	}
+	const note = buildResumeNote(priorRun);
+	await writeFile(ticketPath, note + content, 'utf-8');
 }
 
 // ─── Agent invocation ──────────────────────────────────────────────────────────
@@ -437,6 +529,7 @@ async function runAgent(agentName, prompt, cwd, logFile, { stage } = {}) {
 			});
 		});
 	} finally {
+		process.stdout.write('\x1b[0m');
 		await unlink(instructionFile).catch(() => {});
 	}
 }
@@ -477,10 +570,11 @@ function printHelp() {
 		'  --stages <list>      Comma-separated stages, optionally with per-stage min priority',
 		'                       as  stage:n  (default: fix,plan,implement,review)',
 		'                       e.g.  --stages review:5,implement:3,fix',
-		'  --agent <name>       claude | auggie | cursor | codex      (default: claude)',
-		'  --no-commit          Skip automatic git commit after each ticket',
-		'  --dry-run            List tickets without invoking agent',
-		'  --help               Show this help',
+	'  --agent <name>       claude | auggie | cursor | codex      (default: claude)',
+	'  --max <n>            Stop after at most n tickets          (default: unlimited)',
+	'  --no-commit          Skip automatic git commit after each ticket',
+	'  --dry-run            List tickets without invoking agent',
+	'  --help               Show this help',
 	];
 	console.log(lines.join('\n'));
 }
@@ -503,6 +597,7 @@ function parseArgs(argv) {
 		agent: 'claude',
 		dryRun: false,
 		noCommit: false,
+		maxTickets: Infinity,
 		stagesRaw: null,
 	};
 
@@ -520,6 +615,9 @@ function parseArgs(argv) {
 				break;
 			case '--no-commit':
 				opts.noCommit = true;
+				break;
+			case '--max':
+				opts.maxTickets = parseInt(argv[++i], 10);
 				break;
 			case '--stages':
 				opts.stagesRaw = argv[++i];
@@ -572,6 +670,9 @@ async function main() {
 		return b.priority - a.priority;
 	});
 
+	const totalFound = allTickets.length;
+	if (opts.maxTickets < totalFound) allTickets.splice(opts.maxTickets);
+
 	if (opts.dryRun) {
 		const stageSummary = opts.stages.map(({ stage, minPriority }) => `${stage}(>=${minPriority})`).join(', ');
 		console.log(`\ntess (${tessVersion})`);
@@ -579,14 +680,35 @@ async function main() {
 		for (const t of allTickets) {
 			console.log(`  [${t.stage.padEnd(9)}] P${t.priority}  ${t.file}`);
 		}
-		console.log(`\n${allTickets.length} ticket(s) would be processed.`);
+		const limitNote = totalFound > allTickets.length ? ` (limited to ${allTickets.length} of ${totalFound})` : '';
+		console.log(`\n${allTickets.length} ticket(s) would be processed${limitNote}.`);
 		return;
 	}
 
+	// ── Read prior in-progress state (incomplete previous run) ──
+	const priorRun = await readAndClearInProgress(ticketsDir);
+	if (priorRun) {
+		console.log(`\n  Prior incomplete run detected: ${priorRun.file} (${priorRun.stage})`);
+		console.log(`    Started: ${priorRun.startedAt}  |  Log: ${priorRun.logFile}`);
+		// If the ticket is still in the batch, annotate it with a resume note
+		const match = allTickets.find(t => t.file === priorRun.file && t.stage === priorRun.stage);
+		if (match) {
+			try {
+				await addResumeNote(match.path, priorRun);
+				console.log(`    Added resume note to ${match.file}`);
+			} catch (err) {
+				console.warn(`    Failed to add resume note: ${err.message}`);
+			}
+		} else {
+			console.log(`    Ticket no longer in batch — skipping resume note.`);
+		}
+	}
+
+	const limitNote = totalFound > allTickets.length ? `, limited to ${allTickets.length}` : '';
 	const banner = [
 		`${'═'.repeat(72)}`,
 		`  tess (${tessVersion})`,
-		`  Snapshotted ${allTickets.length} ticket(s) to process.`,
+		`  Snapshotted ${totalFound} ticket(s)${limitNote}.`,
 		`${'═'.repeat(72)}`,
 	].join('\n');
 	console.log(banner);
@@ -594,7 +716,21 @@ async function main() {
 	const logsDir = await ensureLogsDir(ticketsDir);
 
 	for (let i = 0; i < allTickets.length; i++) {
+		if (await checkStop(ticketsDir)) {
+			console.log('\n⏹  Stop file detected — halting before next ticket.');
+			break;
+		}
+
 		const ticket = allTickets[i];
+
+		// Guard: a previous agent may have already moved this ticket
+		try {
+			await access(ticket.path, constants.R_OK);
+		} catch {
+			console.log(`\n  [${i + 1}/${allTickets.length}] Skipped (already moved): ${ticket.file}\n`);
+			continue;
+		}
+
 		const currentLog = logPath(logsDir, ticket);
 
 		const ticketBanner = [
@@ -617,6 +753,9 @@ async function main() {
 			'',
 		].join('\n'));
 
+		// Track this ticket as in-progress
+		await writeInProgress(ticketsDir, ticket, currentLog, opts.agent);
+
 		const prompt = await buildPrompt(ticket, ticketsDir);
 		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, { stage: ticket.stage });
 
@@ -626,6 +765,9 @@ async function main() {
 			console.error('Stopping to avoid cascading failures. Re-run to retry.');
 			process.exit(exitCode);
 		}
+
+		// Ticket completed — clear in-progress state
+		await clearInProgress(ticketsDir);
 
 		if (!opts.noCommit && commitTicket(ticket, repoRoot)) {
 			console.log(`  Committed.`);
@@ -638,7 +780,7 @@ async function main() {
 		}
 	}
 
-	console.log(`\nDone — ${allTickets.length} ticket(s) processed.`);
+	console.log(`\nDone.`);
 }
 
 main().catch((err) => {
