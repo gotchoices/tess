@@ -207,7 +207,7 @@ function formatCodexJsonLine(line) {
 
 const agents = {
 	claude: (instructionFile, _prompt, { stage }) => {
-		const effort = 'high';
+		const effort = 'xhigh';
 		const args = [
 			'-p',
 			'--dangerously-skip-permissions',
