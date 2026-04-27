@@ -90,10 +90,10 @@ node tess/scripts/run.mjs
 node tess/scripts/run.mjs --stages fix,implement
 
 # Cap each stage to its own max sequence (work only the earliest slots)
-node tess/scripts/run.mjs --stages fix:5,implement:5,review:5,plan:5
+node tess/scripts/run.mjs --stages fix:15,plan:15,implement:12,review:10
 
 # Include backlog for a promote-from-backlog pass (not in the default set)
-node tess/scripts/run.mjs --stages backlog:2
+node tess/scripts/run.mjs --stages backlog:15
 
 # Use a different agent
 node tess/scripts/run.mjs --agent cursor
@@ -104,7 +104,7 @@ node tess/scripts/run.mjs --agent cursor
 | Option | Default | Description |
 |---|---|---|
 | `--max-sequence <n>` | _unlimited_ | Default sequence ceiling for all stages (sequences can include decimals). Unnumbered tickets are skipped whenever this is finite. |
-| `--stages <list>` | `fix,plan,implement,review` | Stages to process, with optional per-stage max (`review:5,implement:3`). `backlog` is a valid target but excluded from the default set. |
+| `--stages <list>` | `fix,plan,implement,review` | Stages to process, with optional per-stage max (`implement:12,review:10`). `backlog` is a valid target but excluded from the default set. |
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, `auggie`, or `codex` |
 | `--max <n>` | _unlimited_ | Stop after processing at most n tickets |
 | `--no-commit` | — | Skip automatic git commit after each ticket (also skips the migration commit) |

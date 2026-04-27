@@ -1,3 +1,15 @@
+Tickets flow forward through stages:
+
+```
+  backlog/ ─→ plan/ ─┐
+                     ├─→ implement/ ──→ review/ ──→ complete/
+              fix/ ──┘
+                     ↕
+                 blocked/
+```
+
+Each stage's job is to advance the ticket to the next stage. Tickets only move sideways into `blocked/` (and back out once unblocked); they never flow backward. In particular, `review/` is **after** `implement/` — a review ticket exists because code has already been written and now needs a code-review pass.
+
 The tickets/ folder at the project root contains `backlog`, `fix`, `plan`, `implement`, `review`, `blocked`, and `complete` subfolders.  Each ticket is a markdown file inside one of these folders.
 
 Filename convention: `<slug>.md`, optionally prefixed with a numeric **sequence** (integer or decimal) — `3-my-ticket.md` or `3.5-my-ticket.md`.  **Lower sequence runs sooner.**  The prefix is optional; unnumbered tickets (`my-ticket.md`) follow after all numbered ones in the same stage.  The sequence number is not part of the ticket's identity — when referencing another ticket, use only its slug (`my-ticket`), not the full filename.
@@ -16,7 +28,7 @@ Stages:
 - Fix - for bugs.  Start with a reproducing test case, or a trace modality if the issue is intermittent.  Once reproduced and researched, form one or more hypotheses as to the cause and correction.  Output is one or more ticket file(s) in *implement/* (or blocked/backlog).  References should be made to key files and documentation.  TODO tasks should be at the bottom of the ticket file(s).  Split into multiple tickets if warranted.
 - Plan - specs for features and enhancements (not already designed/planned).  After research, provided no major questions/options remain, output is one or more plan and implement/ tickets.  When you discover adjacent work that is out of scope for the current pass, park it in `backlog/` rather than growing the current ticket.  References should be made to key files and documentation.  TODO tasks should be at the bottom of the ticket file(s).  Don't switch to your agent's "planning mode" when working these tickets - that's too meta.  In the spirit of TDD, your plan may include bullets describing key tests that might come in later phases, and what the expected outputs should be.
 - Implement - These tickets are ready for implementation (fix, build, update, ...whatever the ticket specifies).  If more than one agent would be useful, without stepping on toes, spawn sub-agents.  Be sure the build and tests pass when done.  Output is a distilled summary of the ticket, with emphasis on use cases for testing, validation and usage into the review/ folder.
-- Review - Inspect the code against all aspect-oriented criteria (SPP, DRY, modular, scalable, maintainable, performant, resource cleanup, etc.).  Ensure there are tests for the ticket, and that the build and tests pass.  Try to look only at the interface points for the ticket initially to avoid biasing the tests towards the implementation.  Ensure that relevant docs are up-to-date.  Output to complete/ once the tests pass and code is solid.
+- Review - Code review and follow up for the completed implementation.  Inspect the code against all aspect-oriented criteria (SPP, DRY, modular, scalable, maintainable, performant, resource cleanup, etc.).  Ensure there are tests for the ticket, and that the build and tests pass.  Try to look only at the interface points for the ticket initially to avoid biasing the tests towards the implementation.  Ensure that relevant docs are up-to-date.  Output to complete/ once the tests pass and code is solid.
 - Blocked - This is where to put tickets with unresolved questions, important decisions, or unclear requirements.  Include the question(s) and/or discussion of tradeoffs.
 - Complete - Archived summary of finished work.  Contains briefly what was built, key files, testing notes, and usage information.
 
