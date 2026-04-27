@@ -535,6 +535,30 @@ async function buildPrompt(ticket, ticketsDir) {
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes with no output → assume hung
 
+/**
+ * Force-kill a child process and all its descendants.
+ *
+ * On Windows we spawn agents with `shell: true`, which means `child` is
+ * `cmd.exe` wrapping the actual agent (often a Node process behind a `.cmd`
+ * shim). A plain `child.kill()` only terminates cmd.exe — the agent is
+ * orphaned, keeps running, and may hold log/prompt files or pipes open.
+ * `taskkill /T /F` walks the process tree and force-kills every descendant.
+ * On POSIX, `child.kill('SIGKILL')` is sufficient because the runner does
+ * not detach into its own process group.
+ */
+function killTree(child) {
+	if (!child || child.killed || child.exitCode != null) return;
+	if (process.platform === 'win32') {
+		try {
+			execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: 'ignore' });
+		} catch {
+			try { child.kill('SIGKILL'); } catch { /* already gone */ }
+		}
+	} else {
+		try { child.kill('SIGKILL'); } catch { /* already gone */ }
+	}
+}
+
 /** Write prompt to a temp instruction file, spawn the agent, tee output to log. Returns exit code. */
 async function runAgent(agentName, prompt, cwd, logFile, { stage } = {}) {
 	const adapter = agents[agentName];
@@ -576,7 +600,7 @@ async function runAgent(agentName, prompt, cwd, logFile, { stage } = {}) {
 					const msg = `\n[runner] Agent idle for ${IDLE_TIMEOUT_MS / 60000}min — killing as hung.\n`;
 					process.stderr.write(msg);
 					logStream.write(msg);
-					child.kill();
+					killTree(child);
 				}, IDLE_TIMEOUT_MS);
 			}
 
@@ -601,7 +625,7 @@ async function runAgent(agentName, prompt, cwd, logFile, { stage } = {}) {
 						const msg = `\n[runner] Agent sent result but didn't exit — killing stale process.\n`;
 						process.stderr.write(msg);
 						logStream.write(msg);
-						child.kill();
+						killTree(child);
 					}, 30_000);
 				}
 			}
