@@ -42,6 +42,7 @@ Efficiency tips:
 - When spawning sub-agents, give them specific file paths rather than asking them to explore.
 - Use the appropriate section of AGENTS.md for the project layout — don't guess paths.
 - Run tests and type checks during implement, not just during review.
+- Long-running validation: the runner kills any agent that produces no output for 10 minutes (idle timeout).  If a command might run that long, **stream its output** (e.g. `yarn foo 2>&1 | tee /tmp/foo.log`) — never `> /tmp/foo.log 2>&1`, since silent redirection lets the idle timer expire and the run is lost.  If a single command's wall-clock routinely exceeds ~10 minutes (full bench sweeps, exhaustive fuzz/property runs, etc.), it is **not agent-runnable**: skip it inside the ticket, document the deferral, and let a human or CI handle it out-of-band.
 
 For new tickets: put a new file into `fix/` or `plan/` (or `backlog/` if it's a future concern rather than active work) but focus on the **description, requirements, and specifications** of the issue or feature, expected behavior, use case, etc.  **Don't do planning, don't add TODO items, or get ahead**, unless you already possess key information that would be useful.  Think use cases, expectations, and specifications.
 
