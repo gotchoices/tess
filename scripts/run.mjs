@@ -534,6 +534,7 @@ async function buildPrompt(ticket, ticketsDir) {
 }
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes with no output → assume hung
+const MAX_TIMEOUT_RETRIES = 1;          // retry a ticket once on idle timeout before moving on
 
 /**
  * Force-kill a child process and all its descendants.
@@ -584,19 +585,21 @@ async function runAgent(agentName, prompt, cwd, logFile, { stage } = {}) {
 			let idleTimer = null;
 			let resultExitCode = null;
 			let settled = false;
+			let timedOut = false;
 
 			function settle(code) {
 				if (settled) return;
 				settled = true;
 				clearTimeout(idleTimer);
 				logStream.end(`\n[runner] Agent exited with code ${code}\n`);
-				logStream.once('finish', () => resolve(code));
-				logStream.once('error', () => resolve(code));
+				logStream.once('finish', () => resolve({ exitCode: code, timedOut }));
+				logStream.once('error', () => resolve({ exitCode: code, timedOut }));
 			}
 
 			function resetIdleTimer() {
 				if (idleTimer) clearTimeout(idleTimer);
 				idleTimer = setTimeout(() => {
+					timedOut = true;
 					const msg = `\n[runner] Agent idle for ${IDLE_TIMEOUT_MS / 60000}min — killing as hung.\n`;
 					process.stderr.write(msg);
 					logStream.write(msg);
@@ -904,7 +907,7 @@ async function main() {
 
 	const logsDir = await ensureLogsDir(ticketsDir);
 
-	for (let i = 0; i < allTickets.length; i++) {
+	ticketLoop: for (let i = 0; i < allTickets.length; i++) {
 		if (await checkStop(ticketsDir)) {
 			console.log('\n⏹  Stop file detected — halting before next ticket.');
 			break;
@@ -920,49 +923,123 @@ async function main() {
 			continue;
 		}
 
-		const currentLog = logPath(logsDir, ticket);
+		let attempt = 0;
+		let lastResult = null;
+		let lastLogFile = null;
+		let lastStartedAt = null;
+		let success = false;
 
-		const ticketBanner = [
-			`${'─'.repeat(72)}`,
-			`  [${i + 1}/${allTickets.length}] ${ticket.file}`,
-			`  Stage: ${ticket.stage} → ${NEXT_STAGE[ticket.stage]}  |  Sequence: ${formatSeq(ticket.sequence)}`,
-			`  Log: ${currentLog}`,
-			`${'─'.repeat(72)}`,
-		].join('\n');
-		console.log(ticketBanner);
+		while (attempt <= MAX_TIMEOUT_RETRIES) {
+			// On retry, prepend a resume note pointing at the prior attempt's log so
+			// the agent can read what it had been doing and resume rather than restart.
+			if (attempt > 0) {
+				try {
+					await access(ticket.path, constants.R_OK);
+				} catch {
+					console.log(`  Ticket no longer present — not retrying.`);
+					break;
+				}
+				try {
+					await addResumeNote(ticket.path, {
+						startedAt: lastStartedAt,
+						agent: opts.agent,
+						logFile: lastLogFile,
+					});
+					console.log(`\n  Retrying after timeout (attempt ${attempt + 1}/${MAX_TIMEOUT_RETRIES + 1}) — resume note added.`);
+				} catch (err) {
+					console.warn(`  Failed to add resume note: ${err.message}`);
+				}
+				if (await checkStop(ticketsDir)) {
+					console.log('\n⏹  Stop file detected — halting before retry.');
+					break ticketLoop;
+				}
+			}
 
-		await writeFile(currentLog, [
-			`Ticket: ${ticket.file}`,
-			`Stage: ${ticket.stage} → ${NEXT_STAGE[ticket.stage]}`,
-			`Sequence: ${formatSeq(ticket.sequence)}`,
-			`Agent: ${opts.agent}`,
-			`Tess: ${tessVersion}`,
-			`Started: ${new Date().toISOString()}`,
-			'═'.repeat(72),
-			'',
-		].join('\n'));
+			const currentLog = logPath(logsDir, ticket);
+			const startedAt = new Date().toISOString();
+			lastLogFile = currentLog;
+			lastStartedAt = startedAt;
 
-		// Track this ticket as in-progress
-		await writeInProgress(ticketsDir, ticket, currentLog, opts.agent);
+			const attemptLabel = attempt > 0 ? `  (retry ${attempt})` : '';
+			const ticketBanner = [
+				`${'─'.repeat(72)}`,
+				`  [${i + 1}/${allTickets.length}] ${ticket.file}${attemptLabel}`,
+				`  Stage: ${ticket.stage} → ${NEXT_STAGE[ticket.stage]}  |  Sequence: ${formatSeq(ticket.sequence)}`,
+				`  Log: ${currentLog}`,
+				`${'─'.repeat(72)}`,
+			].join('\n');
+			console.log(ticketBanner);
 
-		const prompt = await buildPrompt(ticket, ticketsDir);
-		const exitCode = await runAgent(opts.agent, prompt, repoRoot, currentLog, { stage: ticket.stage });
+			await writeFile(currentLog, [
+				`Ticket: ${ticket.file}`,
+				`Stage: ${ticket.stage} → ${NEXT_STAGE[ticket.stage]}`,
+				`Sequence: ${formatSeq(ticket.sequence)}`,
+				`Agent: ${opts.agent}`,
+				`Tess: ${tessVersion}`,
+				`Started: ${startedAt}`,
+				`Attempt: ${attempt + 1}${attempt > 0 ? ' (retry after timeout)' : ''}`,
+				'═'.repeat(72),
+				'',
+			].join('\n'));
 
-		if (exitCode !== 0) {
-			console.error(`\nAgent exited with code ${exitCode} on ticket: ${ticket.file}`);
-			console.error(`Log: ${currentLog}`);
+			await writeInProgress(ticketsDir, ticket, currentLog, opts.agent);
+
+			const prompt = await buildPrompt(ticket, ticketsDir);
+			lastResult = await runAgent(opts.agent, prompt, repoRoot, currentLog, { stage: ticket.stage });
+
+			if (lastResult.exitCode === 0) {
+				success = true;
+				break;
+			}
+
+			if (lastResult.timedOut && attempt < MAX_TIMEOUT_RETRIES) {
+				console.error(`\n  Ticket timed out — will retry with resume note.`);
+				attempt++;
+				continue;
+			}
+
+			break;
+		}
+
+		if (success) {
+			await clearInProgress(ticketsDir);
+
+			if (!opts.noCommit && commitTicket(ticket, repoRoot)) {
+				console.log(`  Committed.`);
+			}
+
+			console.log(`\n  [${i + 1}/${allTickets.length}] Complete: ${ticket.file}\n`);
+		} else if (lastResult?.timedOut) {
+			// All timeout retries exhausted. Annotate the ticket with a resume note
+			// pointing at the latest log so the next run picks up where this one
+			// left off, then continue to the next ticket so the runner doesn't
+			// abandon the queue when stepping away.
+			try {
+				await access(ticket.path, constants.R_OK);
+				await addResumeNote(ticket.path, {
+					startedAt: lastStartedAt,
+					agent: opts.agent,
+					logFile: lastLogFile,
+				});
+				if (!opts.noCommit) {
+					try {
+						execSync('git add -A', { cwd: repoRoot, encoding: 'utf-8' });
+						execSync(`git commit -m "tess: timed out on ${ticket.slug} — added resume note"`, { cwd: repoRoot, encoding: 'utf-8' });
+					} catch (err) {
+						console.warn(`    Failed to commit resume note: ${err.message}`);
+					}
+				}
+			} catch { /* ticket file may have been moved */ }
+			await clearInProgress(ticketsDir);
+			console.error(`\n  [${i + 1}/${allTickets.length}] Timed out ${attempt + 1} time(s) on: ${ticket.file}`);
+			console.error(`    Latest log: ${lastLogFile}`);
+			console.error(`    Resume note added — re-run tess to pick up where it left off.\n`);
+		} else if (lastResult) {
+			console.error(`\nAgent exited with code ${lastResult.exitCode} on ticket: ${ticket.file}`);
+			console.error(`Log: ${lastLogFile}`);
 			console.error('Stopping to avoid cascading failures. Re-run to retry.');
-			process.exit(exitCode);
+			process.exit(lastResult.exitCode);
 		}
-
-		// Ticket completed — clear in-progress state
-		await clearInProgress(ticketsDir);
-
-		if (!opts.noCommit && commitTicket(ticket, repoRoot)) {
-			console.log(`  Committed.`);
-		}
-
-		console.log(`\n  [${i + 1}/${allTickets.length}] Complete: ${ticket.file}\n`);
 
 		if (i < allTickets.length - 1) {
 			await new Promise(r => setTimeout(r, 500));

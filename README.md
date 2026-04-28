@@ -173,6 +173,10 @@ The agent sees this note as part of the ticket content and can read the log to u
 
 If the incomplete ticket is no longer in the batch (e.g., it was manually moved), the runner simply clears the stale state and proceeds normally.
 
+### Idle-timeout retries
+
+If the agent goes idle for too long (10 minutes with no output), the runner kills it and retries the same ticket once with a resume note pointing at the prior run's log. If the retry also times out, the runner commits a resume note to the ticket and moves on to the next one rather than aborting the whole batch — so an unattended run can finish the rest of the queue and you can pick up the timed-out ticket on the next invocation.
+
 ## Design Philosophy
 
 - **Snapshot-based** — Ticket list captured once per run; newly created tickets wait for the next run
