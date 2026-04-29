@@ -55,6 +55,42 @@ export function parsePrereqs(content) {
 		.map(ref => ref.replace(/^\d+(?:\.\d+)?-/, '').replace(/\.md$/, ''));
 }
 
+/**
+ * Look for a ticket with the given slug across the named stage folders.
+ * Returns the first match (in the order `stages` was passed) as a fully-
+ * populated ticket object, or null if no match exists.
+ *
+ * Used by the chase strategy after each stage transition to locate the
+ * agent's same-slug successor — by name rather than by filesystem diff,
+ * since other agents may be modifying tickets/ in parallel.
+ */
+export async function findTicketBySlug(ticketsDir, slug, stages) {
+	for (const stage of stages) {
+		const stageDir = join(ticketsDir, stage);
+		let entries;
+		try {
+			entries = await readdir(stageDir);
+		} catch {
+			continue;  // stage dir doesn't exist
+		}
+		for (const entry of entries) {
+			if (!entry.endsWith('.md')) continue;
+			if (parseSlug(entry) !== slug) continue;
+			const path = join(stageDir, entry);
+			const content = await readFile(path, 'utf-8');
+			return {
+				file: entry,
+				path,
+				stage,
+				sequence: parseSequence(entry),
+				slug,
+				prereqs: parsePrereqs(content),
+			};
+		}
+	}
+	return null;
+}
+
 /** Discover all .md ticket files in a stage folder, filtered by max sequence. */
 export async function discoverTickets(ticketsDir, stage, maxSequence) {
 	const stageDir = join(ticketsDir, stage);

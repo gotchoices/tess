@@ -60,6 +60,32 @@ The pipeline stages, adapted from the original optimystic system:
 
 ---
 
+## Traversal Strategies
+
+The runner is split into two layers: a fixed pipeline (snapshot → topo-sort → agent invocation → commit) and a pluggable **strategy** that decides which ticket runs next. Strategies live in `tess/scripts/lib/strategies/` and share the same per-ticket runner (`lib/run-ticket.mjs`), so they cannot diverge on idle-timeout retries, in-progress state, or commit cadence — only on traversal order.
+
+### `batch` — stage-major
+
+The original behavior: drain every selected stage in `--stages` order, advancing each ticket by exactly one stage. Best for steady throughput; each run produces a stage-of-progress diff. The snapshot is captured once at startup and topo-sorted by `prereq:` within each stage; lower sequences come first.
+
+### `chase` — ticket-major
+
+Pick one root ticket and follow it through `plan → implement → review → complete` (or `fix → implement → review → complete`) in a single run, then move to the next root. Best for focused work on a single feature, or for keeping the in-flight set small.
+
+**Successor lookup is by slug, not by filesystem diff.** After each stage transition, chase looks for the same slug in `NEXT_STAGE`, then in `blocked/` and `backlog/`. The diff approach was rejected because tess is intentionally tolerant of other agents (humans, sibling pipelines, parallel runners) modifying `tickets/` concurrently; attributing every new file to the agent we just ran would be wrong.
+
+**Block / backlog cascade.** When a chain ends because the agent landed the slug in `blocked/` or `backlog/`, that slug is added to a per-run `deferred` set. Subsequent root tickets that list a deferred slug as `prereq:` are skipped — and the skipped root is itself added to `deferred`, so the cascade is transitive. This is the chase-equivalent of "don't bother with the work whose prerequisite just bounced."
+
+**Splits.** Agents may split one ticket into multiple next-stage tickets. Chase follows the same-slug branch and leaves the siblings in place; they become roots in a future run. Trying to follow all splits in one chase would conflate "follow this idea" with "drain this layer," reintroducing the stage-major behavior chase was designed to avoid.
+
+**Safety cap.** A single chain is bounded to 6 stage transitions to guard against regressive loops (e.g. an agent moving `implement` → `plan`). The natural pipeline tops out at 4–5 transitions.
+
+### Why two strategies, not a knob
+
+A single parameterized loop (`depth` = 1 means batch, `depth` = ∞ means chase) was considered and rejected. The two modes differ in *intent* — "advance everything once" vs "finish this one thing" — and in error recovery (chase needs the deferred-cascade rule, batch doesn't). A shared loop with mode flags would make the harder behavior the default of every read; explicit strategies make the contract obvious at the call site.
+
+---
+
 ## Open Questions
 
 ### Q1: Should any `tickets/` subfolders be renamed for agile/kanban compatibility?

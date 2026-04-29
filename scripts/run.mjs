@@ -96,7 +96,8 @@ async function main() {
 
 	if (opts.dryRun) {
 		console.log(`\ntess (${tessVersion})`);
-		console.log(`Pending tickets in: ${formatStageSummary(opts.stages)}\n`);
+		console.log(`Pending tickets in: ${formatStageSummary(opts.stages)}`);
+		console.log(`Strategy: ${opts.strategy}\n`);
 		for (const t of allTickets) {
 			console.log(`  [${t.stage.padEnd(9)}] seq ${formatSeq(t.sequence).padStart(4)}  ${t.file}`);
 		}
@@ -130,13 +131,14 @@ async function main() {
 		`${'═'.repeat(72)}`,
 		`  tess (${tessVersion})`,
 		`  Snapshotted ${totalFound} ticket(s)${limitNote}.`,
+		`  Strategy: ${opts.strategy}`,
 		`${'═'.repeat(72)}`,
 	].join('\n');
 	console.log(banner);
 
 	const logsDir = await ensureLogsDir(ticketsDir);
 
-	const strategy = strategies.batch;
+	const strategy = strategies[opts.strategy];
 	await strategy.run({
 		snapshot: allTickets,
 		ticketsDir,

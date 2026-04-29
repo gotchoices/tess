@@ -12,7 +12,7 @@ Tess lives as its own repository and integrates into any project, giving every r
 
 Tickets are markdown files organized into stage folders inside a project's `tickets/` directory. Each ticket file is named with an optional sequence prefix (`3-my-feature.md` — lower runs sooner) and contains a lightweight metadata header followed by architecture notes and TODO items. The sequence prefix is optional; unnumbered tickets follow after all numbered ones in a stage.
 
-A runner script processes tickets one at a time, invoking an AI agent for each. The agent owns the full stage transition: it creates the next-stage file(s), deletes the source ticket, and commits. The runner snapshots the ticket list at startup so each ticket advances exactly one stage per run.
+A runner script processes tickets one at a time, invoking an AI agent for each. The agent owns the full stage transition: it creates the next-stage file(s), deletes the source ticket, and commits. The runner snapshots the ticket list at startup and traverses it under one of two strategies — **batch** (drain stage-by-stage; default) or **chase** (follow one ticket through every stage before moving to the next). See [Strategies](#strategies) below.
 
 ```
 tickets/
@@ -97,6 +97,9 @@ node tess/scripts/run.mjs --stages backlog:15
 
 # Use a different agent
 node tess/scripts/run.mjs --agent cursor
+
+# Chase a ticket through every stage before moving on
+node tess/scripts/run.mjs --strategy chase
 ```
 
 ### Options
@@ -106,6 +109,7 @@ node tess/scripts/run.mjs --agent cursor
 | `--max-sequence <n>` | _unlimited_ | Default sequence ceiling for all stages (sequences can include decimals). Unnumbered tickets are skipped whenever this is finite. |
 | `--stages <list>` | `fix,plan,implement,review` | Stages to process, with optional per-stage max (`implement:12,review:10`). `backlog` is a valid target but excluded from the default set. |
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, `auggie`, or `codex` |
+| `--strategy <name>` | `batch` | Traversal strategy: `batch` or `chase`. See [Strategies](#strategies). |
 | `--max <n>` | _unlimited_ | Stop after processing at most n tickets |
 | `--no-commit` | — | Skip automatic git commit after each ticket (also skips the migration commit) |
 | `--dry-run` | — | List tickets without invoking the agent |
@@ -118,6 +122,41 @@ node tess/scripts/run.mjs --agent cursor
 | `--no-ignore-stages` | — | Keep ticket stage folders tracked in git |
 
 When neither flag is passed, init will prompt interactively. The default is to **not** ignore stage folders. Use `--ignore-stages` when each developer maintains separate tickets that shouldn't be committed to the shared repo.
+
+## Strategies
+
+The runner picks the next ticket to work using a strategy. Both strategies share the same snapshot, agent invocation, logging, and commit pipeline — they differ only in traversal order.
+
+### `batch` (default)
+
+Drain each stage in topo/sequence order: every ticket advances exactly **one** stage per run. The pipeline-wide order is `--stages` (default `fix,plan,implement,review`); within each stage, prereqs come before dependents and lower sequences come first.
+
+Best for: steady, reviewable progress across the whole pipeline. Each run produces a clean diff per stage so you can inspect what each stage did.
+
+### `chase`
+
+Pick one root ticket and follow it through **every** stage to `complete/` before moving to the next root. Ticket-major instead of stage-major.
+
+After each stage transition, chase looks up the same slug in `NEXT_STAGE`, then in `blocked/` and `backlog/` (it does **not** rely on a filesystem diff — other agents may be modifying `tickets/` in parallel). If the same slug landed in the next stage, the chase continues; if it landed in `blocked/` or `backlog/`, the chain ends and the slug is recorded as **deferred** for the rest of the run.
+
+**Block / backlog cascade.** A queued root that lists a deferred slug as `prereq:` is skipped — and the skipped root is itself added to the deferred set, so the skip cascades transitively through the queue. This prevents chase from charging into work whose prerequisite just bounced.
+
+**Splits.** If an agent splits one ticket into multiple next-stage tickets, chase follows the same-slug branch and leaves the siblings in place for the next run.
+
+**Safety cap.** A single chain is bounded to 6 stage transitions, in case an agent regresses a ticket (e.g. `implement` → `plan`) and creates a loop. The natural pipeline tops out at 4 (`backlog → plan → implement → review → complete`).
+
+Best for: focused work on a single feature, or when you want fewer parallel work-in-progress trails in git history.
+
+```bash
+# Default — drain stage by stage
+node tess/scripts/run.mjs
+
+# Follow each root ticket all the way through
+node tess/scripts/run.mjs --strategy chase
+
+# Chase only the earliest tickets
+node tess/scripts/run.mjs --strategy chase --max 3
+```
 
 ## Ticket Lifecycle
 

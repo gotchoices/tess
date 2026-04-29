@@ -7,10 +7,13 @@
  *
  *   batch  — drain the snapshot stage-by-stage in topo/sequence order
  *            (one stage transition per ticket per run; original behavior).
- *   chase  — TBD: serial mode that follows a single ticket through the
- *            pipeline before moving to the next.
+ *   chase  — pick one root ticket and follow it through every stage to
+ *            completion before moving to the next root (ticket-major).
+ *            Block/backlog landings cascade through the queue via prereq.
  */
 
 import * as batch from './batch.mjs';
+import * as chase from './chase.mjs';
 
-export const strategies = { batch };
+export const strategies = { batch, chase };
+export const KNOWN_STRATEGIES = Object.keys(strategies);

@@ -3,6 +3,7 @@
  */
 
 import { KNOWN_STAGES, PENDING_STAGES } from './tickets.mjs';
+import { KNOWN_STRATEGIES } from './strategies/index.mjs';
 
 export function printHelp() {
 	const lines = [
@@ -28,6 +29,13 @@ export function printHelp() {
 		'                       e.g.  --stages review:5,implement:3,fix',
 		'                             --stages backlog:2  (backlog is not in the default set)',
 		'  --agent <name>       claude | auggie | cursor | codex      (default: claude)',
+		'  --strategy <name>    batch | chase                          (default: batch)',
+		'                       batch: drain each stage before moving to the next.',
+		'                       chase: take one root ticket and follow it through every',
+		'                              stage to complete/ before moving to the next root.',
+		'                              A ticket landing in blocked/ or backlog/ is deferred',
+		'                              and any queued ticket listing it as `prereq:` is',
+		'                              skipped for the rest of the run.',
 		'  --max <n>            Stop after at most n tickets          (default: unlimited)',
 		'  --no-commit          Skip automatic git commit after each ticket',
 		'  --dry-run            List tickets without invoking agent',
@@ -52,6 +60,7 @@ export function parseArgs(argv) {
 	const opts = {
 		maxSequence: Infinity,
 		agent: 'claude',
+		strategy: 'batch',
 		dryRun: false,
 		noCommit: false,
 		maxTickets: Infinity,
@@ -66,6 +75,9 @@ export function parseArgs(argv) {
 				break;
 			case '--agent':
 				opts.agent = argv[++i];
+				break;
+			case '--strategy':
+				opts.strategy = argv[++i];
 				break;
 			case '--dry-run':
 				opts.dryRun = true;
@@ -93,6 +105,11 @@ export function parseArgs(argv) {
 			console.error(`Unknown stage: "${stage}". Valid stages: ${KNOWN_STAGES.join(', ')}`);
 			process.exit(1);
 		}
+	}
+
+	if (!KNOWN_STRATEGIES.includes(opts.strategy)) {
+		console.error(`Unknown strategy: "${opts.strategy}". Valid strategies: ${KNOWN_STRATEGIES.join(', ')}`);
+		process.exit(1);
 	}
 
 	return { ...opts, stages };
