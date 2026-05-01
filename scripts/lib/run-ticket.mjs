@@ -14,12 +14,15 @@
  *                      decides whether to abort the run.  `exitCode` is set.
  *   - 'skipped'      : ticket file was already moved before we ran it
  *   - 'stopped'      : .stop file detected; no work performed
+ *   - 'deferred'     : a cross-stage prereq is still behind (or parked in
+ *                      blocked/); the strategy adds the slug to its run-local
+ *                      deferred set so dependents cascade
  */
 
 import { writeFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { execSync } from 'node:child_process';
-import { NEXT_STAGE, formatSeq } from './tickets.mjs';
+import { NEXT_STAGE, formatSeq, findUnsatisfiedPrereq } from './tickets.mjs';
 import { runAgent, MAX_TIMEOUT_RETRIES } from './process.mjs';
 import { commitTicket } from './git.mjs';
 import { writeInProgress, clearInProgress, addResumeNote, checkStop } from './state.mjs';
@@ -40,6 +43,15 @@ export async function runOneStage(ticket, ctx, { label }) {
 	} catch {
 		console.log(`\n  ${label} Skipped (already moved): ${ticket.file}\n`);
 		return { kind: 'skipped' };
+	}
+
+	// Cross-stage prereq gate: if a prereq lives in an earlier-rank stage,
+	// a peer-but-different stage, or blocked/, defer this ticket.  Same-stage
+	// edges are handled by the per-stage topo sort and pass through here.
+	const unsatisfied = await findUnsatisfiedPrereq(ticket, ticketsDir);
+	if (unsatisfied) {
+		console.log(`\n  ${label} Deferred ${ticket.file}: prereq "${unsatisfied.slug}" is in ${unsatisfied.stage}/.\n`);
+		return { kind: 'deferred', prereq: unsatisfied.slug, prereqStage: unsatisfied.stage };
 	}
 
 	let attempt = 0;

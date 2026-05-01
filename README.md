@@ -77,6 +77,10 @@ TODO
 
 `prereq:` lists slugs of other tickets that must land (advance stage) first — no sequence prefix, no `.md` extension, since the sequence can change. The runner topologically sorts each stage to respect these edges and errors on cycles or sequence numbers that violate them.
 
+**Cross-stage prereqs.** Prereqs are also resolved across the whole pipeline, not just the current stage. The runner ranks stages as `backlog (0) < fix = plan (1) < implement (2) < review (3) < complete (4)`; a prereq is *satisfied* for a ticket `T` when it sits in a strictly later rank than `T`, or in the same stage (where in-stage ordering is enforced by topo sort). A prereq found in an earlier-rank stage, in a peer-but-different stage (e.g. `T` in plan with prereq still in fix), or parked in `blocked/` causes `T` to be **deferred** for this run — `T` is skipped with a warning, and any sibling that lists `T` as a prereq is deferred too, cascading through the queue. Unresolved prereqs (slug not present anywhere) are assumed already complete and ignored, as before.
+
+Pass `--skip-blocked` to pre-filter the snapshot: any ticket whose prereq chain transitively reaches a slug in `blocked/` is dropped before the run starts, so it never appears in the dry-run listing or the live banner. This is a stricter, upfront filter — the runtime cross-stage gate still handles the broader cases (prereq still in plan, peer-stage mismatch, etc.) by deferring at the moment of processing.
+
 ### 3. Run the pipeline
 
 ```bash
@@ -112,6 +116,7 @@ node tess/scripts/run.mjs --strategy chase
 | `--strategy <name>` | `batch` | Traversal strategy: `batch` or `chase`. See [Strategies](#strategies). |
 | `--max <n>` | _unlimited_ | Stop after processing at most n tickets |
 | `--no-commit` | — | Skip automatic git commit after each ticket (also skips the migration commit) |
+| `--skip-blocked` | — | Pre-filter the snapshot: drop any ticket whose prereq chain reaches a slug parked in `blocked/`. The runtime cross-stage prereq gate still applies to other misses. |
 | `--dry-run` | — | List tickets without invoking the agent |
 
 ### Init Options
@@ -139,7 +144,7 @@ Pick one root ticket and follow it through **every** stage to `complete/` before
 
 After each stage transition, chase looks up the same slug in `NEXT_STAGE`, then in `blocked/` and `backlog/` (it does **not** rely on a filesystem diff — other agents may be modifying `tickets/` in parallel). If the same slug landed in the next stage, the chase continues; if it landed in `blocked/` or `backlog/`, the chain ends and the slug is recorded as **deferred** for the rest of the run.
 
-**Block / backlog cascade.** A queued root that lists a deferred slug as `prereq:` is skipped — and the skipped root is itself added to the deferred set, so the skip cascades transitively through the queue. This prevents chase from charging into work whose prerequisite just bounced.
+**Deferral cascade.** A slug enters the run's deferred set when the agent moves it to `blocked/` or `backlog/`, *or* when the cross-stage prereq gate rejects it because a prereq is still behind. A queued root that lists a deferred slug as `prereq:` is skipped — and the skipped root is itself added to the deferred set, so the skip cascades transitively through the queue. The same cascade applies in `batch` mode. This prevents tess from charging into work whose prerequisite just bounced or hasn't caught up.
 
 **Splits.** If an agent splits one ticket into multiple next-stage tickets, chase follows the same-slug branch and leaves the siblings in place for the next run.
 
@@ -222,7 +227,7 @@ If the agent goes idle for too long (10 minutes with no output), the runner kill
 - **Agent-owned transitions** — The agent creates and deletes ticket files; the runner handles commits
 - **Commit per ticket** — Clean git history for human review between runs
 - **Sequence-driven** — Tickets processed lowest-sequence-first within each stage (optional prefix; unnumbered tickets trail numbered ones)
-- **Prereq-aware** — `prereq:` edges topologically sort tickets; conflicts with explicit sequence numbers fail fast
+- **Prereq-aware** — `prereq:` edges topologically sort tickets within a stage and gate them across stages by pipeline rank; conflicts with explicit sequence numbers fail fast
 - **Non-interactive** — Batch processing with human review between runs
 
 ## Ticket Format Migration

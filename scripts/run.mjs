@@ -35,7 +35,7 @@
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { discoverTickets, formatSeq } from './lib/tickets.mjs';
+import { discoverTickets, formatSeq, indexAllTickets, findUnsatisfiedPrereq, findTransitiveBlocker } from './lib/tickets.mjs';
 import { topoSortAndCheck } from './lib/topo.mjs';
 import { readAndClearInProgress, addResumeNote } from './lib/state.mjs';
 import { ensureLogsDir } from './lib/logging.mjs';
@@ -91,6 +91,29 @@ async function main() {
 	allTickets.length = 0;
 	allTickets.push(...ordered);
 
+	// --skip-blocked: pre-filter the snapshot by walking each ticket's prereq
+	// chain across the cross-stage index.  Anything reaching a slug parked in
+	// blocked/ is dropped before the run starts (vs the runtime gate, which
+	// only defers tickets whose direct prereq is behind).
+	if (opts.skipBlocked) {
+		const indexWithPrereqs = await indexAllTickets(ticketsDir, { withPrereqs: true });
+		const kept = [];
+		const skipped = [];
+		for (const t of allTickets) {
+			const blocker = findTransitiveBlocker(t, indexWithPrereqs);
+			if (blocker) skipped.push({ ticket: t, blocker });
+			else kept.push(t);
+		}
+		if (skipped.length > 0) {
+			console.log(`\nSkipping ${skipped.length} ticket(s) transitively blocked:`);
+			for (const { ticket, blocker } of skipped) {
+				console.log(`  [${ticket.stage.padEnd(9)}] ${ticket.file}  → blocked via "${blocker.slug}"`);
+			}
+		}
+		allTickets.length = 0;
+		allTickets.push(...kept);
+	}
+
 	const totalFound = allTickets.length;
 	if (opts.maxTickets < totalFound) allTickets.splice(opts.maxTickets);
 
@@ -98,8 +121,13 @@ async function main() {
 		console.log(`\ntess (${tessVersion})`);
 		console.log(`Pending tickets in: ${formatStageSummary(opts.stages)}`);
 		console.log(`Strategy: ${opts.strategy}\n`);
+		// Snapshot-time cross-stage prereq check, for visibility only — the
+		// actual deferral happens at runtime against the live filesystem.
+		const ticketIndex = await indexAllTickets(ticketsDir);
 		for (const t of allTickets) {
-			console.log(`  [${t.stage.padEnd(9)}] seq ${formatSeq(t.sequence).padStart(4)}  ${t.file}`);
+			const unsat = await findUnsatisfiedPrereq(t, ticketsDir, ticketIndex);
+			const note = unsat ? `  ⚠ deferred: prereq "${unsat.slug}" in ${unsat.stage}/` : '';
+			console.log(`  [${t.stage.padEnd(9)}] seq ${formatSeq(t.sequence).padStart(4)}  ${t.file}${note}`);
 		}
 		const limitNote = totalFound > allTickets.length ? ` (limited to ${allTickets.length} of ${totalFound})` : '';
 		console.log(`\n${allTickets.length} ticket(s) would be processed${limitNote}.`);

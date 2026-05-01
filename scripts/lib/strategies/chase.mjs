@@ -10,11 +10,12 @@
  * tickets/ in parallel — we don't try to attribute every new file to the
  * agent we just ran.
  *
- * Block/backlog cascade: when a chain ends because the agent moved the
- * slug into blocked/ or backlog/, that slug is added to the run's
- * `deferred` set.  Subsequent root tickets that list the deferred slug
- * as a prereq are skipped — and they themselves are added to `deferred`,
- * so the skip cascades transitively through the queue.
+ * Deferral cascade: a slug enters `deferred` when (a) the agent moved it
+ * to blocked/ or backlog/ during the chain, or (b) the cross-stage prereq
+ * gate in `runOneStage` rejected it because a prereq is still behind.
+ * Subsequent root tickets that list a deferred slug as a prereq are
+ * skipped — and they themselves are added to `deferred`, so the skip
+ * cascades transitively through the queue.
  *
  * A safety cap (MAX_CHAIN_STEPS) bounds how many stage transitions a
  * single chase can perform, in case an agent regresses a ticket
@@ -59,6 +60,10 @@ export async function run(ctx) {
 			if (outcome.kind === 'stopped') break rootLoop;
 			if (outcome.kind === 'skipped') break;
 			if (outcome.kind === 'timed-out') break;
+			if (outcome.kind === 'deferred') {
+				deferred.add(t.slug);
+				break;
+			}
 			if (outcome.kind === 'agent-error') {
 				console.error('Stopping to avoid cascading failures. Re-run to retry.');
 				process.exit(outcome.exitCode);

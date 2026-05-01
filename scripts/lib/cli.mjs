@@ -38,6 +38,10 @@ export function printHelp() {
 		'                              skipped for the rest of the run.',
 		'  --max <n>            Stop after at most n tickets          (default: unlimited)',
 		'  --no-commit          Skip automatic git commit after each ticket',
+		'  --skip-blocked       Pre-filter the snapshot: drop any ticket whose prereq',
+		'                       chain reaches a slug parked in blocked/.  The runtime',
+		'                       cross-stage prereq gate still applies to other misses',
+		'                       (e.g. prereq still in plan/ when ticket is in implement/).',
 		'  --dry-run            List tickets without invoking agent',
 		'  --help               Show this help',
 	];
@@ -63,6 +67,7 @@ export function parseArgs(argv) {
 		strategy: 'batch',
 		dryRun: false,
 		noCommit: false,
+		skipBlocked: false,
 		maxTickets: Infinity,
 		stagesRaw: null,
 	};
@@ -84,6 +89,9 @@ export function parseArgs(argv) {
 				break;
 			case '--no-commit':
 				opts.noCommit = true;
+				break;
+			case '--skip-blocked':
+				opts.skipBlocked = true;
 				break;
 			case '--max':
 				opts.maxTickets = parseInt(argv[++i], 10);
