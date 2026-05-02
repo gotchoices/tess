@@ -432,8 +432,10 @@ async function ensureSearchDeps() {
 	}
 	console.log('');
 	log('Installing search deps (npm install in tess/) — this can take ~30s on first run…');
-	const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-	const code = await runCommand(npmCmd, ['install'], { cwd: TESS_ROOT });
+	// npm is a .cmd shim on Windows; Node's post-CVE-2024-27980 spawn refuses to
+	// launch .cmd files unless shell:true is set.  Pass the command as a single
+	// string so the shell handles tokenization (avoids DEP0190).
+	const code = await runShell('npm install', { cwd: TESS_ROOT });
 	if (code !== 0) {
 		warn(`npm install exited with code ${code}.`);
 		return false;
@@ -444,6 +446,8 @@ async function ensureSearchDeps() {
 async function runInitialIndex(projectRoot) {
 	console.log('');
 	log('Building initial code index (downloads ~80MB model on first run)…');
+	// Direct spawn with no shell — process.execPath may contain spaces
+	// ("C:\Program Files\nodejs\node.exe"), which a shell would split.
 	const code = await runCommand(process.execPath, [
 		join(TESS_ROOT, 'scripts', 'index.mjs'),
 		'--project', projectRoot,
@@ -456,6 +460,14 @@ async function runInitialIndex(projectRoot) {
 function runCommand(command, args, opts) {
 	return new Promise((res, rej) => {
 		const child = spawn(command, args, { stdio: 'inherit', shell: false, ...opts });
+		child.on('close', code => res(code ?? 0));
+		child.on('error', err => rej(err));
+	});
+}
+
+function runShell(commandLine, opts) {
+	return new Promise((res, rej) => {
+		const child = spawn(commandLine, { stdio: 'inherit', shell: true, ...opts });
 		child.on('close', code => res(code ?? 0));
 		child.on('error', err => rej(err));
 	});
