@@ -14,11 +14,12 @@
  * Idempotent and non-destructive — safe to re-run at any time.
  */
 
-import { readFile, writeFile, mkdir, symlink, lstat, readlink, access } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, symlink, lstat, readlink, access, chmod } from 'node:fs/promises';
 import { join, dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { constants } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { spawn } from 'node:child_process';
 import { migrate, FORMAT_VERSION } from './migrate.mjs';
 import { writeMcpConfig, SUPPORTED_AGENTS } from './lib/mcp-config.mjs';
 
@@ -271,7 +272,7 @@ async function updateGitignoreForSymlinks(projectRoot) {
 // ─── CLI ───────────────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-	const opts = { projectRoot: process.cwd(), ignoreStages: undefined, withSearch: undefined, agent: 'claude' };
+	const opts = { projectRoot: process.cwd(), ignoreStages: undefined, withSearch: undefined, withCommitHook: undefined, agent: 'claude' };
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === '--project' && argv[i + 1]) {
 			opts.projectRoot = resolve(argv[++i]);
@@ -283,6 +284,10 @@ function parseArgs(argv) {
 			opts.withSearch = true;
 		} else if (argv[i] === '--no-search') {
 			opts.withSearch = false;
+		} else if (argv[i] === '--with-commit-hook') {
+			opts.withCommitHook = true;
+		} else if (argv[i] === '--no-commit-hook') {
+			opts.withCommitHook = false;
 		} else if (argv[i] === '--agent' && argv[i + 1]) {
 			opts.agent = argv[++i];
 		} else if (argv[i] === '--help') {
@@ -299,6 +304,8 @@ function parseArgs(argv) {
 				'  --no-ignore-stages   Keep ticket stage folders tracked in git (default)',
 				'  --with-search        Wire MCP code search for the chosen agent',
 				'  --no-search          Skip the MCP code search prompt',
+				'  --with-commit-hook   Install a post-commit hook that refreshes the index',
+				'  --no-commit-hook     Skip the post-commit hook prompt',
 				`  --agent <name>       MCP target agent: ${SUPPORTED_AGENTS.join(', ')} (default: claude)`,
 				'',
 				'Idempotent — safe to re-run at any time.',
@@ -379,6 +386,18 @@ async function main() {
 	}
 	if (withSearch) {
 		await wireMcpSearch(projectRoot, opts.agent);
+
+		// Step 9: Optional post-commit hook to keep the index fresh.
+		let withHook = opts.withCommitHook;
+		if (withHook === undefined) {
+			console.log('');
+			console.log('  A post-commit git hook can refresh the index in the background after');
+			console.log('  every commit, so search always reflects HEAD without thinking about it.');
+			withHook = await promptYesNo('Install post-commit refresh hook?', false);
+		}
+		if (withHook) {
+			await installCommitHook(projectRoot);
+		}
 	}
 
 	console.log('\nDone.\n');
@@ -395,10 +414,115 @@ async function wireMcpSearch(projectRoot, agent) {
 		return;
 	}
 	const rel = relative(projectRoot, result.path);
-	log(`Wired tess-search MCP into ${rel} (${result.action})`);
-	log('Next: install deps and build the initial index:');
-	log('  cd tess && npm install');
-	log('  cd .. && node tess/scripts/index.mjs');
+	log(`Wired code-search MCP into ${rel} (${result.action})`);
+
+	const installed = await ensureSearchDeps();
+	if (!installed) {
+		warn('Skipping initial index — install the deps and run `node tess/scripts/index.mjs` manually.');
+		return;
+	}
+	await runInitialIndex(projectRoot);
+}
+
+async function ensureSearchDeps() {
+	const marker = join(TESS_ROOT, 'node_modules', '.package-lock.json');
+	if (await exists(marker)) {
+		log('Search deps already installed in tess/node_modules — skipping npm install.');
+		return true;
+	}
+	console.log('');
+	log('Installing search deps (npm install in tess/) — this can take ~30s on first run…');
+	const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+	const code = await runCommand(npmCmd, ['install'], { cwd: TESS_ROOT });
+	if (code !== 0) {
+		warn(`npm install exited with code ${code}.`);
+		return false;
+	}
+	return true;
+}
+
+async function runInitialIndex(projectRoot) {
+	console.log('');
+	log('Building initial code index (downloads ~80MB model on first run)…');
+	const code = await runCommand(process.execPath, [
+		join(TESS_ROOT, 'scripts', 'index.mjs'),
+		'--project', projectRoot,
+	], { cwd: projectRoot });
+	if (code !== 0) {
+		warn(`indexer exited with code ${code} — re-run with: node tess/scripts/index.mjs`);
+	}
+}
+
+function runCommand(command, args, opts) {
+	return new Promise((res, rej) => {
+		const child = spawn(command, args, { stdio: 'inherit', shell: false, ...opts });
+		child.on('close', code => res(code ?? 0));
+		child.on('error', err => rej(err));
+	});
+}
+
+const HOOK_BEGIN = '# >>> tess search index >>>';
+const HOOK_END = '# <<< tess search index <<<';
+const HOOK_BLOCK = [
+	HOOK_BEGIN,
+	'# Refresh the local code search index in the background.  Detached so the',
+	'# commit feels instant; errors are swallowed (re-run `node tess/scripts/index.mjs`',
+	"# manually to surface them).  Remove this block to disable.",
+	'( cd "$(git rev-parse --show-toplevel)" && nohup node tess/scripts/index.mjs >/dev/null 2>&1 & ) >/dev/null 2>&1',
+	HOOK_END,
+].join('\n');
+
+async function installCommitHook(projectRoot) {
+	const gitDir = await resolveGitDir(projectRoot);
+	if (!gitDir) {
+		warn('Could not locate the .git directory — skipping commit hook.');
+		return;
+	}
+	const hooksDir = join(gitDir, 'hooks');
+	await mkdir(hooksDir, { recursive: true });
+	const hookPath = join(hooksDir, 'post-commit');
+
+	const existing = await readTextOrEmpty(hookPath);
+	let next;
+	if (existing.length === 0) {
+		next = `#!/bin/sh\n${HOOK_BLOCK}\n`;
+	} else if (existing.includes(HOOK_BEGIN) && existing.includes(HOOK_END)) {
+		next = existing.replace(
+			new RegExp(`${escapeRegex(HOOK_BEGIN)}[\\s\\S]*?${escapeRegex(HOOK_END)}`),
+			HOOK_BLOCK,
+		);
+		if (next === existing) {
+			log('post-commit hook already up to date');
+			return;
+		}
+	} else {
+		const sep = existing.endsWith('\n') ? '' : '\n';
+		next = `${existing}${sep}\n${HOOK_BLOCK}\n`;
+	}
+	await writeFile(hookPath, next, 'utf-8');
+	try { await chmod(hookPath, 0o755); } catch { /* Windows: chmod is a no-op anyway */ }
+	log(`Installed post-commit hook: ${relative(projectRoot, hookPath)}`);
+}
+
+async function resolveGitDir(projectRoot) {
+	// `.git` is normally a directory; in submodules and worktrees it's a file
+	// of the form `gitdir: <relative-or-absolute path>`.
+	const dotGit = join(projectRoot, '.git');
+	const stat = await lstat(dotGit).catch(() => null);
+	if (!stat) return null;
+	if (stat.isDirectory()) return dotGit;
+	if (stat.isFile()) {
+		const content = await readFile(dotGit, 'utf-8');
+		const m = content.match(/^gitdir:\s*(.+)$/m);
+		if (!m) return null;
+		const target = m[1].trim();
+		return resolve(projectRoot, target);
+	}
+	return null;
+}
+
+function escapeRegex(s) {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 main().catch((err) => {

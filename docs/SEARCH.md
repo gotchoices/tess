@@ -40,7 +40,7 @@ tickets/
 └── ...
 ```
 
-All artifacts are gitignored. To uninstall: `rm -rf tickets/.index/` and remove the `tess-search` entry from your agent's MCP config.
+All artifacts are gitignored. To uninstall: `rm -rf tickets/.index/` and remove the `code-search` entry from your agent's MCP config.
 
 ## Embedding model
 
@@ -80,14 +80,18 @@ node tess/scripts/run.mjs --refresh-index ...     # incremental between every ti
 
 `--refresh-index` is a no-op when no index exists, so it is safe to leave on for projects that have not opted in.
 
+### Post-commit hook (optional)
+
+`init.mjs --with-commit-hook` (or the interactive prompt) writes a `.git/hooks/post-commit` block that fires the indexer in the background after every commit.  The hook resolves the right gitdir for both regular repos and submodule projects and is bracketed by `# >>> tess search index >>>` markers so re-running init updates the block in place rather than duplicating it.  Remove the marked block to disable.
+
 ## Per-agent config
 
 `init.mjs --with-search --agent <name>` writes:
 
 | Agent | File | Action |
 |---|---|---|
-| `claude` | `.mcp.json` (project root) | Merges `tess-search` into `mcpServers`. |
-| `cursor` | `.cursor/mcp.json` | Merges `tess-search` into `mcpServers`. |
+| `claude` | `.mcp.json` (project root) | Merges `code-search` into `mcpServers`. |
+| `cursor` | `.cursor/mcp.json` | Merges `code-search` into `mcpServers`. |
 | `codex` | `.codex/mcp-tess.toml.sample` | Writes a sample TOML block to paste into `~/.codex/config.toml`. |
 | `auggie` | — | No-op; auggie does not support MCP today. |
 
@@ -95,8 +99,8 @@ Existing entries in any of these files are preserved.
 
 ## Footprint
 
-- **npm install** in `tess/`: ~150MB on disk (better-sqlite3 + sqlite-vec native binaries, transformers.js, MCP SDK).
-- **First indexer run**: ~80MB model download into `tickets/.index/models/`.
+- **npm install** in `tess/`: ~150MB on disk (better-sqlite3 + sqlite-vec native binaries, transformers.js, MCP SDK).  `init.mjs --with-search` runs this automatically; re-runs are skipped when `tess/node_modules/` is already populated.
+- **First indexer run**: ~80MB model download into `tickets/.index/models/`.  `init.mjs --with-search` triggers this automatically after deps install.
 - **DB size**: roughly 1KB/chunk; a 5k-file repo typically lands around 40–80MB.
 
 ## Limitations and future work

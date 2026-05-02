@@ -111,8 +111,24 @@ async function main() {
 	};
 
 	const server = new Server(
-		{ name: 'tess-search', version: '0.1.0' },
-		{ capabilities: { tools: {} } },
+		{ name: 'code-search', version: '0.1.0' },
+		{
+			capabilities: { tools: {} },
+			instructions: [
+				'Local semantic + literal search over the project codebase, backed by a',
+				'sqlite-vec index built by tess.  This server does NOT search tess tickets,',
+				'docs, or chat history — it searches the source files of the host project.',
+				'',
+				'Use `search_code` for natural-language questions where you do not yet know',
+				'the right identifier ("where do we handle JWT refresh", "what enforces',
+				'page-cache eviction").  Use `find_references` once you have an exact name.',
+				'Use `read_chunk` to expand a snippet returned by either tool.',
+				'',
+				'Prefer these tools over grep/Glob for exploratory questions about the',
+				'codebase; fall back to grep/Glob for exact-string and filename-pattern',
+				'lookups.',
+			].join('\n'),
+		},
 	);
 
 	server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
@@ -134,7 +150,7 @@ async function main() {
 
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
-	console.error(`tess-mcp-search ready (index: ${dbPath})`);
+	console.error(`code-search ready (index: ${dbPath})`);
 }
 
 async function handleSearch(args, store, embedder) {

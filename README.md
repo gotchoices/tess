@@ -129,6 +129,8 @@ node tess/scripts/run.mjs --strategy chase
 | `--no-ignore-stages` | — | Keep ticket stage folders tracked in git |
 | `--with-search` | — | Wire the MCP code-search server for the chosen agent |
 | `--no-search` | — | Skip the MCP code search prompt |
+| `--with-commit-hook` | — | Install a post-commit hook that refreshes the index after every commit |
+| `--no-commit-hook` | — | Skip the commit-hook prompt |
 | `--agent <name>` | `claude` | Target agent for `--with-search`: `claude`, `cursor`, `codex`, `auggie` |
 
 When neither flag is passed, init will prompt interactively. The default is to **not** ignore stage folders. Use `--ignore-stages` when each developer maintains separate tickets that shouldn't be committed to the shared repo.
@@ -197,11 +199,10 @@ Three pieces, each independent:
 ### Enable it
 
 ```bash
-cd tess && npm install
-cd ..
 node tess/scripts/init.mjs --with-search --agent claude
-node tess/scripts/index.mjs                    # first build (downloads model)
 ```
+
+That single command writes the MCP config, runs `npm install` inside `tess/`, and builds the initial index (the first run downloads a ~80MB embedding model).  Re-running is safe and incremental.
 
 ### Keep it fresh
 
@@ -213,7 +214,9 @@ node tess/scripts/index.mjs --rebuild          # full rebuild
 node tess/scripts/run.mjs --refresh-index ...  # refresh between every ticket
 ```
 
-All artifacts live under `tickets/.index/` (gitignored).  Full uninstall: delete that folder and remove the `tess-search` entry from your agent's MCP config.
+For hands-off freshness, pass `--with-commit-hook` to `init.mjs` (or accept the prompt).  This installs a `.git/hooks/post-commit` that fires the indexer in the background after every commit — the commit feels instant; the index trails by a second or two.  Remove the `# >>> tess search index >>>` block from the hook to disable.
+
+All artifacts live under `tickets/.index/` (gitignored).  Full uninstall: delete that folder and remove the `code-search` entry from your agent's MCP config.
 
 See [`docs/SEARCH.md`](docs/SEARCH.md) for storage layout, model swap policy, and MCP tool surface.
 

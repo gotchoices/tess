@@ -12,7 +12,7 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, join, relative, sep, posix } from 'node:path';
 
-const SERVER_NAME = 'tess-search';
+const SERVER_NAME = 'code-search';
 
 function toPosix(p) { return p.split(sep).join(posix.sep); }
 
@@ -23,6 +23,7 @@ function toPosix(p) { return p.split(sep).join(posix.sep); }
 function buildEntry(projectRoot, tessRoot) {
 	const script = toPosix(relative(projectRoot, join(tessRoot, 'scripts', 'mcp-search.mjs')));
 	return {
+		type: 'stdio',
 		command: 'node',
 		args: [script],
 		env: {},
@@ -48,18 +49,24 @@ async function writeClaude(projectRoot, tessRoot) {
 	const path = join(projectRoot, '.mcp.json');
 	const existing = await readJson(path) ?? {};
 	existing.mcpServers ??= {};
+	const before = JSON.stringify(existing.mcpServers[SERVER_NAME]);
 	existing.mcpServers[SERVER_NAME] = buildEntry(projectRoot, tessRoot);
+	const after = JSON.stringify(existing.mcpServers[SERVER_NAME]);
+	if (before === after) return { path, action: 'unchanged' };
 	await writeJson(path, existing);
-	return { path, action: 'merged' };
+	return { path, action: before === undefined ? 'added' : 'updated' };
 }
 
 async function writeCursor(projectRoot, tessRoot) {
 	const path = join(projectRoot, '.cursor', 'mcp.json');
 	const existing = await readJson(path) ?? {};
 	existing.mcpServers ??= {};
+	const before = JSON.stringify(existing.mcpServers[SERVER_NAME]);
 	existing.mcpServers[SERVER_NAME] = buildEntry(projectRoot, tessRoot);
+	const after = JSON.stringify(existing.mcpServers[SERVER_NAME]);
+	if (before === after) return { path, action: 'unchanged' };
 	await writeJson(path, existing);
-	return { path, action: 'merged' };
+	return { path, action: before === undefined ? 'added' : 'updated' };
 }
 
 async function writeCodex(projectRoot, tessRoot) {
