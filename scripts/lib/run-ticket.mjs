@@ -115,7 +115,17 @@ export async function runOneStage(ticket, ctx, { label }) {
 
 		await writeInProgress(ticketsDir, ticket, currentLog, opts.agent);
 
-		const prompt = await buildPrompt(ticket, tessRoot);
+		let prompt;
+		try {
+			prompt = await buildPrompt(ticket, tessRoot);
+		} catch (err) {
+			if (err.code === 'ENOENT') {
+				await clearInProgress(ticketsDir);
+				console.log(`\n  ${label} Skipped (removed mid-processing): ${ticket.file}\n`);
+				return { kind: 'skipped' };
+			}
+			throw err;
+		}
 		lastResult = await runAgent(opts.agent, prompt, repoRoot, currentLog, {
 			stage: ticket.stage,
 			tokenBudget: opts.tokenBudget,

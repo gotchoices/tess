@@ -90,8 +90,13 @@ export async function indexAllTickets(ticketsDir, { withPrereqs = false } = {}) 
 			if (index.has(slug)) continue;
 			const record = { stage, file: entry };
 			if (withPrereqs) {
-				const content = await readFile(join(stageDir, entry), 'utf-8');
-				record.prereqs = parsePrereqs(content);
+				try {
+					const content = await readFile(join(stageDir, entry), 'utf-8');
+					record.prereqs = parsePrereqs(content);
+				} catch (err) {
+					if (err.code === 'ENOENT') continue;  // raced with a remove/move
+					throw err;
+				}
 			}
 			index.set(slug, record);
 		}
@@ -200,7 +205,13 @@ export async function findTicketBySlug(ticketsDir, slug, stages) {
 			if (!entry.endsWith('.md')) continue;
 			if (parseSlug(entry) !== slug) continue;
 			const path = join(stageDir, entry);
-			const content = await readFile(path, 'utf-8');
+			let content;
+			try {
+				content = await readFile(path, 'utf-8');
+			} catch (err) {
+				if (err.code === 'ENOENT') continue;  // raced with a remove/move
+				throw err;
+			}
 			return {
 				file: entry,
 				path,
@@ -235,7 +246,13 @@ export async function discoverTickets(ticketsDir, stage, maxSequence) {
 		if (effective > maxSequence) continue;
 
 		const path = join(stageDir, entry);
-		const content = await readFile(path, 'utf-8');
+		let content;
+		try {
+			content = await readFile(path, 'utf-8');
+		} catch (err) {
+			if (err.code === 'ENOENT') continue;  // raced with a remove/move during snapshotting
+			throw err;
+		}
 		tickets.push({
 			file: entry,
 			path,
