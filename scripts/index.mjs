@@ -39,7 +39,9 @@ const DEFAULT_EXTS = new Set([
 
 const ALWAYS_EXCLUDE = [
 	'node_modules/', 'dist/', 'build/', 'out/', 'target/',
-	'.git/', 'tickets/.index/', 'tickets/.logs/',
+	'.git/', 'tickets/', // tess working state, not project source — indexing it
+	                     // dominates rankings because prose beats code under
+	                     // sentence-transformer embeddings.
 	'.next/', '.svelte-kit/', '.cache/', 'coverage/',
 ];
 

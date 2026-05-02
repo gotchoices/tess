@@ -122,7 +122,7 @@ export async function runOneStage(ticket, ctx, { label }) {
 
 		let prompt;
 		try {
-			prompt = await buildPrompt(ticket, tessRoot);
+			prompt = await buildPrompt(ticket, tessRoot, repoRoot);
 		} catch (err) {
 			if (err.code === 'ENOENT') {
 				await clearInProgress(ticketsDir);

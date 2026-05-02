@@ -36,10 +36,6 @@ If the ticket contains a `<!-- resume-note -->` block, a prior agent run was int
 
 Don't combine tickets unless they are tightly related.
 
-## Code search
-
-If a `search_code` MCP tool is available, prefer it for "where is X used", "what handles Y", and "find similar logic to Z" — questions where you do not know the exact identifier.  It returns ranked snippets with file paths and line ranges, and pairs well with `read_chunk` to expand context without spawning Read calls.  Continue to use grep/Glob for exact-string and filename-pattern lookups.
-
 ## BUDGET_WARNING
 
 If you receive a `BUDGET_WARNING` from the runner, the conversation has crossed its soft token budget and you should wrap up rather than continuing to investigate or implement:

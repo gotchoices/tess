@@ -155,12 +155,22 @@ export class IndexStore {
 		}));
 	}
 
+	/**
+	 * Literal substring search.  `needle` may contain `|` to OR multiple
+	 * alternatives (each side is still treated as a literal substring, NOT a
+	 * regex) — e.g. "composeNewSlot|defaultComposeNewSlot" matches either.
+	 */
 	grepLiteral(needle, max = 50, pathFilter = null) {
+		const terms = needle.split('|').map(t => t.trim()).filter(Boolean);
+		if (terms.length === 0) return [];
+		const escapeLike = s => `%${s.replace(/[\\%_]/g, ch => '\\' + ch)}%`;
+		const orClause = terms.map(() => 'text LIKE ? ESCAPE \'\\\'').join(' OR ');
 		const sql = pathFilter
-			? `SELECT path, start_line, end_line, text FROM chunks WHERE text LIKE ? AND path LIKE ? LIMIT ?`
-			: `SELECT path, start_line, end_line, text FROM chunks WHERE text LIKE ? LIMIT ?`;
-		const escaped = `%${needle.replace(/[\\%_]/g, ch => '\\' + ch)}%`;
-		const params = pathFilter ? [escaped, pathFilter, max] : [escaped, max];
+			? `SELECT path, start_line, end_line, text FROM chunks WHERE (${orClause}) AND path LIKE ? LIMIT ?`
+			: `SELECT path, start_line, end_line, text FROM chunks WHERE (${orClause}) LIMIT ?`;
+		const params = pathFilter
+			? [...terms.map(escapeLike), pathFilter, max]
+			: [...terms.map(escapeLike), max];
 		return this.db.prepare(sql).all(...params);
 	}
 }

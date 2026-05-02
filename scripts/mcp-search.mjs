@@ -60,11 +60,11 @@ const TOOLS = [
 	},
 	{
 		name: 'find_references',
-		description: 'Literal-string search over the indexed corpus. Use when you have an exact symbol name and want every occurrence.',
+		description: 'Literal-string search over the indexed corpus. Use when you have an exact identifier and want every occurrence. Multiple terms separated by "|" are OR-ed (each side is still a literal substring, not a regex) — e.g. "composeNewSlot|defaultComposeNewSlot".',
 		inputSchema: {
 			type: 'object',
 			properties: {
-				symbol: { type: 'string', description: 'Exact substring to find.' },
+				symbol: { type: 'string', description: 'Literal substring to find. Use "|" to OR multiple alternatives, e.g. "Foo|Bar".' },
 				max: { type: 'integer', description: 'Max matches to return (default 50).', default: 50 },
 				path_filter: { type: 'string' },
 			},
