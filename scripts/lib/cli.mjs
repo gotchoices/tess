@@ -49,6 +49,8 @@ export function printHelp() {
 		'                       chain reaches a slug parked in blocked/.  The runtime',
 		'                       cross-stage prereq gate still applies to other misses',
 		'                       (e.g. prereq still in plan/ when ticket is in implement/).',
+		'  --refresh-index      Run the local code indexer incrementally before each',
+		'                       ticket (no-op if tickets/.index/ does not exist).',
 		'  --dry-run            List tickets without invoking agent',
 		'  --help               Show this help',
 	];
@@ -75,6 +77,7 @@ export function parseArgs(argv) {
 		dryRun: false,
 		noCommit: false,
 		skipBlocked: false,
+		refreshIndex: false,
 		maxTickets: Infinity,
 		tokenBudget: Infinity,
 		stagesRaw: null,
@@ -100,6 +103,9 @@ export function parseArgs(argv) {
 				break;
 			case '--skip-blocked':
 				opts.skipBlocked = true;
+				break;
+			case '--refresh-index':
+				opts.refreshIndex = true;
 				break;
 			case '--max':
 				opts.maxTickets = parseInt(argv[++i], 10);

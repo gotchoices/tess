@@ -118,6 +118,7 @@ node tess/scripts/run.mjs --strategy chase
 | `--token-budget <n>` | _unset_ | Soft per-ticket context budget (claude only). When the running context size crosses *n* tokens, a one-shot `BUDGET_WARNING` is injected via a PreToolUse hook so the agent splits residual work into continuation tickets. See [Token Budget](#token-budget). |
 | `--no-commit` | — | Skip automatic git commit after each ticket (also skips the migration commit) |
 | `--skip-blocked` | — | Pre-filter the snapshot: drop any ticket whose prereq chain reaches a slug parked in `blocked/`. The runtime cross-stage prereq gate still applies to other misses. |
+| `--refresh-index` | — | Run the local code indexer incrementally before each ticket. No-op if `tickets/.index/` does not exist. See [Local Code Search](#local-code-search-optional). |
 | `--dry-run` | — | List tickets without invoking the agent |
 
 ### Init Options
@@ -126,6 +127,9 @@ node tess/scripts/run.mjs --strategy chase
 |---|---|---|
 | `--ignore-stages` | — | Add ticket stage folders (fix/, plan/, etc.) to .gitignore |
 | `--no-ignore-stages` | — | Keep ticket stage folders tracked in git |
+| `--with-search` | — | Wire the MCP code-search server for the chosen agent |
+| `--no-search` | — | Skip the MCP code search prompt |
+| `--agent <name>` | `claude` | Target agent for `--with-search`: `claude`, `cursor`, `codex`, `auggie` |
 
 When neither flag is passed, init will prompt interactively. The default is to **not** ignore stage folders. Use `--ignore-stages` when each developer maintains separate tickets that shouldn't be committed to the shared repo.
 
@@ -179,6 +183,39 @@ The warning is purely advisory; the agent stays in control. After the agent spli
 - **batch** lets the continuations roll into the next run, preserving the snapshot-once-per-run guarantee.
 
 The budget applies per ticket — every new ticket invocation starts from zero.
+
+## Local Code Search (optional)
+
+Tess can build a local vector index of the repository and expose it to the agent as an MCP `search_code` tool.  No API keys, no network calls after the first model download.
+
+Three pieces, each independent:
+
+1. **Indexer** — `node tess/scripts/index.mjs` walks `git ls-files`, chunks each file, embeds the chunks with a local sentence-transformers model (`Xenova/all-MiniLM-L6-v2`, 384-dim, ~80MB on first run), and stores vectors in `tickets/.index/index.db` (sqlite + sqlite-vec).  Incremental by content hash — re-running on a typical diff is sub-second.
+2. **MCP server** — `tess/scripts/mcp-search.mjs` is a stdio MCP server exposing `search_code`, `find_references`, and `read_chunk` against the same DB.  Started by the agent, dies with it; nothing runs in the background between invocations.
+3. **Per-agent config** — `init` writes the right MCP config for the chosen agent (Claude `.mcp.json`, Cursor `.cursor/mcp.json`, codex sample TOML).
+
+### Enable it
+
+```bash
+cd tess && npm install
+cd ..
+node tess/scripts/init.mjs --with-search --agent claude
+node tess/scripts/index.mjs                    # first build (downloads model)
+```
+
+### Keep it fresh
+
+```bash
+node tess/scripts/index.mjs                    # incremental refresh
+node tess/scripts/index.mjs --watch            # debounced fs watcher
+node tess/scripts/index.mjs --status           # row counts + last refresh
+node tess/scripts/index.mjs --rebuild          # full rebuild
+node tess/scripts/run.mjs --refresh-index ...  # refresh between every ticket
+```
+
+All artifacts live under `tickets/.index/` (gitignored).  Full uninstall: delete that folder and remove the `tess-search` entry from your agent's MCP config.
+
+See [`docs/SEARCH.md`](docs/SEARCH.md) for storage layout, model swap policy, and MCP tool surface.
 
 ## Ticket Lifecycle
 

@@ -28,6 +28,7 @@ import { commitTicket } from './git.mjs';
 import { writeInProgress, clearInProgress, addResumeNote, checkStop } from './state.mjs';
 import { logPath } from './logging.mjs';
 import { buildPrompt } from './prompt.mjs';
+import { maybeRefreshIndex } from './refresh-index.mjs';
 
 export async function runOneStage(ticket, ctx, { label }) {
 	const { ticketsDir, repoRoot, tessRoot, tessVersion, logsDir, opts } = ctx;
@@ -43,6 +44,10 @@ export async function runOneStage(ticket, ctx, { label }) {
 	} catch {
 		console.log(`\n  ${label} Skipped (already moved): ${ticket.file}\n`);
 		return { kind: 'skipped' };
+	}
+
+	if (opts.refreshIndex) {
+		await maybeRefreshIndex(repoRoot);
 	}
 
 	// Cross-stage prereq gate: if a prereq lives in an earlier-rank stage,
