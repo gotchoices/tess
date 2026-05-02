@@ -104,7 +104,10 @@ export async function runOneStage(ticket, ctx, { label }) {
 		await writeInProgress(ticketsDir, ticket, currentLog, opts.agent);
 
 		const prompt = await buildPrompt(ticket, tessRoot);
-		lastResult = await runAgent(opts.agent, prompt, repoRoot, currentLog, { stage: ticket.stage });
+		lastResult = await runAgent(opts.agent, prompt, repoRoot, currentLog, {
+			stage: ticket.stage,
+			tokenBudget: opts.tokenBudget,
+		});
 
 		if (lastResult.exitCode === 0) {
 			success = true;
@@ -126,7 +129,7 @@ export async function runOneStage(ticket, ctx, { label }) {
 			console.log(`  Committed.`);
 		}
 		console.log(`\n  ${label} Complete: ${ticket.file}\n`);
-		return { kind: 'success' };
+		return { kind: 'success', budgetTriggered: !!lastResult?.budgetTriggered };
 	}
 
 	if (lastResult?.timedOut) {

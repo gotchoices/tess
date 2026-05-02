@@ -23,15 +23,40 @@
  */
 
 import { runOneStage } from '../run-ticket.mjs';
-import { NEXT_STAGE, findTicketBySlug } from '../tickets.mjs';
+import { NEXT_STAGE, findTicketBySlug, discoverTickets } from '../tickets.mjs';
+import { topoSortAndCheck } from '../topo.mjs';
 
-const MAX_CHAIN_STEPS = 6;
+// Bumped from 6 to give budget-triggered same-stage continuations room to
+// run alongside the natural 4-stage pipeline.  Still finite so a misbehaving
+// agent that regresses tickets cannot loop forever.
+const MAX_CHAIN_STEPS = 12;
+
+/**
+ * After a budget-triggered split, find continuation tickets the agent left in
+ * the source stage.  We identify "new" purely by path — anything in the source
+ * stage that wasn't seen before this transition is a continuation candidate.
+ */
+async function findBudgetContinuations(ticketsDir, sourceStage, knownPaths) {
+	const all = await discoverTickets(ticketsDir, sourceStage, Infinity);
+	const fresh = all.filter(t => !knownPaths.has(t.path));
+	if (fresh.length === 0) return [];
+	try {
+		return topoSortAndCheck(fresh);
+	} catch (err) {
+		console.warn(`  Continuation topo-sort failed (${err.message}); using filename order.`);
+		return fresh;
+	}
+}
 
 export async function run(ctx) {
 	const { snapshot, ticketsDir } = ctx;
 
 	const processed = new Set();   // slugs we've already chased (or skipped) as a root
 	const deferred = new Set();    // slugs that hit blocked/backlog this run
+	// Every ticket path the chain has ever seen (snapshot + continuations + advances).
+	// Anything that appears in a source stage outside this set is a budget-induced
+	// continuation we should chase next.
+	const knownPaths = new Set(snapshot.map(t => t.path));
 
 	rootLoop: for (let i = 0; i < snapshot.length; i++) {
 		const root = snapshot[i];
@@ -49,9 +74,20 @@ export async function run(ctx) {
 
 		processed.add(root.slug);
 
-		let t = root;
-		for (let step = 1; step <= MAX_CHAIN_STEPS; step++) {
-			if (!NEXT_STAGE[t.stage]) break;  // terminal stage (e.g., complete)
+		// Chain-as-queue: handles natural advances + budget-induced continuations
+		// uniformly.  We push continuations to the front so the chain stays
+		// depth-first within a single root.
+		const chain = [root];
+		let step = 0;
+		while (chain.length > 0) {
+			step++;
+			if (step > MAX_CHAIN_STEPS) {
+				console.log(`  Chain exceeded ${MAX_CHAIN_STEPS} steps for "${root.slug}" — moving on.`);
+				break;
+			}
+
+			const t = chain.shift();
+			if (!NEXT_STAGE[t.stage]) continue;  // terminal stage (e.g., complete)
 
 			const stepLabel = `[root ${i + 1}/${snapshot.length} · step ${step}]`;
 			const outcome = await runOneStage(t, ctx, { label: stepLabel });
@@ -64,23 +100,38 @@ export async function run(ctx) {
 				process.exit(outcome.exitCode);
 			}
 
-			// Success — find the same slug in the next stage, or in blocked/backlog.
+			const followUps = [];
+
+			// Budget split: agent left continuation tickets in the source stage.
+			if (outcome.budgetTriggered) {
+				const continuations = await findBudgetContinuations(ticketsDir, t.stage, knownPaths);
+				for (const c of continuations) knownPaths.add(c.path);
+				if (continuations.length > 0) {
+					console.log(`  Budget split: chasing ${continuations.length} new ${t.stage}/ continuation(s) before advancing.`);
+					followUps.push(...continuations);
+				}
+			}
+
+			// Natural advance: same slug in NEXT_STAGE.
 			const nextStage = NEXT_STAGE[t.stage];
 			const advanced = await findTicketBySlug(ticketsDir, t.slug, [nextStage]);
 			if (advanced) {
-				t = advanced;
-				continue;
+				knownPaths.add(advanced.path);
+				followUps.push(advanced);
+			} else if (!outcome.budgetTriggered) {
+				// No advance and no budget split — check if the agent parked the slug.
+				const parked = await findTicketBySlug(ticketsDir, t.slug, ['blocked', 'backlog']);
+				if (parked) {
+					deferred.add(t.slug);
+					console.log(`  Chase ended: "${t.slug}" landed in ${parked.stage}/. Dependents will be skipped this run.\n`);
+				} else {
+					console.log(`  Chase ended: no successor for "${t.slug}" in ${nextStage}/ (agent may have split or renamed it).\n`);
+				}
 			}
 
-			const parked = await findTicketBySlug(ticketsDir, t.slug, ['blocked', 'backlog']);
-			if (parked) {
-				deferred.add(t.slug);
-				console.log(`  Chase ended: "${t.slug}" landed in ${parked.stage}/. Dependents will be skipped this run.\n`);
-				break;
-			}
-
-			console.log(`  Chase ended: no successor for "${t.slug}" in ${nextStage}/ (agent may have split or renamed it).\n`);
-			break;
+			// Continuations come before the natural successor: drain same-stage
+			// work first, then walk forward through the pipeline.
+			if (followUps.length > 0) chain.unshift(...followUps);
 		}
 
 		// Pause briefly between roots to mirror batch's between-ticket delay.

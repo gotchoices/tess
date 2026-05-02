@@ -3,12 +3,35 @@
  *
  * On Windows we spawn through a shell so npm shims (.cmd/.ps1) resolve; on
  * POSIX we exec the binary directly.
+ *
+ * When a token budget is configured, the adapter registers a PreToolUse hook
+ * (lib/budget-hook.mjs) via a temp `--settings` file.  The runner writes the
+ * warning to the file named by TESS_BUDGET_FLAG_FILE once the soft budget is
+ * crossed; the hook injects it into the model's next turn.  We write to a
+ * file rather than passing JSON inline so the cross-platform shell-quoting
+ * rules don't bite — `--settings <path>` is one path argument.
  */
+
+import { writeFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const HOOK_SCRIPT = join(__dirname, '..', 'budget-hook.mjs');
+
+/** Sum of tokens that occupy the model's context window for a given turn. */
+function contextSize(usage) {
+	if (!usage) return 0;
+	return (usage.input_tokens ?? 0)
+		+ (usage.cache_read_input_tokens ?? 0)
+		+ (usage.cache_creation_input_tokens ?? 0);
+}
 
 /**
  * Format Claude stream-json lines to readable text.
- * Returns { text, done? } — when done is true the agent has emitted its
- * final result and the runner should stop waiting for a clean exit.
+ * Returns { text, done?, usage? } — when done is true the agent has emitted
+ * its final result and the runner should stop waiting for a clean exit;
+ * `usage` (when present) is the per-turn context-window size in tokens.
  */
 function formatStream(line) {
 	try {
@@ -29,7 +52,8 @@ function formatStream(line) {
 					parts.push(`\n[TOOL:${block.name}] ${inputStr}\n`);
 				}
 			}
-			return { text: parts.join('') || '' };
+			const usage = obj.message?.usage;
+			return { text: parts.join('') || '', usage: usage ? contextSize(usage) : undefined };
 		}
 		if (obj.type === 'user') {
 			const content = obj.message?.content ?? [];
@@ -63,7 +87,23 @@ function formatStream(line) {
 	return { text };
 }
 
-export function claude(instructionFile, _prompt, { stage }) {
+/** Settings JSON registering the PreToolUse hook that injects BUDGET_WARNING. */
+function buildBudgetSettings() {
+	return JSON.stringify({
+		hooks: {
+			PreToolUse: [
+				{
+					matcher: '*',
+					hooks: [
+						{ type: 'command', command: `node "${HOOK_SCRIPT}"` },
+					],
+				},
+			],
+		},
+	}, null, 2);
+}
+
+export async function claude(instructionFile, _prompt, { stage, tokenBudget } = {}) {
 	const effort = 'xhigh';
 	const args = [
 		'-p',
@@ -73,13 +113,20 @@ export function claude(instructionFile, _prompt, { stage }) {
 		'--output-format', 'stream-json',
 		'--effort', effort,
 		'--append-system-prompt-file', instructionFile,
-		'Work the ticket as described in the appended system prompt.',
 	];
+	const cleanupFiles = [];
+	if (Number.isFinite(tokenBudget)) {
+		const settingsFile = instructionFile.replace(/\.prompt\.md$/, '.settings.json');
+		await writeFile(settingsFile, buildBudgetSettings(), 'utf-8');
+		args.push('--settings', settingsFile);
+		cleanupFiles.push(settingsFile);
+	}
+	args.push('Work the ticket as described in the appended system prompt.');
 	// On Windows, spawn() with shell:false cannot resolve .cmd/.ps1 shims
 	// installed by npm. Use shellCmd so spawn() runs with shell:true instead.
 	if (process.platform === 'win32') {
 		const escaped = args.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ');
-		return { shellCmd: `claude ${escaped}`, formatStream };
+		return { shellCmd: `claude ${escaped}`, formatStream, cleanupFiles };
 	}
-	return { cmd: 'claude', args, formatStream };
+	return { cmd: 'claude', args, formatStream, cleanupFiles };
 }

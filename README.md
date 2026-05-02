@@ -111,6 +111,7 @@ node tess/scripts/run.mjs --strategy chase
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, `auggie`, or `codex` |
 | `--strategy <name>` | `batch` | Traversal strategy: `batch` or `chase`. See [Strategies](#strategies). |
 | `--max <n>` | _unlimited_ | Stop after processing at most n tickets |
+| `--token-budget <n>` | _unset_ | Soft per-ticket context budget (claude only). When the running context size crosses *n* tokens, a one-shot `BUDGET_WARNING` is injected via a PreToolUse hook so the agent splits residual work into continuation tickets. See [Token Budget](#token-budget). |
 | `--no-commit` | — | Skip automatic git commit after each ticket (also skips the migration commit) |
 | `--dry-run` | — | List tickets without invoking the agent |
 
@@ -157,6 +158,22 @@ node tess/scripts/run.mjs --strategy chase
 # Chase only the earliest tickets
 node tess/scripts/run.mjs --strategy chase --max 3
 ```
+
+## Token Budget
+
+A long-running ticket can outgrow the model's context window mid-task, leaving an interrupted commit that is awkward to resume from. The `--token-budget <n>` flag (claude only) gives you a soft cushion: the runner watches Claude's per-turn context size and, when the threshold is crossed, injects a one-shot `BUDGET_WARNING` through a PreToolUse hook. The agent's instructions (in `agent-rules/tickets.md`) tell it to stop investigating, capture remaining TODOs as continuation ticket(s) in the **same** stage, delete the source ticket, and exit cleanly.
+
+```bash
+# Suggested starting point — claude's context is 200k.
+node tess/scripts/run.mjs --token-budget 160000
+```
+
+The warning is purely advisory; the agent stays in control. After the agent splits and the runner commits, behavior depends on strategy:
+
+- **chase** picks up the new same-stage continuations as part of the current chain (depth-first, before advancing the original slug forward).
+- **batch** lets the continuations roll into the next run, preserving the snapshot-once-per-run guarantee.
+
+The budget applies per ticket — every new ticket invocation starts from zero.
 
 ## Ticket Lifecycle
 

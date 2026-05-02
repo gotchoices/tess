@@ -37,6 +37,13 @@ export function printHelp() {
 		'                              and any queued ticket listing it as `prereq:` is',
 		'                              skipped for the rest of the run.',
 		'  --max <n>            Stop after at most n tickets          (default: unlimited)',
+		'  --token-budget <n>   Soft per-ticket context budget (claude only).  When the',
+		'                       running context size crosses n tokens, a one-shot',
+		'                       BUDGET_WARNING is injected via a PreToolUse hook so the',
+		'                       agent splits residual work into continuation tickets.',
+		'                       In `chase`, splits land in the same stage and are picked',
+		'                       up next within the chain.  In `batch`, splits roll into',
+		'                       the next run.                          (default: unset)',
 		'  --no-commit          Skip automatic git commit after each ticket',
 		'  --dry-run            List tickets without invoking agent',
 		'  --help               Show this help',
@@ -64,6 +71,7 @@ export function parseArgs(argv) {
 		dryRun: false,
 		noCommit: false,
 		maxTickets: Infinity,
+		tokenBudget: Infinity,
 		stagesRaw: null,
 	};
 
@@ -88,6 +96,9 @@ export function parseArgs(argv) {
 			case '--max':
 				opts.maxTickets = parseInt(argv[++i], 10);
 				break;
+			case '--token-budget':
+				opts.tokenBudget = parseInt(argv[++i], 10);
+				break;
 			case '--stages':
 				opts.stagesRaw = argv[++i];
 				break;
@@ -109,6 +120,11 @@ export function parseArgs(argv) {
 
 	if (!KNOWN_STRATEGIES.includes(opts.strategy)) {
 		console.error(`Unknown strategy: "${opts.strategy}". Valid strategies: ${KNOWN_STRATEGIES.join(', ')}`);
+		process.exit(1);
+	}
+
+	if (Number.isFinite(opts.tokenBudget) && opts.tokenBudget <= 0) {
+		console.error(`--token-budget must be a positive integer.`);
 		process.exit(1);
 	}
 

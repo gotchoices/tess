@@ -5,6 +5,14 @@
  * applies an idle-timeout watchdog.  When an agent emits a "done" stream
  * record but doesn't exit promptly, the watchdog force-kills the process
  * tree so the runner doesn't hang.
+ *
+ * Soft token budget: when `tokenBudget` is set, the runner watches the
+ * context-window size reported on each assistant turn (via the adapter's
+ * `formatStream`).  Once it crosses the threshold it writes a one-shot
+ * BUDGET_WARNING to a flag file; the agent's PreToolUse hook (set up by
+ * the adapter) injects that file's contents into the model's next turn.
+ * This is a soft signal — the agent decides what to do; the workflow rules
+ * tell it to split residual work into continuation tickets.
  */
 
 import { spawn, execSync } from 'node:child_process';
@@ -14,6 +22,12 @@ import { agents } from './agents/index.mjs';
 
 export const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes with no output → assume hung
 export const MAX_TIMEOUT_RETRIES = 1;          // retry a ticket once on idle timeout before moving on
+
+const BUDGET_WARNING_TEXT =
+	'BUDGET_WARNING: This run has crossed the configured soft token budget. ' +
+	'Per the BUDGET_WARNING section of the ticket workflow rules, stop further ' +
+	'investigation now. Capture remaining TODOs as one or more continuation ' +
+	'tickets in the SAME stage, delete the source ticket, and exit cleanly.';
 
 /**
  * Force-kill a child process and all its descendants.
@@ -39,8 +53,8 @@ function killTree(child) {
 	}
 }
 
-/** Write prompt to a temp instruction file, spawn the agent, tee output to log. Returns { exitCode, timedOut }. */
-export async function runAgent(agentName, prompt, cwd, logFile, { stage } = {}) {
+/** Write prompt to a temp instruction file, spawn the agent, tee output to log. Returns { exitCode, timedOut, budgetTriggered }. */
+export async function runAgent(agentName, prompt, cwd, logFile, { stage, tokenBudget } = {}) {
 	const adapter = agents[agentName];
 	if (!adapter) {
 		console.error(`Unknown agent: ${agentName}. Available: ${Object.keys(agents).join(', ')}`);
@@ -50,13 +64,23 @@ export async function runAgent(agentName, prompt, cwd, logFile, { stage } = {}) 
 	const instructionFile = logFile.replace(/\.log$/, '.prompt.md');
 	await writeFile(instructionFile, prompt, 'utf-8');
 
-	const adapterResult = adapter(instructionFile, prompt, { cwd, stage });
+	const budgetFlagFile = Number.isFinite(tokenBudget)
+		? logFile.replace(/\.log$/, '.budget-warning')
+		: null;
+
+	const adapterResult = await adapter(instructionFile, prompt, { cwd, stage, tokenBudget });
 	const logStream = createWriteStream(logFile, { flags: 'a' });
-	const { cmd, args, shellCmd, formatStream } = adapterResult;
+	const { cmd, args, shellCmd, formatStream, cleanupFiles = [] } = adapterResult;
+
+	const childEnv = budgetFlagFile
+		? { ...process.env, TESS_BUDGET_FLAG_FILE: budgetFlagFile }
+		: process.env;
 
 	const spawnArgs = shellCmd
-		? [shellCmd, [], { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: true }]
-		: [cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: false }];
+		? [shellCmd, [], { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: true, env: childEnv }]
+		: [cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], shell: false, env: childEnv }];
+
+	let budgetTriggered = false;
 
 	try {
 		return await new Promise((resolve, reject) => {
@@ -71,8 +95,9 @@ export async function runAgent(agentName, prompt, cwd, logFile, { stage } = {}) 
 				settled = true;
 				clearTimeout(idleTimer);
 				logStream.end(`\n[runner] Agent exited with code ${code}\n`);
-				logStream.once('finish', () => resolve({ exitCode: code, timedOut }));
-				logStream.once('error', () => resolve({ exitCode: code, timedOut }));
+				const done = () => resolve({ exitCode: code, timedOut, budgetTriggered });
+				logStream.once('finish', done);
+				logStream.once('error', done);
 			}
 
 			function resetIdleTimer() {
@@ -96,10 +121,27 @@ export async function runAgent(agentName, prompt, cwd, logFile, { stage } = {}) 
 				}
 			}
 
+			async function maybeFireBudget(usage) {
+				if (budgetTriggered || !budgetFlagFile || !Number.isFinite(tokenBudget)) return;
+				if (usage < tokenBudget) return;
+				budgetTriggered = true;
+				const msg = `\n[runner] Token context ${usage} crossed budget ${tokenBudget} — injecting BUDGET_WARNING.\n`;
+				process.stderr.write(msg);
+				logStream.write(msg);
+				try {
+					await writeFile(budgetFlagFile, BUDGET_WARNING_TEXT, 'utf-8');
+				} catch (err) {
+					const errMsg = `\n[runner] Failed to write budget flag: ${err.message}\n`;
+					process.stderr.write(errMsg);
+					logStream.write(errMsg);
+				}
+			}
+
 			function processLine(line) {
 				if (!formatStream) { writeOut(line + '\n'); return; }
 				const result = formatStream(line);
 				if (result.text) writeOut(result.text);
+				if (typeof result.usage === 'number') maybeFireBudget(result.usage);
 				if (result.done) {
 					resultExitCode = result.exitCode ?? 0;
 					clearTimeout(idleTimer);
@@ -143,5 +185,9 @@ export async function runAgent(agentName, prompt, cwd, logFile, { stage } = {}) 
 	} finally {
 		process.stdout.write('\x1b[0m');
 		await unlink(instructionFile).catch(() => {});
+		for (const f of cleanupFiles) await unlink(f).catch(() => {});
+		// Hook deletes the flag file on first fire; clean up any straggler
+		// (e.g. budget crossed but agent exited before its next tool call).
+		if (budgetFlagFile) await unlink(budgetFlagFile).catch(() => {});
 	}
 }

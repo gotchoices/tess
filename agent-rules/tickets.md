@@ -36,7 +36,17 @@ If the ticket contains a `<!-- resume-note -->` block, a prior agent run was int
 
 Don't combine tickets unless they are tightly related.
 
-Efficiency tips:
+## BUDGET_WARNING
+
+If you receive a `BUDGET_WARNING` from the runner, the conversation has crossed its soft token budget and you should wrap up rather than continuing to investigate or implement:
+
+- Once you wrap up what you are in the middle of, update the ticket to reflect your progress and learnings.
+- If the work is too significant for one ticket, create additional ticket(s) in the **same stage** (not next) to decompose the work; use `prereq:` headers to determine the order.
+- If the additional tickets replace the original ticket, delete the original.
+- Exit cleanly and don't run more tests or run more tools after the ticket update/writes
+
+## Efficiency tips:
+
 - Use the `files:` header in tickets — it saves the next agent from re-discovering paths.
 - Use the `prereq:` header to name other tickets (by slug, without sequence prefix) whose landing you depend on.  Omit sequence prefixes — they may change.
 - When spawning sub-agents, give them specific file paths rather than asking them to explore.
