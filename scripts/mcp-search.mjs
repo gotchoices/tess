@@ -207,12 +207,37 @@ async function handleReadChunk(args, repoRoot) {
 	};
 }
 
+// Cosine-similarity scores from sqlite-vec KNN over a large code corpus
+// typically land in the 0.0-0.3 band even for excellent matches — the model
+// has to discriminate among thousands of code chunks, which compresses the
+// distribution well below the 0.7+ scores we'd see in isolated 2-way tests.
+// Showing the raw cosine misleads the agent: 0.16 looks like noise but is
+// actually a strong relative match.  We calibrate two ways:
+//
+//   - WEAK_TOP: if the best score in the result set is below this floor,
+//     prepend a "no strong matches" warning so the agent gives up on this
+//     query rather than spending tool calls on noise.
+//   - Per-result confidence: each hit is rendered as a percentage of the
+//     top hit's score (top = 100%, lower = relative weakness within the
+//     same query).  Raw cosine is hidden — agents are bad at calibrating
+//     absolute floats and good at calibrating relative ranks.
+const WEAK_TOP = 0.05;
+
 function formatMatches(matches) {
 	if (matches.length === 0) return 'No matches.';
-	return matches.map((m, i) => {
-		const score = m.score.toFixed(3);
-		return `[${i + 1}] ${m.path}:${m.start_line}-${m.end_line}  (score ${score})\n${trimSnippet(m.text)}`;
+	const top = matches[0].score;
+	const header = top < WEAK_TOP
+		? `Top score is weak (raw cosine ${top.toFixed(3)}). Results below may be noise — consider rephrasing the query or falling back to grep.\n\n`
+		: '';
+	const body = matches.map((m, i) => {
+		const tag = i === 0
+			? '(top match)'
+			: top > 0
+				? `(${Math.round((m.score / top) * 100)}% of top)`
+				: '(weak)';
+		return `[${i + 1}] ${tag}  ${m.path}:${m.start_line}-${m.end_line}\n${trimSnippet(m.text)}`;
 	}).join('\n\n---\n\n');
+	return header + body;
 }
 
 function trimSnippet(text) {

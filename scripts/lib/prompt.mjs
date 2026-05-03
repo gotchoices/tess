@@ -50,14 +50,21 @@ export async function buildPrompt(ticket, tessRoot, repoRoot) {
 }
 
 function searchDirective(serverName) {
-	const ns = `mcp__${serverName.replace(/-/g, '_')}__`;
+	// MCP tool ids preserve the server name verbatim — e.g. server "code-search"
+	// gives `mcp__code-search__search_code` (with the dash, not an underscore).
+	const ns = `mcp__${serverName}__`;
+	const toolNames = [`${ns}search_code`, `${ns}find_references`, `${ns}read_chunk`];
 	return [
 		'',
 		'## Code-search tools (registered for this project)',
 		'',
-		'This project has a local semantic + literal code-search index. Use these tools FIRST for codebase exploration, before grep/Glob/Read:',
+		'These tools are deferred — call `ToolSearch` first to load their schemas:',
 		'',
-		`- \`${ns}search_code(query, k?, path_filter?)\` — semantic search. Use it whenever you want to **understand** something, even when you already know an identifier: what a symbol does, what invariant a function maintains, how two concepts relate, what existing patterns look like. Example: instead of \`grep "I4|I21" docs/invariant-catalog.md\`, call \`search_code("what does invariant I4 mean for overlay allocation")\`.`,
+		`    ToolSearch({ query: "select:${toolNames.join(',')}" })`,
+		'',
+		'Then use them FIRST for codebase exploration, before grep/Glob/Read:',
+		'',
+		`- \`${ns}search_code(query, k?, path_filter?)\` — semantic search. Use it whenever you want to **understand** something, even when you already know an identifier: what a symbol does, what invariant a function maintains, how two concepts relate, what existing patterns look like. Example: instead of \`grep "I4|I21" docs/invariant-catalog.md\`, call \`search_code("what does invariant I4 mean for overlay allocation")\`. Scores are normalized within each result set: \`(top match)\` is the strongest hit; lower percentages are weaker relative to the top, not absolute.`,
 		`- \`${ns}find_references(symbol, max?, path_filter?)\` — literal-substring search across the index. Accepts \`|\`-separated alternatives that are OR-ed (each side is still a literal substring, not a regex), e.g. \`"composeNewSlot|defaultComposeNewSlot"\`. Use it when you want every occurrence of a name (or a small family of names).`,
 		`- \`${ns}read_chunk(path, start_line, end_line)\` — expand a snippet returned by either search tool without spawning a Read call.`,
 		'',
