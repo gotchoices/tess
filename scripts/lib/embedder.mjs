@@ -1,8 +1,11 @@
 /**
  * Local embedding via @huggingface/transformers (transformers.js).
  *
- * Default model: Xenova/all-MiniLM-L6-v2 (384-dim, ~80MB).  First run
- * downloads weights to TRANSFORMERS_CACHE (we point this at
+ * Default model: jinaai/jina-embeddings-v2-base-code (768-dim, ~155MB
+ * quantized).  Trained on aligned code/text pairs across ~30 programming
+ * languages, so it scores actual source against natural-language queries
+ * far better than a general sentence-transformer.  First run downloads the
+ * `model_quantized.onnx` variant to TRANSFORMERS_CACHE (we point this at
  * tickets/.index/models/ so all artifacts stay under the project).
  *
  * Usage:
@@ -10,9 +13,12 @@
  *   const vectors = await embedder.embed(['text1', 'text2']);   // Float32Array[]
  */
 
-export const DEFAULT_MODEL = 'Xenova/all-MiniLM-L6-v2';
-export const DEFAULT_DIM = 384;
-const BATCH_SIZE = 32;
+export const DEFAULT_MODEL = 'jinaai/jina-embeddings-v2-base-code';
+export const DEFAULT_DIM = 768;
+// Quantized 768-dim base model is ~10x slower than MiniLM per embedding on
+// CPU but produces meaningfully sharper code↔query rankings.  Drop the
+// per-batch size to keep peak memory bounded.
+const BATCH_SIZE = 16;
 
 export class Embedder {
 	constructor(pipeline, modelId) {
@@ -31,8 +37,10 @@ export class Embedder {
 		// MCP clients flag as noise.
 		transformers.env.backends?.onnx?.wasm && (transformers.env.backends.onnx.wasm.proxy = false);
 
+		// dtype: 'q8' selects the `_quantized.onnx` variant when present.
+		// transformers.js v3 dropped the v2-era `quantized: true` flag.
 		const pipeline = await transformers.pipeline('feature-extraction', modelId, {
-			quantized: true,
+			dtype: 'q8',
 		});
 		return new Embedder(pipeline, modelId);
 	}
@@ -44,15 +52,22 @@ export class Embedder {
 
 	/**
 	 * Embed an array of strings; returns Float32Array[] in input order.
-	 * Batched internally to amortize model overhead.
+	 * Batched internally to amortize model overhead.  Fails loudly if the
+	 * model returns an unexpected dim (caller passes the expected value so
+	 * we can refuse to silently corrupt the index).
 	 */
-	async embed(texts) {
+	async embed(texts, expectedDim = null) {
 		const result = new Array(texts.length);
 		for (let i = 0; i < texts.length; i += BATCH_SIZE) {
 			const batch = texts.slice(i, i + BATCH_SIZE);
 			const out = await this.pipeline(batch, { pooling: 'mean', normalize: true });
 			// transformers returns a single Tensor of shape [batch, dim]; slice it.
 			const dim = out.dims[1];
+			if (expectedDim !== null && dim !== expectedDim) {
+				throw new Error(
+					`embedder for ${this.modelId} returned dim ${dim}, expected ${expectedDim}`,
+				);
+			}
 			const flat = out.data;
 			for (let j = 0; j < batch.length; j++) {
 				const v = new Float32Array(dim);

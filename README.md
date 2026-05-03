@@ -192,7 +192,7 @@ Tess can build a local vector index of the repository and expose it to the agent
 
 Three pieces, each independent:
 
-1. **Indexer** — `node tess/scripts/index.mjs` walks `git ls-files`, chunks each file, embeds the chunks with a local sentence-transformers model (`Xenova/all-MiniLM-L6-v2`, 384-dim, ~80MB on first run), and stores vectors in `tickets/.index/index.db` (sqlite + sqlite-vec).  Incremental by content hash — re-running on a typical diff is sub-second.
+1. **Indexer** — `node tess/scripts/index.mjs` walks `git ls-files`, chunks each file, embeds the chunks with a local code-aware embedding model (`jinaai/jina-embeddings-v2-base-code`, 768-dim, ~155MB quantized on first run), and stores vectors in `tickets/.index/index.db` (sqlite + sqlite-vec).  Incremental by content hash — re-running on a typical diff is sub-second.  If you have an existing index from the legacy MiniLM model, the indexer will refuse to open it and point you at `--rebuild`.
 2. **MCP server** — `tess/scripts/mcp-search.mjs` is a stdio MCP server exposing `search_code`, `find_references`, and `read_chunk` against the same DB.  Started by the agent, dies with it; nothing runs in the background between invocations.
 3. **Per-agent config** — `init` writes the right MCP config for the chosen agent (Claude `.mcp.json`, Cursor `.cursor/mcp.json`, codex sample TOML).
 
@@ -202,7 +202,7 @@ Three pieces, each independent:
 node tess/scripts/init.mjs --with-search --agent claude
 ```
 
-That single command writes the MCP config, runs `npm install` inside `tess/`, and builds the initial index (the first run downloads a ~80MB embedding model).  Re-running is safe and incremental.
+That single command writes the MCP config, runs `npm install` inside `tess/`, and builds the initial index (the first run downloads a ~155MB embedding model).  Re-running is safe and incremental.
 
 ### Keep it fresh
 

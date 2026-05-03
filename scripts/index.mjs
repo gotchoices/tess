@@ -39,9 +39,10 @@ const DEFAULT_EXTS = new Set([
 
 const ALWAYS_EXCLUDE = [
 	'node_modules/', 'dist/', 'build/', 'out/', 'target/',
-	'.git/', 'tickets/', // tess working state, not project source — indexing it
-	                     // dominates rankings because prose beats code under
-	                     // sentence-transformer embeddings.
+	'.git/',
+	'tickets/', // tess working state, not project source.
+	'team/',    // teamos working state (chat/todos/events).  Same prose-dominates-
+	            // -code-rankings problem as tickets/.
 	'.next/', '.svelte-kit/', '.cache/', 'coverage/',
 ];
 
@@ -154,7 +155,7 @@ export async function runIndexer(opts) {
 				embedder = await Embedder.load(modelCacheDir);
 			}
 
-			const embeddings = await embedder.embed(chunks.map(c => c.text));
+			const embeddings = await embedder.embed(chunks.map(c => c.text), DEFAULT_DIM);
 			const rows = chunks.map((c, i) => ({ ...c, embedding: embeddings[i] }));
 			store.replaceFile(relPath, hash, st.mtimeMs, rows);
 			reindexed++;

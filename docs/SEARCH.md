@@ -35,7 +35,7 @@ Optional, opt-in. Builds a local vector index of your repository and exposes it 
 tickets/
 ├── .index/
 │   ├── index.db             sqlite + sqlite-vec
-│   └── models/              transformers.js cache (~80MB)
+│   └── models/              transformers.js cache (~155MB)
 ├── .logs/
 └── ...
 ```
@@ -44,9 +44,11 @@ All artifacts are gitignored. To uninstall: `rm -rf tickets/.index/` and remove 
 
 ## Embedding model
 
-Default: `Xenova/all-MiniLM-L6-v2` — 384-dim, ~80MB, fast on CPU.
+Default: `jinaai/jina-embeddings-v2-base-code` — 768-dim, ~155MB on disk (the `model_quantized.onnx` int8 variant), CPU-only.  Trained on aligned code/text pairs across ~30 programming languages, so natural-language queries match real source far better than the previous general-purpose `Xenova/all-MiniLM-L6-v2` (384-dim) — typical query-to-relevant-code cosine similarity moves from the 0.0–0.2 band into the 0.6–0.8 band, while unrelated chunks stay near zero.
 
-The model id and embedding dimension are stored in the DB's `meta` table. If you swap models the indexer will refuse to open the existing DB and direct you to `--rebuild`. This prevents silent vector-space mixing.
+Trade-offs: per-embedding latency is roughly an order of magnitude higher than MiniLM on CPU, and DB rows are ~2x larger because the vector dimension doubled.  Indexing a fresh repo takes longer; queries are still well under a second for typical repo sizes.
+
+The model id and embedding dimension are stored in the DB's `meta` table.  If you swap models (or upgrade from the legacy MiniLM index) the indexer will refuse to open the existing DB and direct you to `--rebuild`.  This prevents silent vector-space mixing.
 
 ## MCP tools
 
@@ -100,8 +102,8 @@ Existing entries in any of these files are preserved.
 ## Footprint
 
 - **npm install** in `tess/`: ~150MB on disk (better-sqlite3 + sqlite-vec native binaries, transformers.js, MCP SDK).  `init.mjs --with-search` runs this automatically; re-runs are skipped when `tess/node_modules/` is already populated.
-- **First indexer run**: ~80MB model download into `tickets/.index/models/`.  `init.mjs --with-search` triggers this automatically after deps install.
-- **DB size**: roughly 1KB/chunk; a 5k-file repo typically lands around 40–80MB.
+- **First indexer run**: ~155MB model download into `tickets/.index/models/`.  `init.mjs --with-search` triggers this automatically after deps install.
+- **DB size**: roughly 4KB/chunk at 768-dim (vs ~2KB at the legacy 384-dim); a 5k-file repo typically lands around 80–160MB.
 
 ## Limitations and future work
 

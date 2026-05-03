@@ -159,7 +159,7 @@ async function handleSearch(args, store, embedder) {
 	const k = Math.max(1, Math.min(50, Number(args.k ?? 10)));
 	const pathFilter = args.path_filter ? String(args.path_filter) : null;
 
-	const [embedding] = await embedder.embed([query]);
+	const [embedding] = await embedder.embed([query], store.dim);
 	const matches = store.knn(embedding, k, pathFilter);
 	return {
 		content: [{
