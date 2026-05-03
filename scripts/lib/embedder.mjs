@@ -16,9 +16,13 @@
 export const DEFAULT_MODEL = 'jinaai/jina-embeddings-v2-base-code';
 export const DEFAULT_DIM = 768;
 // Quantized 768-dim base model is ~10x slower than MiniLM per embedding on
-// CPU but produces meaningfully sharper code↔query rankings.  Drop the
-// per-batch size to keep peak memory bounded.
-const BATCH_SIZE = 16;
+// CPU but produces meaningfully sharper code↔query rankings.  Keep per-batch
+// size low to bound peak memory: an unlucky batch of long-line chunks can
+// otherwise OOM the ONNX runtime ("bad allocation" on the first attention
+// layer).  Combined with token-level truncation below, this keeps a single
+// forward pass at ~BATCH_SIZE * MAX_TOKENS tokens.
+const BATCH_SIZE = 4;
+const MAX_TOKENS = 512;
 
 export class Embedder {
 	constructor(pipeline, modelId) {
@@ -46,7 +50,10 @@ export class Embedder {
 	}
 
 	async embedOne(text) {
-		const out = await this.pipeline(text, { pooling: 'mean', normalize: true });
+		const out = await this.pipeline(text, {
+			pooling: 'mean', normalize: true,
+			truncation: true, max_length: MAX_TOKENS,
+		});
 		return new Float32Array(out.data);
 	}
 
@@ -60,7 +67,10 @@ export class Embedder {
 		const result = new Array(texts.length);
 		for (let i = 0; i < texts.length; i += BATCH_SIZE) {
 			const batch = texts.slice(i, i + BATCH_SIZE);
-			const out = await this.pipeline(batch, { pooling: 'mean', normalize: true });
+			const out = await this.pipeline(batch, {
+				pooling: 'mean', normalize: true,
+				truncation: true, max_length: MAX_TOKENS,
+			});
 			// transformers returns a single Tensor of shape [batch, dim]; slice it.
 			const dim = out.dims[1];
 			if (expectedDim !== null && dim !== expectedDim) {

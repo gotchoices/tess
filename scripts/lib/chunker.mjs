@@ -20,11 +20,29 @@ const CHUNK_LINES = 40;
 const OVERLAP_LINES = 8;
 const MAX_CHUNK_LINES = 80;
 
+// Hard byte cap on chunk text — minified/generated/single-line files can
+// produce 80-line chunks that are tens of KB and tokenize to thousands of
+// tokens, which OOMs the embedder under batched inference.  Truncating here
+// keeps line-range metadata accurate (still points at the original lines)
+// while bounding the embed-content.  Roughly correlates with ~4-8KB ≈ 1-2K
+// tokens at typical code density.
+const MAX_CHUNK_BYTES = 6000;
+
 export function chunkText(text, path) {
 	const isMarkdown = /\.(md|mdx)$/i.test(path);
 	const lines = text.split(/\r?\n/);
 	const chunks = isMarkdown ? chunkMarkdown(lines) : chunkLines(lines);
-	return chunks.filter(c => c.text.trim().length > 0);
+	return chunks
+		.filter(c => c.text.trim().length > 0)
+		.map(capChunkBytes);
+}
+
+function capChunkBytes(chunk) {
+	if (chunk.text.length <= MAX_CHUNK_BYTES) return chunk;
+	return {
+		...chunk,
+		text: chunk.text.slice(0, MAX_CHUNK_BYTES) + '\n… (truncated)',
+	};
 }
 
 function chunkLines(lines) {
