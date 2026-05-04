@@ -52,23 +52,21 @@ export async function buildPrompt(ticket, tessRoot, repoRoot) {
 function searchDirective(serverName) {
 	// MCP tool ids preserve the server name verbatim — e.g. server "code-search"
 	// gives `mcp__code-search__search_code` (with the dash, not an underscore).
+	// Full tool surface is documented in the project's root AGENTS.md (see
+	// tess/agent-rules/search.md, appended by `init.mjs --with-search`); this
+	// block exists only to (a) load the deferred schemas and (b) recency-bias
+	// the agent toward search before grep/Glob/Read.
 	const ns = `mcp__${serverName}__`;
 	const toolNames = [`${ns}search_code`, `${ns}find_references`, `${ns}read_chunk`];
 	return [
 		'',
-		'## Code-search tools (registered for this project)',
+		'## Code-search tools',
 		'',
-		'These tools are deferred — call `ToolSearch` first to load their schemas:',
+		'These tools are deferred — load their schemas first:',
 		'',
 		`    ToolSearch({ query: "select:${toolNames.join(',')}" })`,
 		'',
-		'Then use them FIRST for codebase exploration, before grep/Glob/Read:',
-		'',
-		`- \`${ns}search_code(query, k?, path_filter?)\` — semantic search. Use it whenever you want to **understand** something, even when you already know an identifier: what a symbol does, what invariant a function maintains, how two concepts relate, what existing patterns look like. Example: instead of \`grep "I4|I21" docs/invariant-catalog.md\`, call \`search_code("what does invariant I4 mean for overlay allocation")\`. Scores are normalized within each result set: \`(top match)\` is the strongest hit; lower percentages are weaker relative to the top, not absolute.`,
-		`- \`${ns}find_references(symbol, max?, path_filter?)\` — literal-substring search across the index. Accepts \`|\`-separated alternatives that are OR-ed (each side is still a literal substring, not a regex), e.g. \`"composeNewSlot|defaultComposeNewSlot"\`. Use it when you want every occurrence of a name (or a small family of names).`,
-		`- \`${ns}read_chunk(path, start_line, end_line)\` — expand a snippet returned by either search tool without spawning a Read call.`,
-		'',
-		'Reach for grep/Glob only when you need filename patterns, regex with anchors/lookarounds, or a guarantee that you have *every* literal hit (the index has chunk granularity).',
+		'Then use them before grep/Glob/Read for codebase exploration. See AGENTS.md § Code search for the tool surface.',
 		'',
 	].join('\n');
 }

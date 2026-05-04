@@ -149,7 +149,7 @@ Best for: steady, reviewable progress across the whole pipeline. Each run produc
 
 Pick one root ticket and follow it through **every** stage to `complete/` before moving to the next root. Ticket-major instead of stage-major.
 
-After each stage transition, chase looks up the same slug in `NEXT_STAGE`, then in `blocked/` and `backlog/` (it does **not** rely on a filesystem diff — other agents may be modifying `tickets/` in parallel). If the same slug landed in the next stage, the chase continues; if it landed in `blocked/` or `backlog/`, the chain ends and the slug is recorded as **deferred** for the rest of the run.
+After each stage transition, chase looks up the same slug in any forward-ranked stage (an agent is free to jump straight from `fix/` to `review/` when no separate implementation pass is needed), then in `blocked/` and `backlog/`. It does **not** rely on a filesystem diff — other agents may be modifying `tickets/` in parallel. If the slug landed somewhere past its current stage, the chase continues from there; if it landed in `blocked/` or `backlog/`, the chain ends and the slug is recorded as **deferred** for the rest of the run.
 
 **Deferral cascade.** A slug enters the run's deferred set when the agent moves it to `blocked/` or `backlog/`, *or* when the cross-stage prereq gate rejects it because a prereq is still behind. A queued root that lists a deferred slug as `prereq:` is skipped — and the skipped root is itself added to the deferred set, so the skip cascades transitively through the queue. The same cascade applies in `batch` mode. This prevents tess from charging into work whose prerequisite just bounced or hasn't caught up.
 
@@ -202,7 +202,7 @@ Three pieces, each independent:
 node tess/scripts/init.mjs --with-search --agent claude
 ```
 
-That single command writes the MCP config, runs `npm install` inside `tess/`, and builds the initial index (the first run downloads a ~155MB embedding model).  Re-running is safe and incremental.
+That single command writes the MCP config, runs `npm install` inside `tess/`, builds the initial index (the first run downloads a ~155MB embedding model), and appends a `## Code search (tess)` section to your project's root `AGENTS.md` so any agent — not just the tess runner — is pointed at the index.  Re-running is safe and incremental.
 
 ### Keep it fresh
 

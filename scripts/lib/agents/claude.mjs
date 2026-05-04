@@ -63,7 +63,11 @@ function formatStream(line) {
 					const text = Array.isArray(block.content)
 						? block.content.map(c => c.text ?? '').join('')
 						: String(block.content ?? '');
-					parts.push(`  ✓ ${text.slice(0, 200)}\n`);
+					const cap = 4000;
+					const shown = text.length > cap
+						? `${text.slice(0, cap)}\n… [+${text.length - cap} more chars truncated]`
+						: text;
+					parts.push(`  ✓ ${shown}\n`);
 				} else if (block.type === 'text' && block.text) {
 					parts.push(`\n[USER]\n${block.text}\n`);
 				}

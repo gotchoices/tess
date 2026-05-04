@@ -38,7 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { discoverTickets, formatSeq, indexAllTickets, findUnsatisfiedPrereq, findTransitiveBlocker } from './lib/tickets.mjs';
 import { topoSortAndCheck } from './lib/topo.mjs';
 import { readAndClearInProgress, addResumeNote } from './lib/state.mjs';
-import { ensureLogsDir } from './lib/logging.mjs';
+import { ensureLogsDir, pruneOldLogs } from './lib/logging.mjs';
 import { getTessVersion, runMigrationIfNeeded } from './lib/git.mjs';
 import { parseArgs, formatStageSummary } from './lib/cli.mjs';
 import { strategies } from './lib/strategies/index.mjs';
@@ -165,6 +165,10 @@ async function main() {
 	console.log(banner);
 
 	const logsDir = await ensureLogsDir(ticketsDir);
+	const pruned = await pruneOldLogs(logsDir, priorRun?.logFile);
+	if (pruned.removedGroups > 0) {
+		console.log(`  Pruned ${pruned.removedGroups} old log set(s) (${pruned.removedFiles} file(s)).`);
+	}
 
 	const strategy = strategies[opts.strategy];
 	await strategy.run({

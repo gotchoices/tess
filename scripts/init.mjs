@@ -252,6 +252,22 @@ async function ensureRootAgentRules(projectRoot) {
 	log(existing.length > 0 ? `Appended tess section to ${name}` : `Created ${name}`);
 }
 
+async function ensureRootSearchRules(projectRoot) {
+	const section = await readFile(join(TESS_ROOT, 'agent-rules', 'search.md'), 'utf-8');
+	const name = ROOT_AGENT_RULE;
+	const filePath = join(projectRoot, name);
+	const existing = await readTextOrEmpty(filePath);
+
+	if (existing.includes('## Code search (tess)')) {
+		log(`${name} already has code-search section, skipping`);
+		return;
+	}
+
+	const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n\n' : existing.length > 0 ? '\n' : '';
+	await writeFile(filePath, existing + separator + section, 'utf-8');
+	log(existing.length > 0 ? `Appended code-search section to ${name}` : `Created ${name}`);
+}
+
 async function updateGitignoreForSymlinks(projectRoot) {
 	const gitignorePath = join(projectRoot, '.gitignore');
 	const entries = ['tess', ...AGENT_RULE_NAMES.map(n => `tickets/${n}`)];
@@ -415,6 +431,8 @@ async function wireMcpSearch(projectRoot, agent) {
 	}
 	const rel = relative(projectRoot, result.path);
 	log(`Wired code-search MCP into ${rel} (${result.action})`);
+
+	await ensureRootSearchRules(projectRoot);
 
 	const installed = await ensureSearchDeps();
 	if (!installed) {

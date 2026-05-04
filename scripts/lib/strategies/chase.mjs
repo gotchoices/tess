@@ -5,10 +5,11 @@
  * ticket-major (take a plan ticket all the way to complete/).
  *
  * Successor lookup is by slug, not by filesystem diff.  After each stage
- * transition, we look for the same slug in NEXT_STAGE first, then in
- * blocked/ and backlog/.  This is robust against other agents touching
- * tickets/ in parallel — we don't try to attribute every new file to the
- * agent we just ran.
+ * transition, we look for the same slug in any forward-ranked stage (an
+ * agent is free to jump fix/ → review/ in one shot), then in blocked/ and
+ * backlog/.  This is robust against other agents touching tickets/ in
+ * parallel — we don't try to attribute every new file to the agent we
+ * just ran.
  *
  * Deferral cascade: a slug enters `deferred` when (a) the agent moved it
  * to blocked/ or backlog/ during the chain, or (b) the cross-stage prereq
@@ -24,13 +25,27 @@
  */
 
 import { runOneStage } from '../run-ticket.mjs';
-import { NEXT_STAGE, findTicketBySlug, discoverTickets } from '../tickets.mjs';
+import { NEXT_STAGE, STAGE_RANK, findTicketBySlug, discoverTickets } from '../tickets.mjs';
 import { topoSortAndCheck } from '../topo.mjs';
 
 // Bumped from 6 to give budget-triggered same-stage continuations room to
 // run alongside the natural 4-stage pipeline.  Still finite so a misbehaving
 // agent that regresses tickets cannot loop forever.
 const MAX_CHAIN_STEPS = 12;
+
+/**
+ * Pipeline-ordered list of stages strictly later in rank than `stage`.
+ * Used to chase a slug forward when an agent jumps multiple stages in one
+ * transition (e.g. fix/ → review/, skipping implement/).
+ */
+function forwardStages(stage) {
+	const r = STAGE_RANK[stage];
+	if (r == null) return [];
+	return Object.entries(STAGE_RANK)
+		.filter(([, rank]) => rank > r)
+		.sort(([, a], [, b]) => a - b)
+		.map(([s]) => s);
+}
 
 /**
  * After a budget-triggered split, find continuation tickets the agent left in
@@ -117,12 +132,17 @@ export async function run(ctx) {
 				}
 			}
 
-			// Natural advance: same slug in NEXT_STAGE.
-			const nextStage = NEXT_STAGE[t.stage];
-			const advanced = await findTicketBySlug(ticketsDir, t.slug, [nextStage]);
+			// Natural advance: same slug in any forward-ranked stage.  The
+			// agent is allowed to skip ahead (e.g. fix/ → review/ when no
+			// implementation work is needed), so we accept a hit anywhere
+			// past the current rank, earliest stage first.
+			const advanced = await findTicketBySlug(ticketsDir, t.slug, forwardStages(t.stage));
 			if (advanced) {
 				knownPaths.add(advanced.path);
 				followUps.push(advanced);
+				if (advanced.stage !== NEXT_STAGE[t.stage]) {
+					console.log(`  Chase: "${t.slug}" advanced ${t.stage}/ → ${advanced.stage}/ (skipped intermediate stage).`);
+				}
 			} else if (!outcome.budgetTriggered) {
 				// No advance and no budget split — check if the agent parked the slug.
 				const parked = await findTicketBySlug(ticketsDir, t.slug, ['blocked', 'backlog']);
@@ -130,7 +150,7 @@ export async function run(ctx) {
 					deferred.add(t.slug);
 					console.log(`  Chase ended: "${t.slug}" landed in ${parked.stage}/. Dependents will be skipped this run.\n`);
 				} else {
-					console.log(`  Chase ended: no successor for "${t.slug}" in ${nextStage}/ (agent may have split or renamed it).\n`);
+					console.log(`  Chase ended: no successor for "${t.slug}" past ${t.stage}/ (agent may have split or renamed it).\n`);
 				}
 			}
 

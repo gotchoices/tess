@@ -166,8 +166,8 @@ export class IndexStore {
 		const escapeLike = s => `%${s.replace(/[\\%_]/g, ch => '\\' + ch)}%`;
 		const orClause = terms.map(() => 'text LIKE ? ESCAPE \'\\\'').join(' OR ');
 		const sql = pathFilter
-			? `SELECT path, start_line, end_line, text FROM chunks WHERE (${orClause}) AND path LIKE ? LIMIT ?`
-			: `SELECT path, start_line, end_line, text FROM chunks WHERE (${orClause}) LIMIT ?`;
+			? `SELECT path, start_line, end_line, text FROM chunks WHERE (${orClause}) AND path LIKE ? ORDER BY path, start_line LIMIT ?`
+			: `SELECT path, start_line, end_line, text FROM chunks WHERE (${orClause}) ORDER BY path, start_line LIMIT ?`;
 		const params = pathFilter
 			? [...terms.map(escapeLike), pathFilter, max]
 			: [...terms.map(escapeLike), max];
