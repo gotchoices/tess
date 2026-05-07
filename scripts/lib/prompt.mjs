@@ -53,9 +53,11 @@ function searchDirective(serverName) {
 	// MCP tool ids preserve the server name verbatim — e.g. server "code-search"
 	// gives `mcp__code-search__search_code` (with the dash, not an underscore).
 	// Full tool surface is documented in the project's root AGENTS.md (see
-	// tess/agent-rules/search.md, appended by `init.mjs --with-search`); this
-	// block exists only to (a) load the deferred schemas and (b) recency-bias
-	// the agent toward search before grep/Glob/Read.
+	// tess/agent-rules/search.md, appended by `init.mjs --with-search`).  This
+	// block exists to (a) load the deferred schemas, (b) recency-bias the agent
+	// toward search before grep/Glob/Read, and (c) embed the choice rule —
+	// agents have been seen feeding identifier lists into search_code, which
+	// embeds as noise (weak-top warning) and wastes a tool call.
 	const ns = `mcp__${serverName}__`;
 	const toolNames = [`${ns}search_code`, `${ns}find_references`, `${ns}read_chunk`];
 	return [
@@ -66,7 +68,12 @@ function searchDirective(serverName) {
 		'',
 		`    ToolSearch({ query: "select:${toolNames.join(',')}" })`,
 		'',
-		'Then use them before grep/Glob/Read for codebase exploration. See AGENTS.md § Code search for the tool surface.',
+		'Then use them before grep/Glob/Read for codebase exploration. Picking the right one matters:',
+		'',
+		'- **Identifier-shaped query** (single symbol, camelCase, snake_case, or a list of names like `fooBar bazQux`) → `find_references`.',
+		'- **Prose query** ("where do we…", "what handles…", you do not yet know the identifier) → `search_code`.',
+		'',
+		'`search_code` embeds the query as natural language, so a bag of identifiers collapses to noise (negative cosine / "weak top" warning). On a weak-top result, switch tool or rephrase — do not trust the relative-% ranking on noisy hits. See AGENTS.md § Code search for the full tool surface, parameters, and fallback rules.',
 		'',
 	].join('\n');
 }

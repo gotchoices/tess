@@ -17,6 +17,9 @@
  *
  * The server refuses to start if no index exists; the error message points
  * at the indexer.
+ *
+ * The actual search/format logic lives in `lib/search-tools.mjs` and is
+ * shared with the human-facing CLI (`scripts/search.mjs`).
  */
 
 // Critical: stdout is the MCP transport.  Any stray write breaks the JSON-RPC
@@ -24,16 +27,22 @@
 const _origLog = console.log;
 console.log = (...args) => console.error(...args);
 
-import { join, resolve, isAbsolute, relative, sep, posix } from 'node:path';
-import { readFile, access } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
-import { IndexStore } from './lib/index-store.mjs';
-import { Embedder, DEFAULT_MODEL, DEFAULT_DIM } from './lib/embedder.mjs';
+import {
+	openSearchIndex,
+	searchCode,
+	findReferences,
+	readChunk,
+	formatMatches,
+	formatReferences,
+	formatReadChunk,
+	IndexNotBuiltError,
+} from './lib/search-tools.mjs';
 
 function parseArgs(argv) {
 	const opts = { repoRoot: process.cwd() };
@@ -88,27 +97,16 @@ const TOOLS = [
 
 async function main() {
 	const opts = parseArgs(process.argv.slice(2));
-	const indexDir = join(opts.repoRoot, 'tickets', '.index');
-	const dbPath = join(indexDir, 'index.db');
-	const modelCacheDir = join(indexDir, 'models');
 
-	try { await access(dbPath, constants.R_OK); }
-	catch {
-		console.error(
-			`tess-mcp-search: no index at ${dbPath}\n` +
-			`Run:  node tess/scripts/index.mjs\n` +
-			`from your project root to build it.`,
-		);
-		process.exit(1);
+	let ctx;
+	try { ctx = await openSearchIndex({ repoRoot: opts.repoRoot }); }
+	catch (err) {
+		if (err instanceof IndexNotBuiltError) {
+			console.error(`tess-mcp-search: ${err.message}`);
+			process.exit(1);
+		}
+		throw err;
 	}
-
-	const store = await IndexStore.open(dbPath, { dim: DEFAULT_DIM, modelId: DEFAULT_MODEL, readonly: true });
-
-	let embedder = null;
-	const ensureEmbedder = async () => {
-		if (!embedder) embedder = await Embedder.load(modelCacheDir, store.getMeta('model_id') ?? DEFAULT_MODEL);
-		return embedder;
-	};
 
 	const server = new Server(
 		{ name: 'code-search', version: '0.1.0' },
@@ -136,9 +134,30 @@ async function main() {
 	server.setRequestHandler(CallToolRequestSchema, async (req) => {
 		const { name, arguments: args } = req.params;
 		try {
-			if (name === 'search_code') return await handleSearch(args, store, await ensureEmbedder());
-			if (name === 'find_references') return handleReferences(args, store);
-			if (name === 'read_chunk') return await handleReadChunk(args, opts.repoRoot);
+			if (name === 'search_code') {
+				const matches = await searchCode({
+					query: args.query,
+					k: args.k,
+					pathFilter: args.path_filter ? String(args.path_filter) : null,
+				}, ctx);
+				return { content: [{ type: 'text', text: formatMatches(matches) }] };
+			}
+			if (name === 'find_references') {
+				const rows = findReferences({
+					symbol: args.symbol,
+					max: args.max,
+					pathFilter: args.path_filter ? String(args.path_filter) : null,
+				}, ctx);
+				return { content: [{ type: 'text', text: formatReferences(String(args.symbol ?? ''), rows) }] };
+			}
+			if (name === 'read_chunk') {
+				const chunk = await readChunk({
+					path: args.path,
+					startLine: args.start_line,
+					endLine: args.end_line,
+				}, ctx);
+				return { content: [{ type: 'text', text: formatReadChunk(chunk) }] };
+			}
 			throw new Error(`unknown tool: ${name}`);
 		} catch (err) {
 			return {
@@ -150,100 +169,7 @@ async function main() {
 
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
-	console.error(`code-search ready (index: ${dbPath})`);
-}
-
-async function handleSearch(args, store, embedder) {
-	const query = String(args.query ?? '').trim();
-	if (!query) throw new Error('query is required');
-	const k = Math.max(1, Math.min(50, Number(args.k ?? 10)));
-	const pathFilter = args.path_filter ? String(args.path_filter) : null;
-
-	const [embedding] = await embedder.embed([query], store.dim);
-	const matches = store.knn(embedding, k, pathFilter);
-	return {
-		content: [{
-			type: 'text',
-			text: formatMatches(matches),
-		}],
-	};
-}
-
-function handleReferences(args, store) {
-	const symbol = String(args.symbol ?? '');
-	if (!symbol) throw new Error('symbol is required');
-	const max = Math.max(1, Math.min(500, Number(args.max ?? 50)));
-	const pathFilter = args.path_filter ? String(args.path_filter) : null;
-	const rows = store.grepLiteral(symbol, max, pathFilter);
-	return {
-		content: [{
-			type: 'text',
-			text: rows.length === 0
-				? `No matches for "${symbol}".`
-				: rows.map(r => `${r.path}:${r.start_line}-${r.end_line}\n${trimSnippet(r.text)}`).join('\n\n---\n\n'),
-		}],
-	};
-}
-
-async function handleReadChunk(args, repoRoot) {
-	const reqPath = String(args.path ?? '');
-	if (!reqPath) throw new Error('path is required');
-	const start = Math.max(1, Number(args.start_line ?? 1));
-	const end = Math.max(start, Number(args.end_line ?? start));
-
-	const abs = isAbsolute(reqPath) ? reqPath : join(repoRoot, reqPath);
-	const rel = relative(repoRoot, resolve(abs));
-	if (rel.startsWith('..')) throw new Error('path escapes project root');
-
-	const text = await readFile(abs, 'utf-8');
-	const lines = text.split(/\r?\n/);
-	const slice = lines.slice(start - 1, end);
-	const normalized = rel.split(sep).join(posix.sep);
-	return {
-		content: [{
-			type: 'text',
-			text: `${normalized}:${start}-${start + slice.length - 1}\n${slice.join('\n')}`,
-		}],
-	};
-}
-
-// Cosine-similarity scores from sqlite-vec KNN over a large code corpus
-// typically land in the 0.0-0.3 band even for excellent matches — the model
-// has to discriminate among thousands of code chunks, which compresses the
-// distribution well below the 0.7+ scores we'd see in isolated 2-way tests.
-// Showing the raw cosine misleads the agent: 0.16 looks like noise but is
-// actually a strong relative match.  We calibrate two ways:
-//
-//   - WEAK_TOP: if the best score in the result set is below this floor,
-//     prepend a "no strong matches" warning so the agent gives up on this
-//     query rather than spending tool calls on noise.
-//   - Per-result confidence: each hit is rendered as a percentage of the
-//     top hit's score (top = 100%, lower = relative weakness within the
-//     same query).  Raw cosine is hidden — agents are bad at calibrating
-//     absolute floats and good at calibrating relative ranks.
-const WEAK_TOP = 0.05;
-
-function formatMatches(matches) {
-	if (matches.length === 0) return 'No matches.';
-	const top = matches[0].score;
-	const header = top < WEAK_TOP
-		? `Top score is weak (raw cosine ${top.toFixed(3)}). Results below may be noise — consider rephrasing the query or falling back to grep.\n\n`
-		: '';
-	const body = matches.map((m, i) => {
-		const tag = i === 0
-			? '(top match)'
-			: top > 0
-				? `(${Math.round((m.score / top) * 100)}% of top)`
-				: '(weak)';
-		return `[${i + 1}] ${tag}  ${m.path}:${m.start_line}-${m.end_line}\n${trimSnippet(m.text)}`;
-	}).join('\n\n---\n\n');
-	return header + body;
-}
-
-function trimSnippet(text) {
-	const lines = text.split('\n');
-	if (lines.length <= 60) return text;
-	return lines.slice(0, 60).join('\n') + `\n… (${lines.length - 60} more line(s))`;
+	console.error(`code-search ready (index: ${ctx.dbPath})`);
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

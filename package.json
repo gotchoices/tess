@@ -4,9 +4,13 @@
 	"private": true,
 	"type": "module",
 	"description": "Agent-driven ticketing system",
+	"bin": {
+		"tess-search": "scripts/search.mjs"
+	},
 	"scripts": {
 		"index": "node scripts/index.mjs",
-		"mcp-search": "node scripts/mcp-search.mjs"
+		"mcp-search": "node scripts/mcp-search.mjs",
+		"search": "node scripts/search.mjs"
 	},
 	"dependencies": {
 		"@huggingface/transformers": "^3.0.0",

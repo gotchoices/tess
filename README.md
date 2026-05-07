@@ -218,7 +218,26 @@ For hands-off freshness, pass `--with-commit-hook` to `init.mjs` (or accept the 
 
 All artifacts live under `tickets/.index/` (gitignored).  Full uninstall: delete that folder and remove the `code-search` entry from your agent's MCP config.
 
-See [`docs/SEARCH.md`](docs/SEARCH.md) for storage layout, model swap policy, and MCP tool surface.
+### Query from the command line
+
+`tess/scripts/search.mjs` is a thin CLI over the same index, sharing all ranking and formatting logic with the MCP server — useful for ad-hoc exploration without an agent in the loop.
+
+```bash
+# Semantic search (default mode)
+node tess/scripts/search.mjs "where do we evict pages from the buffer pool"
+node tess/scripts/search.mjs -k 5 --path "packages/lamina-substrate/%" "page eviction"
+
+# Literal search; "|" ORs alternatives
+node tess/scripts/search.mjs --refs "composeNewSlot|defaultComposeNewSlot"
+
+# Read a line range (handy for expanding a snippet you just got back)
+node tess/scripts/search.mjs --read packages/lamina/src/index.ts:120-160
+
+# JSON output for piping into jq / scripts
+node tess/scripts/search.mjs --json "page eviction" | jq '.matches[0].path'
+```
+
+The script has a shebang and is marked executable, so on Unix you can also invoke it directly (`./tess/scripts/search.mjs "..."`). After `npm install` inside `tess/`, the bin entry exposes it as `tess-search` (use `npx tess-search` from the project root, or symlink it onto your `PATH`). Exit codes: `0` on hits, `1` on no hits, `2` on usage / missing-index errors.
 
 ## Ticket Lifecycle
 

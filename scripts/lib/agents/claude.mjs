@@ -12,12 +12,26 @@
  * rules don't bite — `--settings <path>` is one path argument.
  */
 
-import { writeFile } from 'node:fs/promises';
+import { writeFile, access } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOK_SCRIPT = join(__dirname, '..', 'budget-hook.mjs');
+
+// `claude -p` does NOT auto-spawn stdio servers from a project-scoped
+// .mcp.json — outside `claude doctor` it treats the file as untrusted, even
+// with --dangerously-skip-permissions.  Without --mcp-config the agent can
+// see only built-in tools, so any deferred-tool selector for `mcp__<name>__*`
+// (e.g. tess's own `code-search`) returns nothing and the agent silently
+// falls back to grep/Read.  Pass the file through when it exists so project
+// MCP servers are actually loaded.
+async function projectMcpConfig(cwd) {
+	const path = join(cwd, '.mcp.json');
+	try { await access(path, constants.R_OK); return path; }
+	catch { return null; }
+}
 
 /** Sum of tokens that occupy the model's context window for a given turn. */
 function contextSize(usage) {
@@ -107,7 +121,7 @@ function buildBudgetSettings() {
 	}, null, 2);
 }
 
-export async function claude(instructionFile, _prompt, { stage, tokenBudget } = {}) {
+export async function claude(instructionFile, _prompt, { stage, tokenBudget, cwd } = {}) {
 	const effort = 'xhigh';
 	const args = [
 		'-p',
@@ -116,9 +130,16 @@ export async function claude(instructionFile, _prompt, { stage, tokenBudget } = 
 		'--no-session-persistence',
 		'--output-format', 'stream-json',
 		'--effort', effort,
-		'--append-system-prompt-file', instructionFile,
 	];
 	const cleanupFiles = [];
+	// `--mcp-config <configs...>` is variadic — commander keeps slurping until
+	// the next `--flag`.  Insert it BEFORE another flag (here:
+	// --append-system-prompt-file) so it doesn't eat the trailing prompt string.
+	if (cwd) {
+		const mcpConfig = await projectMcpConfig(cwd);
+		if (mcpConfig) args.push('--mcp-config', mcpConfig);
+	}
+	args.push('--append-system-prompt-file', instructionFile);
 	if (Number.isFinite(tokenBudget)) {
 		const settingsFile = instructionFile.replace(/\.prompt\.md$/, '.settings.json');
 		await writeFile(settingsFile, buildBudgetSettings(), 'utf-8');
