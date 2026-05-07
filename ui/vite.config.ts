@@ -9,6 +9,7 @@ export default defineConfig({
 	plugins: [
 		svelte(),
 		tessApi({
+			projectRoot,
 			ticketsDir: resolve(projectRoot, 'tickets'),
 			siblingDir: resolve(projectRoot, 'teamos'),
 		}),

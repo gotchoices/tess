@@ -40,7 +40,7 @@ Modes (pick one; default is semantic search):
   tess-search --read <path>:<start>-<end> Read a line range from a file.
 
 Options:
-  -k <n>             Max semantic matches (default 10, capped at 50).
+  -k <n>             Max semantic matches (default 5, capped at 50).
   -m, --max <n>      Max literal matches  (default 50, capped at 500).
   -p, --path <like>  SQL LIKE path filter, e.g. "packages/lamina/%".
       --project <d>  Project root (default: cwd; or $TESS_PROJECT_ROOT).
@@ -56,7 +56,7 @@ function parseArgs(argv) {
 		query: null,
 		symbol: null,
 		readSpec: null,           // { path, startLine, endLine }
-		k: 10,
+		k: 5,
 		max: 50,
 		pathFilter: null,
 		repoRoot: process.cwd(),

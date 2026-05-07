@@ -61,7 +61,7 @@ const TOOLS = [
 			type: 'object',
 			properties: {
 				query: { type: 'string', description: 'Natural-language description of what to find.' },
-				k: { type: 'integer', description: 'Number of matches to return (default 10).', default: 10 },
+				k: { type: 'integer', description: 'Number of matches to return (default 5; raise for broader sweeps, max 50).', default: 5 },
 				path_filter: { type: 'string', description: 'Optional SQL LIKE pattern restricting results to matching paths, e.g. "src/%".' },
 			},
 			required: ['query'],

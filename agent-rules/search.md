@@ -11,7 +11,7 @@ This repo has a local code-aware index wired to `mcp__code-search__*`. Prefer it
 
 **Tools:**
 
-- `search_code(query, k?, path_filter?)` — semantic search. Scores are relative within each result set, not absolute. `k` defaults to 10 (max 50). `path_filter` is a SQL LIKE pattern, e.g. `"packages/lamina/%"`.
+- `search_code(query, k?, path_filter?)` — semantic search. Scores are relative within each result set, not absolute. `k` defaults to 5 (max 50) — raise it for broad sweeps, lower it when you know the top hit is enough. `path_filter` is a SQL LIKE pattern, e.g. `"packages/lamina/%"`.
 - `find_references(symbol, max?, path_filter?)` — literal substring; `|` ORs alternatives (`Foo|Bar`). Returns every hit (capped by `max`, default 50, max 500). This is the indexed replacement for `grep` on identifiers.
 - `read_chunk(path, start_line, end_line)` — expand a snippet from either tool without a separate `Read`.
 

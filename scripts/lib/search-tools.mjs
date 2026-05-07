@@ -62,7 +62,7 @@ export async function openSearchIndex({ repoRoot }) {
 	return { store, ensureEmbedder, indexDir, dbPath, repoRoot };
 }
 
-export async function searchCode({ query, k = 10, pathFilter = null }, ctx) {
+export async function searchCode({ query, k = 5, pathFilter = null }, ctx) {
 	const q = String(query ?? '').trim();
 	if (!q) throw new Error('query is required');
 	const kClamped = Math.max(1, Math.min(50, Number(k)));

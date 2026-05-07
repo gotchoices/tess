@@ -5,11 +5,15 @@
 	import Pipeline from './components/Pipeline.svelte';
 	import StageView from './components/StageView.svelte';
 	import TicketDetail from './components/TicketDetail.svelte';
+	import Search from './components/Search.svelte';
+	import IndexStatus from './components/IndexStatus.svelte';
 
 	let sibling: SiblingInfo | null = $state(null);
 
 	const stageMatch = $derived(router.match('/stage/:name'));
 	const ticketMatch = $derived(router.match('/ticket/:stage/:filename'));
+	const isSearch = $derived(router.path === '/search');
+	const isIndex = $derived(router.path === '/index');
 
 	$effect(() => {
 		api.sibling().then(s => sibling = s).catch(() => {});
@@ -20,6 +24,8 @@
 	<a class="nav-brand" href="#/">Tess</a>
 	<div class="nav-links">
 		<a class="nav-link" class:active={router.path === '/'} href="#/">Pipeline</a>
+		<a class="nav-link" class:active={isSearch} href="#/search">Search</a>
+		<a class="nav-link" class:active={isIndex} href="#/index">Index</a>
 	</div>
 	{#if sibling}
 		<a class="sibling-link" href={sibling.url}>
@@ -33,6 +39,10 @@
 		<TicketDetail stage={ticketMatch.stage} filename={ticketMatch.filename} />
 	{:else if stageMatch}
 		<StageView stage={stageMatch.name} />
+	{:else if isSearch}
+		<Search />
+	{:else if isIndex}
+		<IndexStatus />
 	{:else}
 		<Pipeline />
 	{/if}
