@@ -210,6 +210,7 @@ That single command writes the MCP config, runs `npm install` inside `tess/`, bu
 node tess/scripts/index.mjs                    # incremental refresh
 node tess/scripts/index.mjs --watch            # debounced fs watcher
 node tess/scripts/index.mjs --status           # row counts + last refresh
+node tess/scripts/index.mjs --config           # show effective filter config
 node tess/scripts/index.mjs --rebuild          # full rebuild
 node tess/scripts/run.mjs --refresh-index ...  # refresh between every ticket
 ```
@@ -217,6 +218,28 @@ node tess/scripts/run.mjs --refresh-index ...  # refresh between every ticket
 For hands-off freshness, pass `--with-commit-hook` to `init.mjs` (or accept the prompt).  This installs a `.git/hooks/post-commit` that fires the indexer in the background after every commit — the commit feels instant; the index trails by a second or two.  Remove the `# >>> tess search index >>>` block from the hook to disable.
 
 All artifacts live under `tickets/.index/` (gitignored).  Full uninstall: delete that folder and remove the `code-search` entry from your agent's MCP config.
+
+### Customize what gets indexed
+
+By default the indexer skips `node_modules/`, `dist/`, `build/`, `.git/`, `tickets/`, `team/`, `docs/`, plus a handful of cache folders, and indexes a fixed list of source extensions. The `docs/` and `team/` defaults exist because long-form prose dominates the embedding signal vs. actual code, dragging down the rankings of real source matches.
+
+To override either set, create `tickets/index-config.json`:
+
+```json
+{
+  "exclude":    ["examples/", "vendor/"],
+  "include":    ["docs/architecture/"],
+  "extensions": [".graphql", ".proto"]
+}
+```
+
+- `exclude` — additional directory prefixes to skip (joined with the defaults).
+- `include` — re-include a path under an otherwise-excluded directory. Checked before `exclude`, so e.g. `docs/architecture/` lets you index that subtree while leaving the rest of `docs/` out.
+- `extensions` — additional file extensions beyond the built-in source list (lowercase, leading dot optional).
+
+All entries are directory-prefix matches (trailing `/` added if missing) — same semantics as the built-in excludes, applied to `git ls-files` output. Inspect the merged result any time with `node tess/scripts/index.mjs --config`. Edits take effect on the next refresh; no rebuild needed.
+
+The config is also visible (and the only way to change it is by hand on disk) from the dashboard's Index page at `/index`.
 
 ### Query from the command line
 

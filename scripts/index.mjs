@@ -25,7 +25,7 @@ import { IndexStore } from './lib/index-store.mjs';
 import { chunkText } from './lib/chunker.mjs';
 import { Embedder, DEFAULT_MODEL, DEFAULT_DIM } from './lib/embedder.mjs';
 
-const DEFAULT_EXTS = new Set([
+export const DEFAULT_EXTS = new Set([
 	'.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
 	'.py', '.rs', '.go', '.java', '.kt', '.swift',
 	'.c', '.h', '.cpp', '.hpp', '.cc',
@@ -37,14 +37,87 @@ const DEFAULT_EXTS = new Set([
 	'.sh', '.bash', '.ps1',
 ]);
 
-const ALWAYS_EXCLUDE = [
+export const ALWAYS_EXCLUDE = [
 	'node_modules/', 'dist/', 'build/', 'out/', 'target/',
 	'.git/',
 	'tickets/', // tess working state, not project source.
 	'team/',    // teamos working state (chat/todos/events).  Same prose-dominates-
 	            // -code-rankings problem as tickets/.
+	'docs/',    // long-form prose dominates the embedding signal vs. actual
+	            // source — same problem as tickets/.  Projects whose docs/
+	            // contains material the agent should search can re-include
+	            // it via tickets/index-config.json (see CONFIG_FILENAME).
 	'.next/', '.svelte-kit/', '.cache/', 'coverage/',
 ];
+
+const CONFIG_FILENAME = 'index-config.json';
+
+/**
+ * Per-project index config, loaded from tickets/index-config.json:
+ *   {
+ *     "exclude":    ["examples/", "vendor/"],     // additional dir prefixes to skip
+ *     "include":    ["docs/architecture/"],       // re-include paths under an excluded prefix
+ *     "extensions": [".graphql", ".proto"]        // additional file extensions beyond DEFAULT_EXTS
+ *   }
+ *
+ * `exclude` and `include` use directory-prefix matching (trailing "/" added
+ * if missing), same semantic as ALWAYS_EXCLUDE.  `include` is checked before
+ * exclude — any matching include exempts the path from the exclude list.
+ * Extensions are normalized to lowercase with a leading dot.
+ */
+export async function loadIndexConfig(repoRoot) {
+	const path = join(repoRoot, 'tickets', CONFIG_FILENAME);
+	let raw;
+	try { raw = await readFile(path, 'utf-8'); }
+	catch (err) {
+		if (err.code === 'ENOENT') return { source: null, exclude: [], include: [], extensions: [] };
+		throw new Error(`Failed to read ${path}: ${err.message}`);
+	}
+	let parsed;
+	try { parsed = JSON.parse(raw); }
+	catch (err) { throw new Error(`Invalid JSON in ${path}: ${err.message}`); }
+
+	const norm = (s) => {
+		const p = String(s).replace(/\\/g, '/');
+		return p.endsWith('/') ? p : p + '/';
+	};
+	const ext = (s) => {
+		const e = String(s).toLowerCase();
+		return e.startsWith('.') ? e : '.' + e;
+	};
+	return {
+		source: path,
+		exclude:    Array.isArray(parsed.exclude)    ? parsed.exclude.map(norm) : [],
+		include:    Array.isArray(parsed.include)    ? parsed.include.map(norm) : [],
+		extensions: Array.isArray(parsed.extensions) ? parsed.extensions.map(ext) : [],
+	};
+}
+
+/**
+ * Returns a `shouldIndex(relPath)` predicate combining ALWAYS_EXCLUDE,
+ * DEFAULT_EXTS, and project config.  Pure factory — separable from
+ * filesystem so the same logic powers tests and the watcher.
+ */
+export function makeShouldIndex(config) {
+	const allExcludes = [...ALWAYS_EXCLUDE, ...config.exclude];
+	const allExts = new Set([...DEFAULT_EXTS, ...config.extensions]);
+	return function shouldIndex(relPath) {
+		const p = relPath.split(sep).join(posix.sep);
+		const dot = p.lastIndexOf('.');
+		if (dot < 0) return false;
+		const ext = p.slice(dot).toLowerCase();
+		if (!allExts.has(ext)) return false;
+
+		// Re-includes override excludes.
+		for (const inc of config.include) {
+			if (p.startsWith(inc) || p.includes('/' + inc)) return true;
+		}
+		for (const ex of allExcludes) {
+			if (p.startsWith(ex) || p.includes('/' + ex)) return false;
+		}
+		return true;
+	};
+}
 
 const MAX_FILE_BYTES = 256 * 1024;
 const WATCH_DEBOUNCE_MS = 1500;
@@ -58,17 +131,6 @@ function gitListFiles(repoRoot) {
 		maxBuffer: 256 * 1024 * 1024,
 	});
 	return out.toString('utf-8').split('\0').filter(Boolean);
-}
-
-function shouldIndex(relPath) {
-	const p = relPath.split(sep).join(posix.sep);
-	for (const ex of ALWAYS_EXCLUDE) {
-		if (p.startsWith(ex) || p.includes('/' + ex)) return false;
-	}
-	const dot = p.lastIndexOf('.');
-	if (dot < 0) return false;
-	const ext = p.slice(dot).toLowerCase();
-	return DEFAULT_EXTS.has(ext);
 }
 
 function hashContent(buf) {
@@ -105,6 +167,15 @@ export async function runIndexer(opts) {
 		await rm(dbPath, { force: true });
 		log(`Removed existing index at ${dbPath}`);
 	}
+
+	const config = opts.config ?? await loadIndexConfig(repoRoot);
+	if (config.source) {
+		log(`Loaded index config: ${config.source}`);
+		if (config.exclude.length)    log(`  +exclude:    ${config.exclude.join(', ')}`);
+		if (config.include.length)    log(`  +include:    ${config.include.join(', ')}`);
+		if (config.extensions.length) log(`  +extensions: ${config.extensions.join(', ')}`);
+	}
+	const shouldIndex = makeShouldIndex(config);
 
 	const tracked = gitListFiles(repoRoot).filter(shouldIndex);
 	log(`Found ${tracked.length} tracked file(s) eligible for indexing`);
@@ -179,6 +250,7 @@ function parseArgs(argv) {
 		const a = argv[i];
 		if (a === '--rebuild') opts.mode = 'rebuild';
 		else if (a === '--status') opts.mode = 'status';
+		else if (a === '--config') opts.mode = 'config';
 		else if (a === '--watch') opts.mode = 'watch';
 		else if (a === '--project' && argv[i + 1]) opts.repoRoot = resolve(argv[++i]);
 		else if (a === '--help' || a === '-h') {
@@ -189,10 +261,14 @@ function parseArgs(argv) {
 				'  node tess/scripts/index.mjs              # incremental refresh',
 				'  node tess/scripts/index.mjs --rebuild    # drop and rebuild',
 				'  node tess/scripts/index.mjs --status     # show counts',
+				'  node tess/scripts/index.mjs --config     # show effective filter config',
 				'  node tess/scripts/index.mjs --watch      # rebuild on change',
 				'',
 				'Options:',
 				'  --project <dir>   Project root (default: cwd)',
+				'',
+				'Config: tickets/index-config.json (optional). Format:',
+				'  { "exclude": [...], "include": [...], "extensions": [...] }',
 			].join('\n'));
 			process.exit(0);
 		}
@@ -226,6 +302,21 @@ async function cmdStatus(repoRoot) {
 		console.error(`No index found at ${dbPath}`);
 		console.error(`(${err.message})`);
 		process.exit(1);
+	}
+}
+
+async function cmdConfig(repoRoot) {
+	const config = await loadIndexConfig(repoRoot);
+	const allExcludes = [...ALWAYS_EXCLUDE, ...config.exclude];
+	const allExts = [...DEFAULT_EXTS, ...config.extensions].sort();
+	console.log(`Config:        ${config.source ?? '(none — using defaults)'}`);
+	console.log(`Exclude (all): ${allExcludes.join(', ')}`);
+	console.log(`  defaults:    ${ALWAYS_EXCLUDE.join(', ')}`);
+	console.log(`  + project:   ${config.exclude.length ? config.exclude.join(', ') : '(none)'}`);
+	console.log(`Include:       ${config.include.length ? config.include.join(', ') : '(none)'}`);
+	console.log(`Extensions:    ${allExts.join(' ')}`);
+	if (config.extensions.length) {
+		console.log(`  + project:   ${config.extensions.join(' ')}`);
 	}
 }
 
@@ -270,6 +361,7 @@ async function cmdWatch(repoRoot) {
 async function main() {
 	const opts = parseArgs(process.argv.slice(2));
 	if (opts.mode === 'status') return cmdStatus(opts.repoRoot);
+	if (opts.mode === 'config') return cmdConfig(opts.repoRoot);
 	if (opts.mode === 'rebuild') return cmdRefresh(opts.repoRoot, { rebuild: true });
 	if (opts.mode === 'watch') return cmdWatch(opts.repoRoot);
 	return cmdRefresh(opts.repoRoot);

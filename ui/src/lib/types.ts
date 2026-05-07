@@ -76,6 +76,13 @@ export interface IndexStatus {
 	dbModifiedMs?: number;
 }
 
+export interface IndexConfig {
+	source: string | null;
+	defaults: { exclude: string[]; extensions: string[] };
+	project: { exclude: string[]; include: string[]; extensions: string[] };
+	effective: { exclude: string[]; include: string[]; extensions: string[] };
+}
+
 export interface IndexJob {
 	id: string;
 	kind: 'refresh' | 'rebuild';

@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { api } from '../lib/api.js';
-	import type { IndexStatus, IndexJob } from '../lib/types.js';
+	import type { IndexStatus, IndexConfig, IndexJob } from '../lib/types.js';
 
 	let status: IndexStatus | null = $state(null);
+	let config: IndexConfig | null = $state(null);
 	let job: IndexJob | null = $state(null);
 	let loading = $state(true);
 	let actionError: string | null = $state(null);
@@ -18,6 +19,11 @@
 		} finally {
 			loading = false;
 		}
+	}
+
+	async function loadConfig() {
+		try { config = await api.indexConfig(); }
+		catch { /* surfaced via top-level error if status also fails */ }
 	}
 
 	async function loadJob() {
@@ -93,6 +99,7 @@
 
 	$effect(() => {
 		loadStatus();
+		loadConfig();
 		loadJob().then(() => {
 			if (job && job.status === 'running') beginPolling();
 		});
@@ -146,6 +153,52 @@
 		{#if actionError}
 			<div class="error">{actionError}</div>
 		{/if}
+	</section>
+{/if}
+
+{#if config}
+	<section class="card">
+		<h2 class="section-title">Configuration</h2>
+		{#if config.source}
+			<p class="config-source">
+				Project config: <code class="mono">{config.source}</code>
+			</p>
+		{:else}
+			<p class="config-source muted">
+				No project config — using defaults only. Create
+				<code class="mono">tickets/index-config.json</code> to customize.
+			</p>
+		{/if}
+		<div class="config-grid">
+			<div class="config-block">
+				<dt>Excluded directories ({config.effective.exclude.length})</dt>
+				<dd>
+					{#each config.defaults.exclude as p}<span class="chip default" title="default">{p}</span>{/each}
+					{#each config.project.exclude as p}<span class="chip project" title="project config">{p}</span>{/each}
+				</dd>
+			</div>
+			{#if config.effective.include.length > 0}
+				<div class="config-block">
+					<dt>Re-included paths ({config.effective.include.length})</dt>
+					<dd>
+						{#each config.project.include as p}<span class="chip include" title="project config">{p}</span>{/each}
+					</dd>
+				</div>
+			{/if}
+			<div class="config-block">
+				<dt>Extensions ({config.effective.extensions.length})</dt>
+				<dd>
+					{#each config.defaults.extensions as e}<span class="chip default mono">{e}</span>{/each}
+					{#each config.project.extensions as e}<span class="chip project mono">{e}</span>{/each}
+				</dd>
+			</div>
+		</div>
+		<p class="legend">
+			<span class="chip default sample">default</span>
+			<span class="chip project sample">project config</span>
+			<span class="chip include sample">re-include</span>
+			· Edits take effect on the next refresh / rebuild.
+		</p>
 	</section>
 {/if}
 
@@ -296,6 +349,65 @@
 		max-height: 320px;
 		overflow: auto;
 		white-space: pre;
+	}
+
+	.config-source {
+		font-size: 0.85rem;
+		margin-bottom: 0.75rem;
+		color: var(--text);
+	}
+	.config-source.muted { color: var(--text-muted); }
+	.config-source code.mono {
+		font-family: var(--font-mono);
+		font-size: 0.85em;
+		background: var(--bg);
+		padding: 0.125rem 0.375rem;
+		border-radius: 4px;
+	}
+
+	.config-grid {
+		display: flex;
+		flex-direction: column;
+		gap: 0.875rem;
+	}
+	.config-block dt {
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-muted);
+		margin-bottom: 0.375rem;
+	}
+	.config-block dd {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.25rem;
+	}
+
+	.chip {
+		display: inline-block;
+		font-size: 0.75rem;
+		font-weight: 500;
+		padding: 0.125rem 0.5rem;
+		border-radius: 999px;
+		border: 1px solid var(--border);
+	}
+	.chip.mono { font-family: var(--font-mono); }
+	.chip.default { background: var(--surface-raised); color: var(--text-muted); }
+	.chip.project { background: var(--info-subtle); color: var(--info); border-color: var(--info); }
+	.chip.include { background: var(--success-subtle); color: var(--success); border-color: var(--success); }
+	.chip.sample { font-family: var(--font); }
+
+	.legend {
+		margin-top: 0.875rem;
+		padding-top: 0.75rem;
+		border-top: 1px solid var(--border);
+		font-size: 0.75rem;
+		color: var(--text-muted);
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.375rem;
 	}
 
 	.empty, .loading {

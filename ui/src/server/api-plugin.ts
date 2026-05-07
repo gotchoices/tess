@@ -260,6 +260,40 @@ async function getIndexStatus(projectRoot: string): Promise<IndexStatusPayload> 
 	}
 }
 
+// ─── Index config (effective filter rules) ──────────────────────────────────
+
+interface IndexConfigPayload {
+	source: string | null;            // path to project config file, or null
+	defaults: { exclude: string[]; extensions: string[] };
+	project: { exclude: string[]; include: string[]; extensions: string[] };
+	effective: { exclude: string[]; include: string[]; extensions: string[] };
+}
+
+async function getIndexConfig(projectRoot: string): Promise<IndexConfigPayload> {
+	// index.mjs exports the loader and the default constants; reuse them so
+	// the UI cannot drift from what the indexer actually applies.
+	const indexer = await import('../../../scripts/index.mjs');
+	const cfg = await indexer.loadIndexConfig(projectRoot);
+	const defaults = {
+		exclude: [...indexer.ALWAYS_EXCLUDE],
+		extensions: [...indexer.DEFAULT_EXTS].sort(),
+	};
+	return {
+		source: cfg.source,
+		defaults,
+		project: {
+			exclude: cfg.exclude,
+			include: cfg.include,
+			extensions: cfg.extensions,
+		},
+		effective: {
+			exclude: [...defaults.exclude, ...cfg.exclude],
+			include: cfg.include,
+			extensions: [...new Set([...defaults.extensions, ...cfg.extensions])].sort(),
+		},
+	};
+}
+
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
 export function tessApi(opts: ApiOptions): Plugin {
@@ -410,6 +444,10 @@ export function tessApi(opts: ApiOptions): Plugin {
 					// ── Index status / maintenance ────────────────────
 					if (path === '/api/index/status' && method === 'GET') {
 						return json(res, await getIndexStatus(projectRoot));
+					}
+
+					if (path === '/api/index/config' && method === 'GET') {
+						return json(res, await getIndexConfig(projectRoot));
 					}
 
 					if (path === '/api/index/job' && method === 'GET') {

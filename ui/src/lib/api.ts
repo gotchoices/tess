@@ -7,6 +7,7 @@ import type {
 	RefResults,
 	ChunkResult,
 	IndexStatus,
+	IndexConfig,
 	IndexJob,
 } from './types.js';
 
@@ -59,6 +60,7 @@ export const api = {
 		get<ChunkResult>('/api/chunk' + qs({ path, start, end })),
 
 	indexStatus: () => get<IndexStatus>('/api/index/status'),
+	indexConfig: () => get<IndexConfig>('/api/index/config'),
 	indexJob: () => get<IndexJob | null>('/api/index/job'),
 	indexRefresh: () => post<IndexJob>('/api/index/refresh'),
 	indexRebuild: () => post<IndexJob>('/api/index/rebuild'),
