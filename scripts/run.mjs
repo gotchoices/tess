@@ -136,18 +136,26 @@ async function main() {
 
 	// ── Resume handling: if a prior run was interrupted, the in-progress marker
 	// names the ticket that was being processed.  If it's still in this snapshot,
-	// prepend a resume note so the agent picks up where it left off. ──
+	// prepend a resume note so the agent picks up where it left off, and hoist
+	// the ticket to the front of the queue so the resumed work runs first
+	// regardless of its stage. ──
 	const priorRun = await readAndClearInProgress(ticketsDir);
 	if (priorRun) {
 		console.log(`\n  Prior incomplete run detected: ${priorRun.file} (${priorRun.stage})`);
 		console.log(`    Started: ${priorRun.startedAt}  |  Log: ${priorRun.logFile}`);
-		const match = allTickets.find(t => t.file === priorRun.file && t.stage === priorRun.stage);
-		if (match) {
+		const matchIdx = allTickets.findIndex(t => t.file === priorRun.file && t.stage === priorRun.stage);
+		if (matchIdx !== -1) {
+			const match = allTickets[matchIdx];
 			try {
 				await addResumeNote(match.path, priorRun);
 				console.log(`    Added resume note to ${match.file}`);
 			} catch (err) {
 				console.warn(`    Failed to add resume note: ${err.message}`);
+			}
+			if (matchIdx > 0) {
+				allTickets.splice(matchIdx, 1);
+				allTickets.unshift(match);
+				console.log(`    Hoisted to front of queue — resumed ticket runs first.`);
 			}
 		} else {
 			console.log(`    Ticket no longer in batch — skipping resume note.`);

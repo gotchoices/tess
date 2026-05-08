@@ -314,6 +314,8 @@ The runner tracks which ticket is currently being processed in `tickets/.in-prog
 
 The agent sees this note as part of the ticket content and can read the log to understand what was already accomplished. The resume note is removed by the agent when it begins working.
 
+When the resumed ticket is present in the new run's snapshot, it is hoisted to the front of the queue so it runs first — even if it sits in a later stage than other queued tickets. This applies to both `batch` and `chase` strategies (in `chase`, the resumed ticket becomes the first root and is chased forward from its current stage).
+
 If the incomplete ticket is no longer in the batch (e.g., it was manually moved), the runner simply clears the stale state and proceeds normally.
 
 ### Idle-timeout retries
