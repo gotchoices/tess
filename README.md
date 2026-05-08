@@ -286,6 +286,7 @@ backlog/ ─→ plan/ ─┐
 description: <brief description>
 prereq: <slugs of other tickets that must land first — comma-separated, no prefix, no .md>
 files: <optional list of relevant files>
+effort: <optional reasoning-effort override for the agent (claude only)>
 ----
 <Architecture description — prose, diagrams, interfaces/types>
 
@@ -293,6 +294,8 @@ files: <optional list of relevant files>
 ```
 
 **Filename convention:** `<slug>.md` with an optional `<sequence>-` prefix where lower sequence runs sooner (integer or decimal, e.g. `3-my-feature.md` or `3.5-my-feature.md`). The sequence number is not part of the ticket's identity — reference tickets by slug only in `prereq:`.
+
+**Effort override (claude only):** when present, `effort:` is passed through as `claude --effort <value>` (typical values: `low`, `medium`, `high`, `xhigh`). When omitted, the runner picks a default by stage — `xhigh` for `implement` (where the most synthesis happens), `high` everywhere else.
 
 ## Stopping the Runner
 
