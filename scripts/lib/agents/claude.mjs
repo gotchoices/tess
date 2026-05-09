@@ -153,15 +153,19 @@ function buildBudgetSettings() {
 	}, null, 2);
 }
 
-export async function claude(instructionFile, _prompt, { stage, tokenBudget, cwd } = {}) {
-	const effort = 'xhigh';
+export async function claude(instructionFile, _prompt, { stage, tokenBudget, cwd, effort } = {}) {
+	// Stage-based default; `implement` gets the highest effort because it does
+	// the most synthesis.  Ticket frontmatter `effort:` overrides for one-off
+	// tickets that need more (or less) than the stage default.
+	const defaultEffort = stage === 'implement' ? 'xhigh' : 'high';
+	const resolvedEffort = effort ?? defaultEffort;
 	const args = [
 		'-p',
 		'--dangerously-skip-permissions',
 		'--verbose',
 		'--no-session-persistence',
 		'--output-format', 'stream-json',
-		'--effort', effort,
+		'--effort', resolvedEffort,
 	];
 	const cleanupFiles = [];
 	// `--mcp-config <configs...>` is variadic — commander keeps slurping until

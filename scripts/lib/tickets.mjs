@@ -184,6 +184,21 @@ export function parsePrereqs(content) {
 }
 
 /**
+ * Parse the optional `effort:` header field.  Used by adapters that take a
+ * reasoning-effort knob (currently only claude's `--effort`).  Returns the
+ * trimmed lowercase value or `null` when absent.  Value validation is left to
+ * the adapter — different agents accept different vocabularies.
+ */
+export function parseEffort(content) {
+	const divIdx = content.indexOf('\n----');
+	const header = divIdx === -1 ? content : content.slice(0, divIdx);
+	const match = header.match(/^effort:\s*(.*)$/mi);
+	if (!match) return null;
+	const value = match[1].trim().toLowerCase();
+	return value || null;
+}
+
+/**
  * Look for a ticket with the given slug across the named stage folders.
  * Returns the first match (in the order `stages` was passed) as a fully-
  * populated ticket object, or null if no match exists.
@@ -219,6 +234,7 @@ export async function findTicketBySlug(ticketsDir, slug, stages) {
 				sequence: parseSequence(entry),
 				slug,
 				prereqs: parsePrereqs(content),
+				effort: parseEffort(content),
 			};
 		}
 	}
@@ -260,6 +276,7 @@ export async function discoverTickets(ticketsDir, stage, maxSequence) {
 			sequence,            // raw: number or null
 			slug: parseSlug(entry),
 			prereqs: parsePrereqs(content),
+			effort: parseEffort(content),
 		});
 	}
 

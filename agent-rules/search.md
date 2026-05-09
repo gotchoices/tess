@@ -1,13 +1,14 @@
 ## Code search (tess)
 
-This repo has a local code-aware index wired to `mcp__code-search__*`. Prefer it over `grep`/`Glob`/`Read` for codebase questions — but pick the right sub-tool, because they are not interchangeable.
+**First tool** for any "where / how / why" question about this codebase: the local code-aware index wired to `mcp__code-search__*`. Reach for `grep`/`Glob` only when you already know the exact filename or literal string. Pick the right sub-tool — they are not interchangeable.
 
 **Decision rule:**
 
 - Query is identifier-shaped (any single symbol, camelCase, snake_case, or a list of names like `fooBar bazQux`)? → `find_references`.
 - Query is prose ("where do we evict pages", "what handles JWT refresh", you don't yet know the identifier)? → `search_code`.
+- About to run more than one `grep` to reconstruct context? → run `search_code` first instead. That is the moment it pays off, even when you already know an identifier.
 
-`search_code` embeds the query as natural language, so a bag of identifiers collapses to noise (negative cosine, "weak top" warning). Phrase semantic queries as questions or descriptions, not as identifier lists. If `search_code` returns a weak-top warning, treat the hits as noise — switch to `find_references` or rephrase, do **not** trust the relative-percentage ranking on noisy results.
+`search_code` embeds the query as natural language. Identifier-bag queries can still work when the identifiers co-locate in real code, but prose phrasing is more reliable. If `search_code` returns a weak-top warning, the relative-percentage ranking is unreliable — switch to `find_references` or rephrase as prose, do **not** trust the ordering on noisy results.
 
 **Tools:**
 
