@@ -41,6 +41,40 @@ function contextSize(usage) {
 		+ (usage.cache_creation_input_tokens ?? 0);
 }
 
+const DIFF_LINE_CAP = 50;
+
+/** Render `text` as lines each prefixed with `prefix`, capped at `cap` total lines. */
+function prefixLines(text, prefix, cap) {
+	const lines = String(text ?? '').split('\n');
+	if (lines.length <= cap) {
+		return lines.map(l => `${prefix}${l}`).join('\n');
+	}
+	const shown = lines.slice(0, cap).map(l => `${prefix}${l}`).join('\n');
+	return `${shown}\n… [+${lines.length - cap} more lines truncated]`;
+}
+
+/**
+ * Format a tool_use input block for the log. Edit/Write get a +/- diff view
+ * showing the new content (and old, for Edit). Everything else falls back to
+ * a 200-char JSON snippet.
+ */
+function formatToolInput(name, input) {
+	if (input && typeof input === 'object') {
+		if (name === 'Edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string') {
+			const header = input.file_path ? `${input.file_path}\n` : '';
+			const oldBudget = Math.floor(DIFF_LINE_CAP / 2);
+			const newBudget = DIFF_LINE_CAP - oldBudget;
+			return `${header}${prefixLines(input.old_string, '- ', oldBudget)}\n${prefixLines(input.new_string, '+ ', newBudget)}`;
+		}
+		if (name === 'Write' && typeof input.content === 'string') {
+			const header = input.file_path ? `${input.file_path}\n` : '';
+			return `${header}${prefixLines(input.content, '+ ', DIFF_LINE_CAP)}`;
+		}
+		return JSON.stringify(input).slice(0, 200);
+	}
+	return String(input ?? '');
+}
+
 /**
  * Format Claude stream-json lines to readable text.
  * Returns { text, done?, usage? } — when done is true the agent has emitted
@@ -60,10 +94,8 @@ function formatStream(line) {
 				if (block.type === 'text' && block.text) {
 					parts.push(`\n[ASSISTANT]\n${block.text}\n`);
 				} else if (block.type === 'tool_use') {
-					const inputStr = typeof block.input === 'object'
-						? JSON.stringify(block.input).slice(0, 200)
-						: String(block.input ?? '');
-					parts.push(`\n[TOOL:${block.name}] ${inputStr}\n`);
+					const inputStr = formatToolInput(block.name, block.input);
+					parts.push(`\n[TOOL:${block.name}]\n${inputStr}\n`);
 				}
 			}
 			const usage = obj.message?.usage;
