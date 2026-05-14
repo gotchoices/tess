@@ -6,6 +6,11 @@
  * naming the exact `mcp__<server>__<tool>` ids — agents weight the last
  * instruction in the prompt heavily, so this is where the nudge has the most
  * effect.  When search isn't available, no mention of it appears at all.
+ *
+ * The rules file contains `<!-- stage:NAME -->...<!-- /stage -->` blocks for
+ * every stage so a human reads one coherent document; at prompt-build time we
+ * keep only the active stage's block, reducing cognitive load and leaving
+ * room for per-stage rules to grow without bloating cross-stage context.
  */
 
 import { readFile } from 'node:fs/promises';
@@ -28,7 +33,7 @@ export async function buildPrompt(ticket, tessRoot, repoRoot) {
 		'',
 		'## Ticket workflow rules:',
 		'',
-		rules,
+		selectActiveStage(rules, ticket.stage),
 		'',
 		`## Contents of \`${ticket.path}\`:`,
 		'',
@@ -47,6 +52,23 @@ export async function buildPrompt(ticket, tessRoot, repoRoot) {
 	);
 
 	return sections.join('\n');
+}
+
+// Strip every `<!-- stage:NAME -->...<!-- /stage -->` block except the one
+// matching `activeStage`.  Falls through unchanged when the file has no markers
+// (legacy) or the active stage isn't marked (config skew) — both are safer than
+// emptying the rules section.  Line endings are normalized to LF before
+// processing so CRLF checkouts (Windows) match the same regexes.
+function selectActiveStage(rules, activeStage) {
+	const normalized = rules.replace(/\r\n/g, '\n');
+	const stageNames = [...normalized.matchAll(/<!-- stage:(\w+) -->/g)].map(m => m[1]);
+	if (stageNames.length === 0 || !stageNames.includes(activeStage)) return normalized;
+	const filtered = normalized.replace(
+		/<!-- stage:(\w+) -->\n?([\s\S]*?)\n?<!-- \/stage -->\n?/g,
+		(_match, name, body) => name === activeStage ? body + '\n' : '',
+	);
+	// Collapse the blank-line runs left behind where blocks were removed.
+	return filtered.replace(/\n{3,}/g, '\n\n');
 }
 
 function searchDirective(serverName) {
