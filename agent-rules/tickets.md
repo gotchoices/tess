@@ -21,6 +21,8 @@ You own the full stage transition.  When you are done:
      a prereq must have a sequence ≤ its dependent (or be unnumbered only if the
      dependent is also unnumbered).
   2. Delete the original source ticket file from its current stage folder.
+     Delete only the file — leave the stage folder itself in place even when it
+     ends up empty.
 * **Important**: `prereq:` tickets run before this one — assume their work will land; don't block waiting for them. Move to `blocked/` only when (a) you're at *implement* and a prereq's code isn't actually present yet (out-of-tess upstream, stub primitive, premise mismatch), or (b) there's a design question of consequence requiring human sign-off with no defensible default. Otherwise pick the best option, document the tradeoff in the next-stage ticket, and proceed.
 
 Stages (overview — full rules for your active stage appear under "Active stage details" below):

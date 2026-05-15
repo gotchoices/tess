@@ -32,10 +32,11 @@
  * See `--help` for full options.
  */
 
+import { mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { discoverTickets, formatSeq, indexAllTickets, findUnsatisfiedPrereq, findTransitiveBlocker } from './lib/tickets.mjs';
+import { discoverTickets, formatSeq, indexAllTickets, findUnsatisfiedPrereq, findTransitiveBlocker, KNOWN_STAGES } from './lib/tickets.mjs';
 import { topoSortAndCheck } from './lib/topo.mjs';
 import { readAndClearInProgress, addResumeNote } from './lib/state.mjs';
 import { ensureLogsDir, pruneOldLogs } from './lib/logging.mjs';
@@ -179,15 +180,23 @@ async function main() {
 	}
 
 	const strategy = strategies[opts.strategy];
-	await strategy.run({
-		snapshot: allTickets,
-		ticketsDir,
-		repoRoot,
-		tessRoot: TESS_ROOT,
-		tessVersion,
-		logsDir,
-		opts,
-	});
+	try {
+		await strategy.run({
+			snapshot: allTickets,
+			ticketsDir,
+			repoRoot,
+			tessRoot: TESS_ROOT,
+			tessVersion,
+			logsDir,
+			opts,
+		});
+	} finally {
+		// Agents sometimes rmdir a stage folder after deleting its last ticket.
+		// Re-create the standard set so the next run / human sees a stable layout.
+		await Promise.all(
+			KNOWN_STAGES.map(s => mkdir(join(ticketsDir, s), { recursive: true })),
+		);
+	}
 
 	console.log(`\nDone.`);
 }
