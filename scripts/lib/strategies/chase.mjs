@@ -12,11 +12,14 @@
  * just ran.
  *
  * Deferral cascade: a slug enters `deferred` when (a) the agent moved it
- * to blocked/ or backlog/ during the chain, or (b) the cross-stage prereq
- * gate in `runOneStage` rejected it because a prereq is still behind.
- * Subsequent root tickets that list a deferred slug as a prereq are
- * skipped — and they themselves are added to `deferred`, so the skip
- * cascades transitively through the queue.
+ * to blocked/ or backlog/ during the chain, (b) the cross-stage prereq
+ * gate in `runOneStage` rejected it because a prereq is still behind, or
+ * (c) the agent errored on it.  In all three cases the chain ends but the
+ * run continues with the next root.  Subsequent root tickets that list a
+ * deferred slug as a prereq are skipped — and they themselves are added
+ * to `deferred`, so the skip cascades transitively through the queue.
+ * Agent errors are also collected and surfaced as a non-zero exit code at
+ * the end of the run via the strategy's returned `{ errors }`.
  *
  * A safety cap (MAX_CHAIN_STEPS) bounds how many stage transitions a
  * single chase can perform, in case an agent regresses a ticket
@@ -69,6 +72,7 @@ export async function run(ctx) {
 
 	const processed = new Set();   // slugs we've already chased (or skipped) as a root
 	const deferred = new Set();    // slugs that hit blocked/backlog this run
+	const errors = [];             // agent-error outcomes; surfaced as non-zero exit at end of run
 	// Every ticket path the chain has ever seen (snapshot + continuations + advances).
 	// Anything that appears in a source stage outside this set is a budget-induced
 	// continuation we should chase next.
@@ -116,8 +120,10 @@ export async function run(ctx) {
 				break;
 			}
 			if (outcome.kind === 'agent-error') {
-				console.error('Stopping to avoid cascading failures. Re-run to retry.');
-				process.exit(outcome.exitCode);
+				console.error(`  ${stepLabel} Agent error on "${t.slug}" — deferring slug and continuing with independent roots.`);
+				deferred.add(t.slug);
+				errors.push({ slug: t.slug, exitCode: outcome.exitCode });
+				break;
 			}
 
 			const followUps = [];
@@ -164,4 +170,6 @@ export async function run(ctx) {
 			await new Promise(r => setTimeout(r, 500));
 		}
 	}
+
+	return { errors };
 }

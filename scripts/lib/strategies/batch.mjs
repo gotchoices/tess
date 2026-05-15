@@ -5,16 +5,19 @@
  * Strategy contract:
  *   await run({ snapshot, ticketsDir, repoRoot, tessRoot, tessVersion,
  *               logsDir, opts })
+ *   → returns { errors: [{ slug, exitCode }, ...] }
  *
- * The strategy may call `process.exit` on a hard agent failure to halt the
- * batch; a successful drain returns normally so the orchestrator can print
- * "Done.".
+ * On a hard agent failure the strategy adds the slug to the deferred set
+ * and continues with the rest of the queue — independent tickets still get
+ * a chance to run.  Dependents cascade out via the deferred set.  The
+ * orchestrator surfaces any collected errors via a non-zero exit code.
  *
  * Deferred set: a slug enters `deferred` when its cross-stage prereq is
- * still behind (or its dependent was deferred earlier in this run).
- * Subsequent tickets that list a deferred slug as `prereq:` are skipped
- * and themselves added to the set, so the gap cascades through the queue
- * just like the chase strategy's block/backlog cascade.
+ * still behind, its dependent was deferred earlier in this run, or the
+ * agent errored on it.  Subsequent tickets that list a deferred slug as
+ * `prereq:` are skipped and themselves added to the set, so the gap
+ * cascades through the queue just like the chase strategy's block/backlog
+ * cascade.
  */
 
 import { runOneStage } from '../run-ticket.mjs';
@@ -22,6 +25,7 @@ import { runOneStage } from '../run-ticket.mjs';
 export async function run(ctx) {
 	const { snapshot } = ctx;
 	const deferred = new Set();
+	const errors = [];
 
 	for (let i = 0; i < snapshot.length; i++) {
 		const ticket = snapshot[i];
@@ -38,8 +42,9 @@ export async function run(ctx) {
 
 		if (outcome.kind === 'stopped') break;
 		if (outcome.kind === 'agent-error') {
-			console.error('Stopping to avoid cascading failures. Re-run to retry.');
-			process.exit(outcome.exitCode);
+			console.error(`  ${label} Agent error on "${ticket.slug}" — deferring slug and continuing with independent tickets.`);
+			deferred.add(ticket.slug);
+			errors.push({ slug: ticket.slug, exitCode: outcome.exitCode });
 		}
 		if (outcome.kind === 'deferred') {
 			deferred.add(ticket.slug);
@@ -49,4 +54,6 @@ export async function run(ctx) {
 			await new Promise(r => setTimeout(r, 500));
 		}
 	}
+
+	return { errors };
 }

@@ -180,8 +180,9 @@ async function main() {
 	}
 
 	const strategy = strategies[opts.strategy];
+	let result;
 	try {
-		await strategy.run({
+		result = await strategy.run({
 			snapshot: allTickets,
 			ticketsDir,
 			repoRoot,
@@ -196,6 +197,15 @@ async function main() {
 		await Promise.all(
 			KNOWN_STAGES.map(s => mkdir(join(ticketsDir, s), { recursive: true })),
 		);
+	}
+
+	const errors = result?.errors ?? [];
+	if (errors.length > 0) {
+		console.error(`\nDone with ${errors.length} agent error(s):`);
+		for (const e of errors) {
+			console.error(`  - ${e.slug} (exit ${e.exitCode})`);
+		}
+		process.exit(errors[0].exitCode || 1);
 	}
 
 	console.log(`\nDone.`);
