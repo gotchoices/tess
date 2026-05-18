@@ -10,20 +10,24 @@ Tickets flow forward through stages:
 
 Each stage's job is to advance the ticket to the next stage. Tickets only move sideways into `blocked/` (and back out once unblocked); they never flow backward. In particular, `review/` is **after** `implement/` — a review ticket exists because code has already been written and now needs a code-review pass.
 
+**Cross-stage gating is automatic.** If a `prereq:` slug sits anywhere earlier in the pipeline (including `blocked/` or `backlog/`), the runner defers the dependent this run and re-picks it once the chain clears. The runner also cascades: errored, deferred, or blocked-prereq slugs transitively defer their downstream. You never mirror this by hand. `prereq:` is a hint to the runner, not an instruction to you.
+
 The tickets/ folder at the project root contains `backlog`, `fix`, `plan`, `implement`, `review`, `blocked`, and `complete` subfolders.  Each ticket is a markdown file inside one of these folders.
 
 Filename convention: `<slug>.md`, optionally prefixed with a numeric **sequence** (integer or decimal) — `3-my-ticket.md` or `3.5-my-ticket.md`.  **Lower sequence runs sooner.**  The prefix is optional; unnumbered tickets (`my-ticket.md`) follow after all numbered ones in the same stage.  The sequence number is not part of the ticket's identity — when referencing another ticket, use only its slug (`my-ticket`), not the full filename.
 
 You own the full stage transition.  When you are done:
   1. Create the next-stage output file(s) in the appropriate tickets/ subfolder.
-     You may split one ticket into multiple next-stage tickets if warranted.
-     You may keep, add, or adjust the sequence prefix.  Respect `prereq:` relationships:
-     a prereq must have a sequence ≤ its dependent (or be unnumbered only if the
-     dependent is also unnumbered).
+     You may split one ticket into multiple next-stage tickets if warranted —
+     give each a distinct slug and chain them with `prereq:` so the runner enforces topo order.
+     Don't combine unrelated tickets. You may keep, add, or adjust the sequence prefix.
+     Respect `prereq:` relationships: a prereq must have a sequence ≤ its dependent (or be
+     unnumbered only if the dependent is also unnumbered) — the runner fails fast on conflicts.
   2. Delete the original source ticket file from its current stage folder.
      Delete only the file — leave the stage folder itself in place even when it
      ends up empty.
-* **Important**: `prereq:` tickets run before this one — assume their work will land; don't block waiting for them. Move to `blocked/` only when (a) you're at *implement* and a prereq's code isn't actually present yet (out-of-tess upstream, stub primitive, premise mismatch), or (b) there's a design question of consequence requiring human sign-off with no defensible default. Otherwise pick the best option, document the tradeoff in the next-stage ticket, and proceed.
+
+**`prereq:` is a hint, not an instruction to park.** Assume every `prereq:` ticket's work will land; design as if it has. The only reasons to deviate are the two `blocked/` categories below — neither is "an upstream tess ticket isn't done yet." Otherwise pick the best option, document the tradeoff in the next-stage ticket, and proceed.
 
 Stages (overview — full rules for your active stage appear under "Active stage details" below):
 - **backlog** — specs not yet ready to work; the human (or `--stages backlog:N`) promotes into plan/.
@@ -57,7 +61,13 @@ Stages (overview — full rules for your active stage appear under "Active stage
 <!-- /stage -->
 
 <!-- stage:blocked -->
-**Blocked** — last resort. For: implement-stage prereq code not actually present (out-of-tess upstream, stub, premise mismatch), or design questions of consequence requiring human sign-off. Lead the file with one line stating which category and what specifically unblocks it. **Not** for: uncertainty more research would resolve, in-tess prereqs still in flight (runner re-picks on later cycles), or design choices with a defensible default.
+**Blocked** — exclusively for what the runner cannot resolve on its own:
+  (a) a design question of consequence requiring human sign-off, with no defensible default, OR
+  (b) (implement stage only) a code prereq that is **not** a tess ticket and is not present (external upstream, stub primitive, premise mismatch).
+
+Lead the file with one line stating which category and the exact thing that unblocks it.
+
+Not blocked: a `prereq:` ticket still in plan/fix/implement (deferred automatically), a `prereq:` ticket already in `blocked/` (transitively deferred — leave yours where it is), uncertainty more research would resolve (do the research), or "we'll get to it later" (that's `backlog/`).
 <!-- /stage -->
 
 <!-- stage:complete -->
@@ -65,8 +75,6 @@ Stages (overview — full rules for your active stage appear under "Active stage
 <!-- /stage -->
 
 If the ticket contains a `<!-- resume-note -->` block, a prior agent run was interrupted before completion.  Read the referenced log file to understand what was already done, check the current codebase state for partial changes, and resume from where it left off.  If the prior run failed on a specific tool call or timed out, be careful not to just launch into the same situation.
-
-Don't combine tickets unless they are tightly related.
 
 ## BUDGET_WARNING
 
@@ -95,7 +103,7 @@ Ticket file template:
 description: <brief description>
 prereq: <slugs of other tickets that must land first — comma-separated, no sequence prefix, no .md>
 files: <list key files touched/relevant — saves the next agent significant discovery time>
-effort: <optional; claude --effort override, e.g. low|medium|high|xhigh — omit to use the stage default>
+effort: <optional; claude --effort override, e.g. low|medium|high|xhigh — omit to use the stage default (xhigh for implement, high elsewhere)>
 ----
 <timeless architecture description focused on prose, diagrams, and interfaces/types/schema>
 

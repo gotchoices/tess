@@ -77,7 +77,12 @@ TODO
 
 `prereq:` lists slugs of other tickets that must land (advance stage) first — no sequence prefix, no `.md` extension, since the sequence can change. The runner topologically sorts each stage to respect these edges and errors on cycles or sequence numbers that violate them.
 
-**Cross-stage prereqs.** Prereqs are also resolved across the whole pipeline, not just the current stage. The runner ranks stages as `backlog (0) < fix = plan (1) < implement (2) < review (3) < complete (4)`; a prereq is *satisfied* for a ticket `T` when it sits in a strictly later rank than `T`, or in the same stage (where in-stage ordering is enforced by topo sort). A prereq found in an earlier-rank stage, in a peer-but-different stage (e.g. `T` in plan with prereq still in fix), or parked in `blocked/` causes `T` to be **deferred** for this run — `T` is skipped with a warning, and any sibling that lists `T` as a prereq is deferred too, cascading through the queue. Unresolved prereqs (slug not present anywhere) are assumed already complete and ignored, as before.
+**Cross-stage prereqs.** Prereqs are resolved across the whole pipeline, not just the current stage. The runner ranks stages as `backlog (0) < fix = plan (1) < implement (2) < review (3) < complete (4)` and treats a prereq as *satisfied* only when it sits in a strictly later rank than its dependent (same-stage ordering is enforced by topo sort). Practical effect:
+
+- Prereq still in an earlier stage, in a peer-but-different stage (e.g. dependent in `plan/` with prereq still in `fix/`), or parked in `blocked/` → the dependent is **deferred** for this run and any sibling listing it as `prereq:` is deferred too. The cascade is transitive through the queue.
+- Unresolved prereq slugs (not present anywhere in the pipeline) are assumed already complete and ignored.
+
+Agents do **not** need to mirror this state by hand — `blocked/` is reserved for human sign-off and missing external code, never for "my prereq isn't done yet." See `agent-rules/tickets.md` for the agent-facing rule.
 
 Pass `--skip-blocked` to pre-filter the snapshot: any ticket whose prereq chain transitively reaches a slug in `blocked/` is dropped before the run starts, so it never appears in the dry-run listing or the live banner. This is a stricter, upfront filter — the runtime cross-stage gate still handles the broader cases (prereq still in plan, peer-stage mismatch, etc.) by deferring at the moment of processing.
 
