@@ -43,6 +43,7 @@ import { ensureLogsDir, pruneOldLogs } from './lib/logging.mjs';
 import { getTessVersion, runMigrationIfNeeded } from './lib/git.mjs';
 import { parseArgs, formatStageSummary } from './lib/cli.mjs';
 import { strategies } from './lib/strategies/index.mjs';
+import { handlePreExistingError } from './lib/pre-existing-error.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -180,6 +181,7 @@ async function main() {
 	}
 
 	const strategy = strategies[opts.strategy];
+	const triageCtx = { ticketsDir, repoRoot, logsDir, opts };
 	let result;
 	try {
 		result = await strategy.run({
@@ -197,6 +199,11 @@ async function main() {
 		await Promise.all(
 			KNOWN_STAGES.map(s => mkdir(join(ticketsDir, s), { recursive: true })),
 		);
+		// Per-ticket triage runs inside run-ticket.mjs catch the common case.
+		// This final sweep catches reports left when the last ticket errored or
+		// timed out — i.e. the runner is about to conclude with a report still
+		// sitting in tickets/.
+		await handlePreExistingError(triageCtx);
 	}
 
 	const errors = result?.errors ?? [];

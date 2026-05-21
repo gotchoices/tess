@@ -330,6 +330,17 @@ If the incomplete ticket is no longer in the batch (e.g., it was manually moved)
 
 If the agent goes idle for too long (10 minutes with no output), the runner kills it and retries the same ticket once with a resume note pointing at the prior run's log. If the retry also times out, the runner commits a resume note to the ticket and moves on to the next one rather than aborting the whole batch — so an unattended run can finish the rest of the queue and you can pick up the timed-out ticket on the next invocation.
 
+## Pre-existing Test Failure Triage
+
+If the agent working a ticket runs tests and one fails in a way that is plainly unrelated to its own changes — broken at HEAD before its edits, in code it never touched — it writes `tickets/.pre-existing-error.md` summarising what it ran and what failed, then finishes its own ticket normally. The workflow rule for this lives in `agent-rules/tickets.md` (§ *Pre-existing test failures*).
+
+After each ticket commits (and again once the run is wrapping up), the runner checks for that file. If present, it dispatches a triage agent — same adapter, focused prompt — instructed to either:
+
+- reproduce the failure, fix the root cause, and let the runner commit; or
+- file a `tickets/backlog/` ticket capturing the failing test and the evidence so a human can decide.
+
+The runner deletes the report afterwards and commits any resulting changes as `tess: triage pre-existing test failure`. Triage respects `--token-budget` and `--no-commit`. The `.pre-existing-error.md` file is gitignored.
+
 ## Design Philosophy
 
 - **Snapshot-based** — Ticket list captured once per run; newly created tickets wait for the next run

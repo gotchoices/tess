@@ -29,6 +29,7 @@ import { writeInProgress, clearInProgress, addResumeNote, checkStop } from './st
 import { logPath } from './logging.mjs';
 import { buildPrompt } from './prompt.mjs';
 import { maybeRefreshIndex } from './refresh-index.mjs';
+import { handlePreExistingError } from './pre-existing-error.mjs';
 
 export async function runOneStage(ticket, ctx, { label }) {
 	const { ticketsDir, repoRoot, tessRoot, tessVersion, logsDir, opts } = ctx;
@@ -156,6 +157,7 @@ export async function runOneStage(ticket, ctx, { label }) {
 		if (!opts.noCommit && commitTicket(ticket, repoRoot)) {
 			console.log(`  Committed.`);
 		}
+		await handlePreExistingError(ctx);
 		console.log(`\n  ${label} Complete: ${ticket.file}\n`);
 		return { kind: 'success', budgetTriggered: !!lastResult?.budgetTriggered };
 	}

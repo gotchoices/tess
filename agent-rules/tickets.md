@@ -76,6 +76,19 @@ Not blocked: a `prereq:` ticket still in plan/fix/implement (deferred automatica
 
 If the ticket contains a `<!-- resume-note -->` block, a prior agent run was interrupted before completion.  Read the referenced log file to understand what was already done, check the current codebase state for partial changes, and resume from where it left off.  If the prior run failed on a specific tool call or timed out, be careful not to just launch into the same situation.
 
+## Pre-existing test failures
+
+If the tests you run surface a failure that is plainly **not yours** — broken at HEAD before your edits, in a subsystem outside your diff, or otherwise clearly unrelated — do NOT try to chase it inside this ticket. Instead:
+
+1. Write `tickets/.pre-existing-error.md` (overwrite if it already exists) containing:
+   - the exact test command(s) you ran (and from which package, for monorepos),
+   - the failing test name(s) and a short excerpt of the error output,
+   - one sentence on why you believe it is pre-existing (e.g. "fails on `main` at the same SHA", "asserts against module X which this ticket never touches").
+   - any steps you have done to disable or work-around the failure for the sake of completing your ticket
+2. Finish your own ticket normally.
+
+After your ticket commits, the runner reads `.pre-existing-error.md` and dispatches a triage agent that either fixes the failure or files a `tickets/backlog/` ticket. Don't second-guess that pass — your job is to flag the failure, not resolve it. Failures clearly caused by your own changes are not pre-existing; fix those before handing off.
+
 ## BUDGET_WARNING
 
 If you receive a `BUDGET_WARNING` from the runner, the conversation has crossed its soft token budget and you should wrap up rather than continuing to investigate or implement:
@@ -92,8 +105,8 @@ If you receive a `BUDGET_WARNING` from the runner, the conversation has crossed 
 - When spawning sub-agents, give them specific file paths rather than asking them to explore.
 - Use the appropriate section of AGENTS.md for the project layout — don't guess paths.
 - Run tests and type checks during implement, not just during review.
-- Long-running validation: the runner kills any agent that produces no output for 10 minutes (idle timeout).  If a command might run that long, **stream its output** (e.g. `yarn foo 2>&1 | tee /tmp/foo.log`) — never `> /tmp/foo.log 2>&1`, since silent redirection lets the idle timer expire and the run is lost.  If a single command's wall-clock routinely exceeds ~10 minutes (full bench sweeps, exhaustive fuzz/property runs, etc.), it is **not agent-runnable**: skip it inside the ticket, document the deferral, and let a human or CI handle it out-of-band.
-- **Never use `run_in_background: true` / `Monitor` / wait-for-notification patterns under tess.** The runner invokes the agent in headless (`claude -p`) mode, where the first `result` message ends the turn — there is no follow-up wake-up when a backgrounded shell or sub-agent finishes. Tess will tree-kill the agent on `result`, and any bg tasks die with it. Run validation **in the foreground** with `tee` (the same streaming pattern above). To parallelize independent commands, chain them in a single shell pipeline (e.g. `(yarn check 2>&1 | tee a.log) & (yarn test 2>&1 | tee b.log) & wait`) so the agent stays attached until both finish — don't hand them to the harness's background mode.
+- Long-running validation: runner kills if no output for 10 minutes (idle timeout).  If a command might run that long, **stream its output** (e.g. `yarn foo 2>&1 | tee /tmp/foo.log`) — never `> /tmp/foo.log 2>&1`, since silent redirection lets the idle timer expire and the run is lost.  If a command's wall-clock routinely exceeds ~10 minutes, it is **not agent-runnable**: skip it inside the ticket, document the deferral, and let a human or CI handle it out-of-band.
+- **Never use `run_in_background: true` / `Monitor` / wait-for-notification patterns under tess.** Agent in `claude -p` mode - first `result` message ends the turn and runner will tree-kill agent. Validate in foreground with `tee`. To parallelize, chain in single shell pipeline.
 
 For new tickets: put a new file into `fix/` or `plan/` (or `backlog/` if it's a future concern rather than active work) but focus on the **description, requirements, and specifications** of the issue or feature, expected behavior, use case, etc.  **Don't do planning, don't add TODO items, or get ahead**, unless you already possess key information that would be useful.  Think use cases, expectations, and specifications.
 
