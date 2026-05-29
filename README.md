@@ -124,6 +124,8 @@ node tess/scripts/run.mjs --strategy chase
 | `--no-commit` | — | Skip automatic git commit after each ticket (also skips the migration commit) |
 | `--skip-blocked` | — | Pre-filter the snapshot: drop any ticket whose prereq chain reaches a slug parked in `blocked/`. The runtime cross-stage prereq gate still applies to other misses. |
 | `--refresh-index` | — | Run the local code indexer incrementally before each ticket. No-op if `tickets/.index/` does not exist. See [Local Code Search](#local-code-search-optional). |
+| `--prune-completed-days <n>` | `30` | Remove completed tickets whose landing commit is older than *n* days. Runs once per run. See [Pruning Completed Tickets](#pruning-completed-tickets). |
+| `--no-prune-completed` | — | Skip the stale-completed-ticket sweep entirely. |
 | `--dry-run` | — | List tickets without invoking the agent |
 
 ### Init Options
@@ -190,6 +192,22 @@ The warning is purely advisory; the agent stays in control. After the agent spli
 - **batch** lets the continuations roll into the next run, preserving the snapshot-once-per-run guarantee.
 
 The budget applies per ticket — every new ticket invocation starts from zero.
+
+## Pruning Completed Tickets
+
+`complete/` is an archive of finished work, and left alone it grows without bound. At the start of every run (before snapshotting), the runner removes completed tickets that landed more than 30 days ago and commits the deletion as `tess: prune <n> completed ticket(s) older than <d> days`.
+
+Age is measured by each file's most-recent **git commit timestamp**, not its filesystem mtime — a checkout rewrites mtimes, but the commit date reflects when the ticket actually reached `complete/`. Untracked completed tickets (no commit history) are left alone since they can't be dated. Because pruning is a tracked deletion, anything removed stays recoverable from git history.
+
+```bash
+# Keep a 90-day archive instead of the default 30
+node tess/scripts/run.mjs --prune-completed-days 90
+
+# Turn the sweep off
+node tess/scripts/run.mjs --no-prune-completed
+```
+
+`--dry-run` reports what the sweep would remove without deleting anything. The sweep also honors `--no-commit` (deletes the files but leaves the commit to you).
 
 ## Local Code Search (optional)
 

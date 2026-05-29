@@ -4,6 +4,7 @@
 
 import { KNOWN_STAGES, PENDING_STAGES } from './tickets.mjs';
 import { KNOWN_STRATEGIES } from './strategies/index.mjs';
+import { DEFAULT_PRUNE_AGE_DAYS } from './prune-completed.mjs';
 
 export function printHelp() {
 	const lines = [
@@ -51,6 +52,9 @@ export function printHelp() {
 		'                       (e.g. prereq still in plan/ when ticket is in implement/).',
 		'  --refresh-index      Run the local code indexer incrementally before each',
 		'                       ticket (no-op if tickets/.index/ does not exist).',
+		`  --prune-completed-days <n>  Remove completed tickets whose landing commit is`,
+		`                       older than n days, once per run  (default: ${DEFAULT_PRUNE_AGE_DAYS}).`,
+		'  --no-prune-completed Skip the stale-completed-ticket sweep entirely.',
 		'  --dry-run            List tickets without invoking agent',
 		'  --help               Show this help',
 	];
@@ -81,6 +85,8 @@ export function parseArgs(argv) {
 		maxTickets: Infinity,
 		tokenBudget: Infinity,
 		stagesRaw: null,
+		pruneCompleted: true,
+		pruneCompletedDays: DEFAULT_PRUNE_AGE_DAYS,
 	};
 
 	for (let i = 0; i < argv.length; i++) {
@@ -106,6 +112,12 @@ export function parseArgs(argv) {
 				break;
 			case '--refresh-index':
 				opts.refreshIndex = true;
+				break;
+			case '--prune-completed-days':
+				opts.pruneCompletedDays = parseFloat(argv[++i]);
+				break;
+			case '--no-prune-completed':
+				opts.pruneCompleted = false;
 				break;
 			case '--max':
 				opts.maxTickets = parseInt(argv[++i], 10);
@@ -139,6 +151,11 @@ export function parseArgs(argv) {
 
 	if (Number.isFinite(opts.tokenBudget) && opts.tokenBudget <= 0) {
 		console.error(`--token-budget must be a positive integer.`);
+		process.exit(1);
+	}
+
+	if (!Number.isFinite(opts.pruneCompletedDays) || opts.pruneCompletedDays < 0) {
+		console.error(`--prune-completed-days must be a non-negative number.`);
 		process.exit(1);
 	}
 

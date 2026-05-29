@@ -44,6 +44,7 @@ import { getTessVersion, runMigrationIfNeeded } from './lib/git.mjs';
 import { parseArgs, formatStageSummary } from './lib/cli.mjs';
 import { strategies } from './lib/strategies/index.mjs';
 import { handlePreExistingError } from './lib/pre-existing-error.mjs';
+import { pruneCompletedTickets } from './lib/prune-completed.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -58,6 +59,19 @@ async function main() {
 
 	// Auto-migrate legacy format before snapshotting tickets.
 	await runMigrationIfNeeded(ticketsDir, repoRoot, { noCommit: opts.noCommit, dryRun: opts.dryRun });
+
+	// Sweep stale completed tickets (default: older than 30 days by git landing date).
+	if (opts.pruneCompleted) {
+		const pruned = await pruneCompletedTickets(ticketsDir, repoRoot, {
+			maxAgeDays: opts.pruneCompletedDays,
+			dryRun: opts.dryRun,
+			noCommit: opts.noCommit,
+		});
+		if (pruned.removed > 0) {
+			const verb = opts.dryRun ? 'Would prune' : 'Pruned';
+			console.log(`\n  ${verb} ${pruned.removed} completed ticket(s) older than ${opts.pruneCompletedDays} days.`);
+		}
+	}
 
 	// ── Build the snapshot ──
 	// Discover each requested stage, then topologically sort within the stage so
