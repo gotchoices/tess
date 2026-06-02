@@ -31,6 +31,29 @@ import { buildPrompt } from './prompt.mjs';
 import { maybeRefreshIndex } from './refresh-index.mjs';
 import { handlePreExistingError } from './pre-existing-error.mjs';
 
+/**
+ * Persist a resume note onto a ticket that did not complete cleanly, and
+ * commit it so the next run picks up where this one left off.  `.in-progress`
+ * is git-ignored, so the committed note — not the marker — is what carries
+ * resume state across commits and checkouts.  Shared by the timed-out and
+ * agent-error paths; both leave the ticket in its source stage.
+ */
+async function persistResumeNote(ticket, ctx, { startedAt, logFile, commitVerb }) {
+	const { repoRoot, opts } = ctx;
+	try {
+		await access(ticket.path, constants.R_OK);
+		await addResumeNote(ticket.path, { startedAt, agent: opts.agent, logFile });
+		if (!opts.noCommit) {
+			try {
+				execSync('git add -A', { cwd: repoRoot, encoding: 'utf-8' });
+				execSync(`git commit -m "tess: ${commitVerb} on ${ticket.slug} — added resume note"`, { cwd: repoRoot, encoding: 'utf-8' });
+			} catch (err) {
+				console.warn(`    Failed to commit resume note: ${err.message}`);
+			}
+		}
+	} catch { /* ticket file may have been moved */ }
+}
+
 export async function runOneStage(ticket, ctx, { label }) {
 	const { ticketsDir, repoRoot, tessRoot, tessVersion, logsDir, opts } = ctx;
 
@@ -167,28 +190,29 @@ export async function runOneStage(ticket, ctx, { label }) {
 		// pointing at the latest log so the next run picks up where this one
 		// left off, then return so the strategy can decide what to do next
 		// (batch continues; chase ends the chain).
-		try {
-			await access(ticket.path, constants.R_OK);
-			await addResumeNote(ticket.path, {
-				startedAt: lastStartedAt,
-				agent: opts.agent,
-				logFile: lastLogFile,
-			});
-			if (!opts.noCommit) {
-				try {
-					execSync('git add -A', { cwd: repoRoot, encoding: 'utf-8' });
-					execSync(`git commit -m "tess: timed out on ${ticket.slug} — added resume note"`, { cwd: repoRoot, encoding: 'utf-8' });
-				} catch (err) {
-					console.warn(`    Failed to commit resume note: ${err.message}`);
-				}
-			}
-		} catch { /* ticket file may have been moved */ }
+		await persistResumeNote(ticket, ctx, { startedAt: lastStartedAt, logFile: lastLogFile, commitVerb: 'timed out' });
 		await clearInProgress(ticketsDir);
 		console.error(`\n  ${label} Timed out ${attempt + 1} time(s) on: ${ticket.file}`);
 		console.error(`    Latest log: ${lastLogFile}`);
 		console.error(`    Resume note added — re-run tess to pick up where it left off.\n`);
 		return { kind: 'timed-out' };
 	}
+
+	// Agent exited non-zero (non-timeout). Preserve a resume note for the FIRST
+	// errored ticket of the run so the next run resumes its partial work. A
+	// credit outage fails every remaining ticket, but only the first did any
+	// real work, so later errors are left alone — annotating them would only add
+	// noise (and, before this gate, each would overwrite `.in-progress`, leaving
+	// the marker on the LAST ticket rather than the first). `ctx` is the same
+	// object for every ticket in a run and is recreated per run, so the flag
+	// scopes to "first error this run". The committed note — not the git-ignored
+	// `.in-progress` marker — is what carries resume state forward, so we clear
+	// the marker here as the success and timed-out paths do.
+	if (!ctx.firstAgentErrorNoted) {
+		ctx.firstAgentErrorNoted = true;
+		await persistResumeNote(ticket, ctx, { startedAt: lastStartedAt, logFile: lastLogFile, commitVerb: 'agent error' });
+	}
+	await clearInProgress(ticketsDir);
 
 	if (lastResult) {
 		console.error(`\nAgent exited with code ${lastResult.exitCode} on ticket: ${ticket.file}`);
