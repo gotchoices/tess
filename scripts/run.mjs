@@ -6,9 +6,14 @@
  * Version: 2.0.0
  *
  * Key design choices:
- *   - The ticket list is snapshotted once at startup.  Tickets created by the agent
- *     during this run are NOT picked up, ensuring each ticket advances exactly one
- *     stage per invocation of the runner.
+ *   - The default `live` strategy re-discovers the ticket board after every
+ *     transition, so tickets the agent creates mid-run are picked up and
+ *     re-prioritized in the same run.  The `batch` and `chase` strategies instead
+ *     snapshot the ticket list once at startup — tickets created during the run
+ *     are NOT picked up until the next invocation, so each snapshotted ticket
+ *     advances exactly one stage per run.  Either way the snapshot built below is
+ *     used for the startup cycle check, the dry-run listing, the banner, and
+ *     resume-note placement; `live` owns discovery from there on.
  *   - The agent owns the stage transition: it creates next-stage file(s) and
  *     deletes the source ticket file.  The runner commits after the agent completes.
  *     This keeps commits out of interactive agent sessions while ensuring clean

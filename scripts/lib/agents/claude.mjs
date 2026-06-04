@@ -86,7 +86,10 @@ function formatStream(line) {
 		const obj = JSON.parse(line);
 		if (obj.type === 'system') {
 			if (obj.subtype === 'init') {
-				return { text: `[session ${obj.session_id ?? '?'}]\n` };
+				// Capture the resolved model — the runner passes no --model, so this
+				// init field is the only record of which model the CLI default picked.
+				const model = obj.model ? `  model=${obj.model}` : '';
+				return { text: `[session ${obj.session_id ?? '?'}]${model}\n` };
 			}
 			// thinking_tokens (and any future progress-only system event):
 			// collapse to a single dot so the log shows a thinking heartbeat

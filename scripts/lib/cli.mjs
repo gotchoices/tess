@@ -3,16 +3,18 @@
  */
 
 import { KNOWN_STAGES, PENDING_STAGES } from './tickets.mjs';
-import { KNOWN_STRATEGIES } from './strategies/index.mjs';
+import { KNOWN_STRATEGIES, DEFAULT_STRATEGY } from './strategies/index.mjs';
 import { DEFAULT_PRUNE_AGE_DAYS } from './prune-completed.mjs';
 
 export function printHelp() {
 	const lines = [
 		'Ticket Runner — process outstanding tickets via agentic CLI',
 		'',
-		'The ticket list is snapshotted once at startup — tickets created by the agent',
-		'during this run are NOT picked up until the next run.  This ensures each',
-		'ticket advances exactly one stage per run.',
+		'Default (`--strategy live`): the runner re-discovers and re-prioritizes the',
+		'whole ticket board after every transition, so tickets created mid-run (a review',
+		'that files a fix, a plan that splits) are picked up and re-ranked immediately.',
+		'The `batch` and `chase` strategies instead snapshot the ticket list once at',
+		'startup — tickets created during the run roll into the next run.',
 		'',
 		'Numeric filename prefix encodes sequence (lower runs sooner); prefix is optional.',
 		'Unnumbered tickets run after all numbered ones in a stage.  Tickets may declare',
@@ -26,18 +28,24 @@ export function printHelp() {
 		'                       Tickets with sequence > n are skipped; unnumbered tickets',
 		'                       are skipped whenever n is finite.',
 		'  --stages <list>      Comma-separated stages, optionally with per-stage max sequence',
-		'                       as  stage:n  (default: fix,plan,implement,review)',
+		'                       as  stage:n  (default: fix,review,implement,plan).  The order',
+		'                       is the cross-stage priority — earlier stages run first.',
 		'                       e.g.  --stages review:5,implement:3,fix',
 		'                             --stages backlog:2  (backlog is not in the default set)',
 		'  --agent <name>       claude | auggie | cursor | codex      (default: claude)',
-		'  --strategy <name>    batch | chase                          (default: batch)',
-		'                       batch: drain each stage before moving to the next.',
-		'                       chase: take one root ticket and follow it through every',
-		'                              stage to complete/ before moving to the next root.',
+		'  --strategy <name>    live | batch | chase                   (default: live)',
+		'                       live:  re-discover and re-prioritize the whole board after',
+		'                              every transition; mid-run tickets are picked up and',
+		'                              re-ranked. Not snapshot-bound.',
+		'                       batch: snapshot at startup; drain each stage before moving',
+		'                              to the next (one transition per ticket per run).',
+		'                       chase: snapshot at startup; take one root ticket and follow',
+		'                              it through every stage to complete/ before the next.',
 		'                              A ticket landing in blocked/ or backlog/ is deferred',
 		'                              and any queued ticket listing it as `prereq:` is',
 		'                              skipped for the rest of the run.',
 		'  --max <n>            Stop after at most n tickets          (default: unlimited)',
+		'                       (live: caps stage transitions, not snapshot size.)',
 		'  --token-budget <n>   Soft per-ticket context budget (claude only).  When the',
 		'                       running context size crosses n tokens, a one-shot',
 		'                       BUDGET_WARNING is injected via a PreToolUse hook so the',
@@ -77,7 +85,7 @@ export function parseArgs(argv) {
 	const opts = {
 		maxSequence: Infinity,
 		agent: 'claude',
-		strategy: 'batch',
+		strategy: DEFAULT_STRATEGY,
 		dryRun: false,
 		noCommit: false,
 		skipBlocked: false,

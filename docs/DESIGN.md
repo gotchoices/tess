@@ -12,9 +12,9 @@ Tickets are markdown files in stage folders. Moving a ticket to the next stage m
 
 The runner doesn't move tickets — agents do. An agent reads a ticket, does the work, creates the next-stage file(s), and deletes the source. The runner handles the git commit after the agent completes. This keeps commits out of interactive agent sessions while ensuring clean commit-per-ticket history when running the pipeline. Agents still have freedom to split tickets, adjust priorities, or redirect to `blocked/` when questions arise.
 
-### 3. One stage per run
+### 3. Selection is a pluggable policy
 
-The runner snapshots the ticket list at startup. Tickets created during a run aren't picked up until the next invocation. This prevents cascade effects and gives humans a clean review point between runs.
+How much a single invocation does is a strategy choice, not a fixed law. The default `live` strategy re-discovers the board after every transition and works the current highest-priority ticket, so the follow-up work a stage generates (a review that files a fix, a plan that splits) is picked up and drained in the same run. The `batch` and `chase` strategies instead snapshot the ticket list at startup — tickets created during the run aren't picked up until the next invocation, which caps a run to one stage per ticket (batch) or one root chased to done (chase) and gives humans a clean review point between runs. Pick `batch`/`chase` when you want that frozen-per-run boundary; pick `live` (default) to clear the pipeline, including its own follow-ups, in one pass.
 
 ### 4. Human-in-the-loop between runs
 
@@ -62,11 +62,15 @@ The pipeline stages, adapted from the original optimystic system:
 
 ## Traversal Strategies
 
-The runner is split into two layers: a fixed pipeline (snapshot → topo-sort → agent invocation → commit) and a pluggable **strategy** that decides which ticket runs next. Strategies live in `tess/scripts/lib/strategies/` and share the same per-ticket runner (`lib/run-ticket.mjs`), so they cannot diverge on idle-timeout retries, in-progress state, or commit cadence — only on traversal order.
+The runner is split into two layers: a fixed pipeline (discover → topo-sort → agent invocation → commit) and a pluggable **strategy** that decides which ticket runs next. Strategies live in `tess/scripts/lib/strategies/` and share the same per-ticket runner (`lib/run-ticket.mjs`), so they cannot diverge on idle-timeout retries, in-progress state, or commit cadence — only on selection. `batch` and `chase` select from a snapshot frozen at startup; `live` re-runs discovery every iteration.
+
+### `live` — continuously reassessed (default)
+
+After every stage transition, live re-discovers the entire board from disk and re-applies the same priority policy `batch` uses — `--stages` order across stages, `prereq:` topo then sequence within a stage — picking the current highest-priority runnable ticket. Because it reads disk each iteration, tickets created mid-run compete for "what's next" immediately: a `review` that files a `fix` sees that fix (highest priority) resolved next; a `plan` that splits into `implement` tickets sees them ranked in at once. A ticket whose prereq is *behind but still advancing* is skipped only for the current pass and becomes selectable the instant its prereq moves forward, so a whole prereq chain can drain in one run. Errored/timed-out slugs are excluded for the rest of the run (resumed next run via their note); a per-slug transition cap and a global run cap backstop regress/respawn loops. Best for unattended runs that should clear the pipeline — including its own generated follow-ups — always working the most important thing next.
 
 ### `batch` — stage-major
 
-The original behavior: drain every selected stage in `--stages` order, advancing each ticket by exactly one stage. Best for steady throughput; each run produces a stage-of-progress diff. The snapshot is captured once at startup and topo-sorted by `prereq:` within each stage; lower sequences come first.
+The original behavior: drain every selected stage in `--stages` order, advancing each ticket by exactly one stage. Best for steady throughput and a clean review boundary per run; each run produces a stage-of-progress diff. The snapshot is captured once at startup and topo-sorted by `prereq:` within each stage; lower sequences come first.
 
 ### `chase` — ticket-major
 
@@ -80,9 +84,9 @@ Pick one root ticket and follow it through `plan → implement → review → co
 
 **Safety cap.** A single chain is bounded to 6 stage transitions to guard against regressive loops (e.g. an agent moving `implement` → `plan`). The natural pipeline tops out at 4–5 transitions.
 
-### Why two strategies, not a knob
+### Why explicit strategies, not a knob
 
-A single parameterized loop (`depth` = 1 means batch, `depth` = ∞ means chase) was considered and rejected. The two modes differ in *intent* — "advance everything once" vs "finish this one thing" — and in error recovery (chase needs the deferred-cascade rule, batch doesn't). A shared loop with mode flags would make the harder behavior the default of every read; explicit strategies make the contract obvious at the call site.
+A single parameterized loop (`depth` = 1 means batch, `depth` = ∞ means chase) was considered and rejected. The modes differ in *intent* — "reassess and always work the top priority" (live) vs "advance everything once" (batch) vs "finish this one thing" (chase) — and in error recovery (chase needs the deferred-cascade rule; live needs the exclude-and-reassess rule; batch needs neither). They also differ in whether selection reads a frozen snapshot (batch/chase) or live disk state (live). A shared loop with mode flags would entangle these and make the subtlest behavior the default of every read; explicit strategies keep each contract obvious at the call site.
 
 ---
 

@@ -49,7 +49,13 @@ Stages (overview — full rules for your active stage appear under "Active stage
 <!-- /stage -->
 
 <!-- stage:plan -->
-**Plan** — specs for features and enhancements (not already designed/planned).  After research, provided no major questions/options remain, output is one or more plan and implement/ tickets.  When you discover adjacent work that is out of scope for the current pass, park it in `backlog/` rather than growing the current ticket.  References should be made to key files and documentation.  TODO tasks should be at the bottom of the ticket file(s).  Don't switch to your agent's "planning mode" when working these tickets - that's too meta.  In the spirit of TDD, your plan may include bullets describing key tests that might come in later phases, and what the expected outputs should be.
+**Plan** — specs for features and enhancements (not already designed/planned).  After research, output is one or more plan and implement/ tickets.  When you discover adjacent work that is out of scope for the current pass, park it in `backlog/` rather than growing the current ticket.  References should be made to key files and documentation.  TODO tasks should be at the bottom of the ticket file(s).  Don't switch to your agent's "planning mode" when working these tickets - that's too meta.  In the spirit of TDD, your plan may include bullets describing key tests that might come in later phases, and what the expected outputs should be.
+
+**Resolve the design before you emit an implement ticket.**  Only hand off to `implement/` once no major question or open option remains: settle it with more research, or pick the best option and document the tradeoff in the ticket.  If a genuine question of consequence has no defensible default, route to `blocked/` for human sign-off — never emit an under-specified implement ticket and leave the call to the implementer.
+
+**Enumerate the adversarial surface.**  Every implement ticket you produce should carry an `## Edge cases & interactions` section naming the boundary states, concurrent/forked access, partial-failure paths, and cross-subsystem interactions the implementer must cover and the reviewer will check.  A case you name here is a test written up front; a case you omit tends to return as a separate fix ticket.
+
+**Size each ticket to one agent run.**  Split so each implement ticket is a single coherent change an agent can finish well inside the runner's idle-timeout window.  If a ticket would span several subsystems or carry multiple independent failure modes, break it into `prereq:`-chained tickets rather than one oversized ticket.
 <!-- /stage -->
 
 <!-- stage:implement -->

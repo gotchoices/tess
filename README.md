@@ -12,7 +12,7 @@ Tess lives as its own repository and integrates into any project, giving every r
 
 Tickets are markdown files organized into stage folders inside a project's `tickets/` directory. Each ticket file is named with an optional sequence prefix (`3-my-feature.md` — lower runs sooner) and contains a lightweight metadata header followed by architecture notes and TODO items. The sequence prefix is optional; unnumbered tickets follow after all numbered ones in a stage.
 
-A runner script processes tickets one at a time, invoking an AI agent for each. The agent owns the full stage transition: it creates the next-stage file(s), deletes the source ticket, and commits. The runner snapshots the ticket list at startup and traverses it under one of two strategies — **batch** (drain stage-by-stage; default) or **chase** (follow one ticket through every stage before moving to the next). See [Strategies](#strategies) below.
+A runner script processes tickets one at a time, invoking an AI agent for each. The agent owns the full stage transition: it creates the next-stage file(s), deletes the source ticket, and commits. The runner chooses what to work next under one of three strategies — **live** (default; re-discover and re-prioritize the whole board after every transition, picking up tickets created mid-run), **batch** (snapshot at startup; drain stage-by-stage), or **chase** (snapshot at startup; follow one ticket through every stage before moving to the next). See [Strategies](#strategies) below.
 
 ```
 tickets/
@@ -116,10 +116,10 @@ node tess/scripts/run.mjs --strategy chase
 | Option | Default | Description |
 |---|---|---|
 | `--max-sequence <n>` | _unlimited_ | Default sequence ceiling for all stages (sequences can include decimals). Unnumbered tickets are skipped whenever this is finite. |
-| `--stages <list>` | `fix,plan,implement,review` | Stages to process, with optional per-stage max (`implement:12,review:10`). `backlog` is a valid target but excluded from the default set. |
+| `--stages <list>` | `fix,review,implement,plan` | Stages to process, with optional per-stage max (`implement:12,review:10`). The order is the cross-stage priority (earlier = higher). `backlog` is a valid target but excluded from the default set. |
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, `auggie`, or `codex` |
-| `--strategy <name>` | `batch` | Traversal strategy: `batch` or `chase`. See [Strategies](#strategies). |
-| `--max <n>` | _unlimited_ | Stop after processing at most n tickets |
+| `--strategy <name>` | `live` | Selection strategy: `live`, `batch`, or `chase`. See [Strategies](#strategies). |
+| `--max <n>` | _unlimited_ | Stop after processing at most n tickets (with `live`, caps stage transitions rather than snapshot size) |
 | `--token-budget <n>` | _unset_ | Soft per-ticket context budget (claude only). When the running context size crosses *n* tokens, a one-shot `BUDGET_WARNING` is injected via a PreToolUse hook so the agent splits residual work into continuation tickets. See [Token Budget](#token-budget). |
 | `--no-commit` | — | Skip automatic git commit after each ticket (also skips the migration commit) |
 | `--skip-blocked` | — | Pre-filter the snapshot: drop any ticket whose prereq chain reaches a slug parked in `blocked/`. The runtime cross-stage prereq gate still applies to other misses. |
@@ -144,13 +144,23 @@ When neither flag is passed, init will prompt interactively. The default is to *
 
 ## Strategies
 
-The runner picks the next ticket to work using a strategy. Both strategies share the same snapshot, agent invocation, logging, and commit pipeline — they differ only in traversal order.
+The runner picks the next ticket to work using a strategy. All three strategies share the same agent invocation, logging, and commit pipeline — they differ in how they choose the next ticket. `live` reassesses the board continuously; `batch` and `chase` traverse a snapshot frozen at startup.
 
-### `batch` (default)
+### `live` (default)
 
-Drain each stage in topo/sequence order: every ticket advances exactly **one** stage per run. The pipeline-wide order is `--stages` (default `fix,plan,implement,review`); within each stage, prereqs come before dependents and lower sequences come first.
+After **every** stage transition, live re-discovers the entire ticket board from disk and re-applies the priority policy, then runs the current highest-priority ticket. The policy is the same one `batch` uses — cross-stage order from `--stages` (default `fix,review,implement,plan`: drive in-flight work toward done before opening new work), and within each stage prereqs before dependents then lower sequence first — but it is re-evaluated each iteration instead of once.
 
-Best for: steady, reviewable progress across the whole pipeline. Each run produces a clean diff per stage so you can inspect what each stage did.
+Because it reads disk every iteration, a ticket created mid-run is picked up the same run: a `review` that files a `fix` sees that fix jump to the front (fix is highest-priority) and resolved next; a `plan` that splits into several `implement` tickets sees them ranked in immediately. A ticket whose prereq is still *behind but advancing* is skipped only for the current pass and becomes selectable the moment its prereq moves forward — so an entire prereq chain can drain in one run.
+
+A slug that errors or times out is excluded for the rest of the run (next run resumes it via its resume note); its dependents stay gated behind it. A per-slug transition cap (12) and a global run cap backstop an agent that regresses or re-spawns a ticket in a loop. `--max <n>` caps the number of transitions (not a snapshot length).
+
+Best for: unattended runs that should clear the whole pipeline — including the follow-up work earlier stages generate — in a single invocation, always working the most important thing next.
+
+### `batch`
+
+Snapshot the ticket list at startup, then drain each stage in topo/sequence order: every snapshotted ticket advances exactly **one** stage per run, and tickets created during the run roll into the next run. The pipeline-wide order is `--stages` (default `fix,review,implement,plan`); within each stage, prereqs come before dependents and lower sequences come first.
+
+Best for: steady, reviewable progress with a fixed, predictable batch per run. Each run produces a clean one-transition-per-ticket diff so you can inspect what each stage did before the next pass.
 
 ### `chase`
 
@@ -167,14 +177,17 @@ After each stage transition, chase looks up the same slug in any forward-ranked 
 Best for: focused work on a single feature, or when you want fewer parallel work-in-progress trails in git history.
 
 ```bash
-# Default — drain stage by stage
+# Default — live: reassess the board after every transition
 node tess/scripts/run.mjs
+
+# Snapshot at startup, drain stage by stage
+node tess/scripts/run.mjs --strategy batch
 
 # Follow each root ticket all the way through
 node tess/scripts/run.mjs --strategy chase
 
-# Chase only the earliest tickets
-node tess/scripts/run.mjs --strategy chase --max 3
+# Live, but stop after 3 transitions
+node tess/scripts/run.mjs --max 3
 ```
 
 ## Token Budget
@@ -188,6 +201,7 @@ node tess/scripts/run.mjs --token-budget 160000
 
 The warning is purely advisory; the agent stays in control. After the agent splits and the runner commits, behavior depends on strategy:
 
+- **live** re-discovers the board and picks up the new same-stage continuations immediately, ranked against everything else.
 - **chase** picks up the new same-stage continuations as part of the current chain (depth-first, before advancing the original slug forward).
 - **batch** lets the continuations roll into the next run, preserving the snapshot-once-per-run guarantee.
 
@@ -340,9 +354,9 @@ The runner tracks which ticket is currently being processed in `tickets/.in-prog
 
 The agent sees this note as part of the ticket content and can read the log to understand what was already accomplished. The resume note is removed by the agent when it begins working.
 
-When the resumed ticket is present in the new run's snapshot, it is hoisted to the front of the queue so it runs first — even if it sits in a later stage than other queued tickets. This applies to both `batch` and `chase` strategies (in `chase`, the resumed ticket becomes the first root and is chased forward from its current stage).
+The resume note is committed to the ticket file itself, so it carries across runs regardless of strategy. Under `batch` and `chase`, when the resumed ticket is present in the new run's snapshot it is also hoisted to the front of the queue so it runs first — even if it sits in a later stage than other queued tickets (in `chase`, it becomes the first root and is chased forward from its current stage). Under `live` there is no frozen queue to hoist within; the ticket is re-discovered with its note in place and selected by normal cross-stage priority.
 
-If the incomplete ticket is no longer in the batch (e.g., it was manually moved), the runner simply clears the stale state and proceeds normally.
+If the incomplete ticket is no longer present (e.g., it was manually moved), the runner simply clears the stale state and proceeds normally.
 
 ### Idle-timeout retries
 
