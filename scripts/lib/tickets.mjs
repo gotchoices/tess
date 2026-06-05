@@ -11,7 +11,7 @@ import { join, basename } from 'node:path';
 import { constants } from 'node:fs';
 
 /** Default stages from which to pull tickets (backlog excluded — parked by design). */
-export const PENDING_STAGES = ['fix', 'review', 'implement', 'plan'];
+export const PENDING_STAGES = ['review', 'implement', 'fix', 'plan'];
 
 /** All valid stage names (for --stages validation). */
 export const KNOWN_STAGES = ['backlog', 'fix', 'plan', 'implement', 'review', 'complete', 'blocked'];
@@ -73,7 +73,7 @@ export function isPrereqSatisfied(prereqStage, ticketStage) {
  * which lets callers walk the prereq DAG across stages (e.g. transitive
  * blocked-detection).  This costs one read per ticket and is opt-in.
  */
-const STAGE_INDEX_ORDER = ['complete', 'review', 'implement', 'plan', 'fix', 'backlog', 'blocked'];
+const STAGE_INDEX_ORDER = ['complete', 'review', 'implement', 'fix', 'plan', 'backlog', 'blocked'];
 export async function indexAllTickets(ticketsDir, { withPrereqs = false } = {}) {
 	const index = new Map();
 	for (const stage of STAGE_INDEX_ORDER) {
