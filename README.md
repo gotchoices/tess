@@ -338,26 +338,30 @@ difficulty: <optional: easy | medium | hard — defaults to medium>
 
 Tickets carry only a portable `difficulty:`; the concrete **model** and **reasoning-effort** are API-specific, so they live in a tess-level config (`tess/config/agents.json`) keyed per agent rather than on the ticket. Each agent adapter resolves them at invocation time, so the same `difficulty` notion works across `claude`, `codex`, `cursor`, etc. — each using its own model names and effort vocabulary.
 
-The selection rule, by design, is orthogonal:
+The selection has a compact base rule plus sparse per-cell overrides:
 
 - **Difficulty picks the model tier** — so the strongest model is reserved for the hardest tickets.
 - **Stage picks the effort** — `implement` runs hottest, the rest a notch lower.
+- **`overrides[stage][difficulty]`** pins a specific cell's model and/or effort when the base rule doesn't fit.
 
-The built-in defaults for `claude` (in `scripts/lib/model-selection.mjs`, overridable by `config/agents.json`):
+The resulting defaults for `claude` (in `scripts/lib/model-selection.mjs`, overridable by `config/agents.json`), shown as model · effort:
 
-| stage | easy | medium | hard | effort |
-|---|---|---|---|---|
-| fix / plan / review | `claude-sonnet-4-6` | `claude-opus-4-8` | `claude-fable-5` | `high` |
-| implement | `claude-sonnet-4-6` | `claude-opus-4-8` | `claude-fable-5` | `xhigh` |
+| stage | easy | medium | hard |
+|---|---|---|---|
+| fix / plan | `sonnet-4-6` · high | `opus-4-8` · high | `fable-5` · high |
+| implement | `sonnet-4-6` · xhigh | `opus-4-8` · xhigh | `fable-5` · xhigh |
+| review | **`opus-4-8` · medium** | `opus-4-8` · high | `fable-5` · high |
 
-The `medium` column reproduces the historical effort profile (`xhigh` for `implement`, `high` elsewhere) while pinning the model explicitly instead of inheriting whatever was last configured interactively. `easy` saves cost with Sonnet; `hard` escalates to Fable 5.
+The `medium` column reproduces the historical effort profile (`xhigh` for `implement`, `high` elsewhere) while pinning the model explicitly instead of inheriting whatever was last configured interactively. `easy` saves cost with Sonnet; `hard` escalates to Fable 5. The bolded cell is an override: an `easy` review still runs on Opus (cheap models miss bugs) but at reduced effort.
 
-`config/agents.json` is deep-merged over the built-in defaults, so a partial file only restates what it changes. A `null` or missing model/effort means "pass no flag — use the agent's own default," which is how every non-`claude` agent behaves until you add a block for it. Example — tier `review` down and add a `codex` policy:
+`config/agents.json` is deep-merged over the built-in defaults, so a partial file only restates what it changes. A `null` or missing model/effort means "pass no flag — use the agent's own default," which is how every non-`claude` agent behaves until you add a block for it. Example — pin a cross-cutting cell and add a `codex` policy:
 
 ```json
 {
   "claude": {
-    "effort": { "review": "medium" }
+    "overrides": {
+      "review": { "easy": { "model": "claude-opus-4-8", "effort": "medium" } }
+    }
   },
   "codex": {
     "model": { "easy": "gpt-5-mini", "medium": "gpt-5", "hard": "gpt-5" },

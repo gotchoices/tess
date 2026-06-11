@@ -5,7 +5,10 @@
  * — an agent-agnostic notion of how much horsepower the work needs.  The
  * concrete model and reasoning-effort are API-specific, so they live here in a
  * per-agent configuration instead of on the ticket: difficulty picks the model
- * tier, the pipeline stage picks the effort.  Each adapter calls
+ * tier, the pipeline stage picks the effort, and an optional sparse
+ * `overrides[stage][difficulty]` map wins over either for cross-cutting cells
+ * (e.g. an easy review that should still run on a strong model).  Each adapter
+ * calls
  * `resolveModelEffort(<agentName>, { stage, difficulty })` and translates the
  * result into its own CLI flags, so the same difficulty notion drives every
  * interface (claude, codex, cursor, …) without leaking one agent's vocabulary
@@ -30,9 +33,11 @@ export const DEFAULT_DIFFICULTY = 'medium';
  * Built-in fallback, used when `config/agents.json` is absent or omits an
  * agent.  Difficulty → model tier (Fable reserved for the hardest work);
  * effort is per-stage with `implement` bumped one notch above the `default`
- * because it does the most synthesis.  Agents without an entry here resolve to
- * `{ model: null, effort: null }`, i.e. "pass no flags — use the agent's own
- * default model/effort."
+ * because it does the most synthesis.  `overrides[stage][difficulty]` pins a
+ * specific cell's model and/or effort regardless of those base rules (here: an
+ * easy review still runs on Opus, but at reduced effort).  Agents without an
+ * entry here resolve to `{ model: null, effort: null }`, i.e. "pass no flags —
+ * use the agent's own default model/effort."
  */
 const BUILTIN_CONFIG = {
 	claude: {
@@ -45,6 +50,9 @@ const BUILTIN_CONFIG = {
 			implement: 'xhigh',
 			default: 'high',
 		},
+		overrides: {
+			review: { easy: { model: 'claude-opus-4-8', effort: 'medium' } },
+		},
 	},
 };
 
@@ -55,16 +63,29 @@ export function normalizeDifficulty(value) {
 	return DIFFICULTIES.includes(v) ? v : DEFAULT_DIFFICULTY;
 }
 
-/** Per-agent shallow merge of `model` and `effort` sub-objects (file wins). */
+function isPlainObject(x) {
+	return x != null && typeof x === 'object' && !Array.isArray(x);
+}
+
+/** Recursively merge `override` onto `base`: objects merge key-wise, scalars replace. */
+function deepMerge(base, override) {
+	if (!isPlainObject(base) || !isPlainObject(override)) return override;
+	const out = { ...base };
+	for (const key of Object.keys(override)) {
+		out[key] = deepMerge(base[key], override[key]);
+	}
+	return out;
+}
+
+/** Per-agent deep merge (file wins); `_`-prefixed keys in the file are ignored. */
 function mergeConfig(base, override) {
 	const merged = {};
-	for (const agent of new Set([...Object.keys(base), ...Object.keys(override)])) {
-		const b = base[agent] ?? {};
-		const o = override[agent] ?? {};
-		merged[agent] = {
-			model: { ...(b.model ?? {}), ...(o.model ?? {}) },
-			effort: { ...(b.effort ?? {}), ...(o.effort ?? {}) },
-		};
+	const agents = new Set([
+		...Object.keys(base),
+		...Object.keys(override).filter(k => !k.startsWith('_')),
+	]);
+	for (const agent of agents) {
+		merged[agent] = deepMerge(base[agent] ?? {}, override[agent] ?? {});
 	}
 	return merged;
 }
@@ -88,13 +109,16 @@ function loadConfig() {
  * Resolve `{ model, effort }` for an agent from (stage, difficulty).  Either
  * field is `null` when the config doesn't specify one for this agent — the
  * caller should then omit the corresponding CLI flag and let the agent use its
- * own default.  Difficulty selects the model; stage selects the effort
- * (falling back to the `default` effort key when the stage isn't listed).
+ * own default.  Base rule: difficulty selects the model, stage selects the
+ * effort (falling back to the `default` effort key when the stage isn't
+ * listed).  A matching `overrides[stage][difficulty]` entry wins per-field, so
+ * a single cell can pin a model and/or effort that the base rules wouldn't.
  */
 export function resolveModelEffort(agent, { stage, difficulty } = {}) {
 	const cfg = loadConfig()[agent] ?? {};
 	const diff = normalizeDifficulty(difficulty);
-	const model = cfg.model?.[diff] ?? null;
-	const effort = cfg.effort?.[stage] ?? cfg.effort?.default ?? null;
+	const override = cfg.overrides?.[stage]?.[diff] ?? {};
+	const model = override.model ?? cfg.model?.[diff] ?? null;
+	const effort = override.effort ?? cfg.effort?.[stage] ?? cfg.effort?.default ?? null;
 	return { model, effort };
 }
