@@ -323,7 +323,7 @@ backlog/ ─→ plan/ ─┐
 description: <brief description>
 prereq: <slugs of other tickets that must land first — comma-separated, no prefix, no .md>
 files: <optional list of relevant files>
-effort: <optional reasoning-effort override for the agent (claude only)>
+difficulty: <optional: easy | medium | hard — defaults to medium>
 ----
 <Architecture description — prose, diagrams, interfaces/types>
 
@@ -332,7 +332,41 @@ effort: <optional reasoning-effort override for the agent (claude only)>
 
 **Filename convention:** `<slug>.md` with an optional `<sequence>-` prefix where lower sequence runs sooner (integer or decimal, e.g. `3-my-feature.md` or `3.5-my-feature.md`). The sequence number is not part of the ticket's identity — reference tickets by slug only in `prereq:`.
 
-**Effort override (claude only):** when present, `effort:` is passed through as `claude --effort <value>` (typical values: `low`, `medium`, `high`, `xhigh`). When omitted, the runner picks a default by stage — `xhigh` for `implement` (where the most synthesis happens), `high` everywhere else.
+**Difficulty (`easy` | `medium` | `hard`, default `medium`):** a portable, agent-agnostic estimate of how much horsepower a ticket needs. The runner maps it — together with the pipeline stage and per-agent config — to a concrete model and reasoning-effort. See [Model & Effort Selection](#model--effort-selection). Reserve `hard` for genuinely demanding work (it selects the strongest, most expensive model) and `easy` for mechanical changes.
+
+## Model & Effort Selection
+
+Tickets carry only a portable `difficulty:`; the concrete **model** and **reasoning-effort** are API-specific, so they live in a tess-level config (`tess/config/agents.json`) keyed per agent rather than on the ticket. Each agent adapter resolves them at invocation time, so the same `difficulty` notion works across `claude`, `codex`, `cursor`, etc. — each using its own model names and effort vocabulary.
+
+The selection rule, by design, is orthogonal:
+
+- **Difficulty picks the model tier** — so the strongest model is reserved for the hardest tickets.
+- **Stage picks the effort** — `implement` runs hottest, the rest a notch lower.
+
+The built-in defaults for `claude` (in `scripts/lib/model-selection.mjs`, overridable by `config/agents.json`):
+
+| stage | easy | medium | hard | effort |
+|---|---|---|---|---|
+| fix / plan / review | `claude-sonnet-4-6` | `claude-opus-4-8` | `claude-fable-5` | `high` |
+| implement | `claude-sonnet-4-6` | `claude-opus-4-8` | `claude-fable-5` | `xhigh` |
+
+The `medium` column reproduces the historical effort profile (`xhigh` for `implement`, `high` elsewhere) while pinning the model explicitly instead of inheriting whatever was last configured interactively. `easy` saves cost with Sonnet; `hard` escalates to Fable 5.
+
+`config/agents.json` is deep-merged over the built-in defaults, so a partial file only restates what it changes. A `null` or missing model/effort means "pass no flag — use the agent's own default," which is how every non-`claude` agent behaves until you add a block for it. Example — tier `review` down and add a `codex` policy:
+
+```json
+{
+  "claude": {
+    "effort": { "review": "medium" }
+  },
+  "codex": {
+    "model": { "easy": "gpt-5-mini", "medium": "gpt-5", "hard": "gpt-5" },
+    "effort": { "implement": "high", "default": "medium" }
+  }
+}
+```
+
+> **Note:** effort vocabularies are model-specific — a value valid for one model may be rejected by another. If a model in a given tier rejects an effort value, set a supported one for that stage in the config.
 
 ## Stopping the Runner
 

@@ -54,7 +54,7 @@ function killTree(child) {
 }
 
 /** Write prompt to a temp instruction file, spawn the agent, tee output to log. Returns { exitCode, timedOut, budgetTriggered }. */
-export async function runAgent(agentName, prompt, cwd, logFile, { stage, tokenBudget, effort } = {}) {
+export async function runAgent(agentName, prompt, cwd, logFile, { stage, tokenBudget, difficulty } = {}) {
 	const adapter = agents[agentName];
 	if (!adapter) {
 		console.error(`Unknown agent: ${agentName}. Available: ${Object.keys(agents).join(', ')}`);
@@ -68,7 +68,7 @@ export async function runAgent(agentName, prompt, cwd, logFile, { stage, tokenBu
 		? logFile.replace(/\.log$/, '.budget-warning')
 		: null;
 
-	const adapterResult = await adapter(instructionFile, prompt, { cwd, stage, tokenBudget, effort });
+	const adapterResult = await adapter(instructionFile, prompt, { cwd, stage, tokenBudget, difficulty });
 	const logStream = createWriteStream(logFile, { flags: 'a' });
 	const { cmd, args, shellCmd, formatStream, cleanupFiles = [] } = adapterResult;
 

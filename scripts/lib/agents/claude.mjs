@@ -16,6 +16,7 @@ import { writeFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { resolveModelEffort } from '../model-selection.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOK_SCRIPT = join(__dirname, '..', 'budget-hook.mjs');
@@ -86,8 +87,9 @@ function formatStream(line) {
 		const obj = JSON.parse(line);
 		if (obj.type === 'system') {
 			if (obj.subtype === 'init') {
-				// Capture the resolved model — the runner passes no --model, so this
-				// init field is the only record of which model the CLI default picked.
+				// Echo the resolved model so the log records which one actually ran
+				// (the runner pins --model from the ticket's difficulty + config, but
+				// this confirms the CLI accepted it).
 				const model = obj.model ? `  model=${obj.model}` : '';
 				return { text: `[session ${obj.session_id ?? '?'}]${model}\n` };
 			}
@@ -162,20 +164,20 @@ function buildBudgetSettings() {
 	}, null, 2);
 }
 
-export async function claude(instructionFile, _prompt, { stage, tokenBudget, cwd, effort } = {}) {
-	// Stage-based default; `implement` gets the highest effort because it does
-	// the most synthesis.  Ticket frontmatter `effort:` overrides for one-off
-	// tickets that need more (or less) than the stage default.
-	const defaultEffort = stage === 'implement' ? 'xhigh' : 'high';
-	const resolvedEffort = effort ?? defaultEffort;
+export async function claude(instructionFile, _prompt, { stage, tokenBudget, cwd, difficulty } = {}) {
+	// Difficulty picks the model tier (Fable for `hard`), stage picks the effort
+	// (`implement` runs hottest).  Both come from the shared resolver +
+	// tess-level config, so the same ticket `difficulty:` drives every adapter.
+	const { model, effort } = resolveModelEffort('claude', { stage, difficulty });
 	const args = [
 		'-p',
 		'--dangerously-skip-permissions',
 		'--verbose',
 		'--no-session-persistence',
 		'--output-format', 'stream-json',
-		'--effort', resolvedEffort,
 	];
+	if (model) args.push('--model', model);
+	if (effort) args.push('--effort', effort);
 	const cleanupFiles = [];
 	// `--mcp-config <configs...>` is variadic — commander keeps slurping until
 	// the next `--flag`.  Insert it BEFORE another flag (here:

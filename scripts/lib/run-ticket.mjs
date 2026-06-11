@@ -158,7 +158,7 @@ export async function runOneStage(ticket, ctx, { label }) {
 		lastResult = await runAgent(opts.agent, prompt, repoRoot, currentLog, {
 			stage: ticket.stage,
 			tokenBudget: opts.tokenBudget,
-			effort: ticket.effort,
+			difficulty: ticket.difficulty,
 		});
 
 		if (lastResult.exitCode === 0) {

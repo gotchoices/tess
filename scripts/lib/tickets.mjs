@@ -184,15 +184,17 @@ export function parsePrereqs(content) {
 }
 
 /**
- * Parse the optional `effort:` header field.  Used by adapters that take a
- * reasoning-effort knob (currently only claude's `--effort`).  Returns the
- * trimmed lowercase value or `null` when absent.  Value validation is left to
- * the adapter — different agents accept different vocabularies.
+ * Parse the optional `difficulty:` header field.  This is the portable,
+ * agent-agnostic knob (`easy` | `medium` | `hard`); the runner maps it — in
+ * combination with the pipeline stage and per-agent config — to a concrete
+ * model and reasoning-effort (see lib/model-selection.mjs).  Returns the
+ * trimmed lowercase value or `null` when absent; normalization to a known
+ * token (and the `medium` default) happens at resolution time.
  */
-export function parseEffort(content) {
+export function parseDifficulty(content) {
 	const divIdx = content.indexOf('\n----');
 	const header = divIdx === -1 ? content : content.slice(0, divIdx);
-	const match = header.match(/^effort:\s*(.*)$/mi);
+	const match = header.match(/^difficulty:\s*(.*)$/mi);
 	if (!match) return null;
 	const value = match[1].trim().toLowerCase();
 	return value || null;
@@ -234,7 +236,7 @@ export async function findTicketBySlug(ticketsDir, slug, stages) {
 				sequence: parseSequence(entry),
 				slug,
 				prereqs: parsePrereqs(content),
-				effort: parseEffort(content),
+				difficulty: parseDifficulty(content),
 			};
 		}
 	}
@@ -276,7 +278,7 @@ export async function discoverTickets(ticketsDir, stage, maxSequence) {
 			sequence,            // raw: number or null
 			slug: parseSlug(entry),
 			prereqs: parsePrereqs(content),
-			effort: parseEffort(content),
+			difficulty: parseDifficulty(content),
 		});
 	}
 

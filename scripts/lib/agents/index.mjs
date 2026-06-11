@@ -1,7 +1,7 @@
 /**
  * Agent adapter registry.
  *
- * Each adapter is a function `(instructionFile, prompt, { cwd, stage }) => spec`
+ * Each adapter is a function `(instructionFile, prompt, { cwd, stage, difficulty, tokenBudget }) => spec`
  * where spec is one of:
  *   { cmd, args, formatStream? }    — direct exec (no shell)
  *   { shellCmd, formatStream? }     — passed as a single shell string (Windows

@@ -3,6 +3,7 @@
  */
 
 import { relative } from 'node:path';
+import { resolveModelEffort } from '../model-selection.mjs';
 
 function formatStream(line) {
 	try {
@@ -36,20 +37,22 @@ function formatStream(line) {
 	return { text };
 }
 
-export function codex(instructionFile, _prompt, { cwd }) {
+export function codex(instructionFile, _prompt, { cwd, stage, difficulty } = {}) {
 	const relPath = relative(cwd, instructionFile).replace(/\\/g, '/');
 	const prompt = `Read and follow all instructions in the file: ${relPath}`;
-	return {
-		cmd: 'codex',
-		args: [
-			'exec',
-			'--json',
-			'--color', 'never',
-			'--full-auto',
-			'--ephemeral',
-			'-C', cwd,
-			prompt,
-		],
-		formatStream,
-	};
+	// Inert unless a `codex` block is added to config/agents.json (the built-in
+	// defaults cover claude only); `null` values pass no flag.
+	const { model, effort } = resolveModelEffort('codex', { stage, difficulty });
+	const args = [
+		'exec',
+		'--json',
+		'--color', 'never',
+		'--full-auto',
+		'--ephemeral',
+		'-C', cwd,
+	];
+	if (model) args.push('-m', model);
+	if (effort) args.push('-c', `model_reasoning_effort="${effort}"`);
+	args.push(prompt);
+	return { cmd: 'codex', args, formatStream };
 }

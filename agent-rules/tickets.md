@@ -122,7 +122,7 @@ Ticket file template:
 description: <brief description>
 prereq: <slugs of other tickets that must land first — comma-separated, no sequence prefix, no .md>
 files: <list key files touched/relevant — saves the next agent significant discovery time>
-effort: <optional; claude --effort override, e.g. low|medium|high|xhigh — omit to use the stage default (xhigh for implement, high elsewhere)>
+difficulty: <optional; easy|medium|hard — how much horsepower the work needs. Default medium. Drives model/effort selection (e.g. hard → a stronger model); omit unless the work is unusually simple or hard.>
 ----
 <timeless architecture description focused on prose, diagrams, and interfaces/types/schema>
 

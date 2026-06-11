@@ -3,6 +3,7 @@
  */
 
 import { relative } from 'node:path';
+import { resolveModelEffort } from '../model-selection.mjs';
 
 function formatStream(line) {
 	try {
@@ -41,11 +42,15 @@ function formatStream(line) {
 	return { text };
 }
 
-export function cursor(instructionFile, _prompt, { cwd }) {
+export function cursor(instructionFile, _prompt, { cwd, stage, difficulty } = {}) {
 	const relPath = relative(cwd, instructionFile).replace(/\\/g, '/');
 	const prompt = `Read and follow all instructions in the file: ${relPath}`;
+	// Inert unless a `cursor` block is added to config/agents.json (cursor takes
+	// a model but no effort knob); `null` model passes no flag.
+	const { model } = resolveModelEffort('cursor', { stage, difficulty });
+	const modelFlag = model ? `--model "${model}" ` : '';
 	return {
-		shellCmd: `agent --print -f --trust --output-format stream-json --workspace "${cwd}" "${prompt}"`,
+		shellCmd: `agent --print -f --trust ${modelFlag}--output-format stream-json --workspace "${cwd}" "${prompt}"`,
 		formatStream,
 	};
 }
