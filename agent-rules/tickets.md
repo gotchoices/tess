@@ -27,6 +27,8 @@ You own the full stage transition.  When you are done:
      Delete only the file — leave the stage folder itself in place even when it
      ends up empty.
 
+**Never sanitize the working tree.** Don't run `git checkout -- `, `git restore`, `git reset`, `git clean`, or `git stash`, and don't otherwise revert or discard changes you didn't make. The runner may be processing other tickets and a human may be promoting tickets concurrently — uncommitted board moves and in-flight edits in the tree are not yours to undo. Touch only the files your own ticket requires.
+
 **`prereq:` is a hint, not an instruction to park.** Assume every `prereq:` ticket's work will land; design as if it has. The only reasons to deviate are the two `blocked/` categories below — neither is "an upstream tess ticket isn't done yet." Otherwise pick the best option, document the tradeoff in the next-stage ticket, and proceed.
 
 Stages (overview — full rules for your active stage appear under "Active stage details" below):
