@@ -116,10 +116,12 @@ If you receive a `BUDGET_WARNING` from the runner, the conversation has crossed 
 
 For new tickets: put a new file into `fix/` or `plan/` (or `backlog/` if it's a future concern rather than active work) but focus on the **description, requirements, and specifications** of the issue or feature, expected behavior, use case, etc.  **Don't do planning, don't add TODO items, or get ahead**, unless you already possess key information that would be useful.  Think use cases, expectations, and specifications.
 
+**The `description:` field is the plain-language summary — write it for a newcomer, not for yourself.** One sentence (two at most) that someone with *no prior context* can understand: what is wrong / what to build, and why, in human terms. It is the first — often only — thing skimmers, dashboards, and the next agent read. Keep symbol names, file paths, acronyms, commit SHAs, ticket slugs, and internal-mechanism detail **out** of it; all of that belongs in the body below the header fence. A multi-paragraph `description:` block dense with jargon is an anti-pattern — it makes the queue unreadable. If you can't say what the ticket is about in a plain sentence, you don't yet understand it well enough to file it.
+
 Ticket file template:
 
 ----
-description: <brief description>
+description: <ONE plain-language sentence (two at most), jargon-free, understandable with no prior context — what the ticket is about and why. NOT a technical abstract; the detail goes in the body.>
 prereq: <slugs of other tickets that must land first — comma-separated, no sequence prefix, no .md>
 files: <list key files touched/relevant — saves the next agent significant discovery time>
 difficulty: <optional; easy|medium|hard — how much horsepower the work needs. Default medium. Drives model/effort selection (e.g. hard → a stronger model); omit unless the work is unusually simple or hard.>
