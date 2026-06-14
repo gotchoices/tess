@@ -44,7 +44,7 @@ const BUILTIN_CONFIG = {
 		model: {
 			easy: 'claude-sonnet-4-6',
 			medium: 'claude-opus-4-8',
-			hard: 'claude-fable-5',
+			hard: 'claude-opus-4-8',
 		},
 		effort: {
 			implement: 'xhigh',
