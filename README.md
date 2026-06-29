@@ -315,7 +315,7 @@ backlog/ ─→ plan/ ─┐
 - **implement** — Build it, ensure tests pass, output review ticket
 - **review** — Inspect code quality, verify tests, update docs, output complete ticket
 - **complete** — Archived summary of finished work
-- **blocked** — Parked when there are unresolved questions or decisions
+- **blocked** — The human's inbox: decisions only a human should make, plus dependencies outside this repo. Not for "a sibling ticket isn't done" — that's `prereq:`.
 
 ## Ticket Format
 
@@ -331,6 +331,8 @@ difficulty: <optional: easy | medium | hard — defaults to medium>
 ```
 
 **Filename convention:** `<slug>.md` with an optional `<sequence>-` prefix where lower sequence runs sooner (integer or decimal, e.g. `3-my-feature.md` or `3.5-my-feature.md`). The sequence number is not part of the ticket's identity — reference tickets by slug only in `prereq:`.
+
+**Backlog prefixes.** `backlog/` is the one stage that mixes kinds of work, so prefix each backlog ticket's slug with its kind — `bug-`, `feat-`, or `debt-` (e.g. `feat-export-csv.md`). The prefix is part of the slug and travels with the ticket for its whole life, so there's no need to strip it on promotion (`fix/bug-export-csv` is fine). Decisions aren't prefixed — they go to `blocked/`. Sub-folders inside `backlog/` are a human-curated convenience; agents don't create them.
 
 **Difficulty (`easy` | `medium` | `hard`, default `medium`):** a portable, agent-agnostic estimate of how much horsepower a ticket needs. The runner maps it — together with the pipeline stage and per-agent config — to a concrete model and reasoning-effort. See [Model & Effort Selection](#model--effort-selection). Reserve `hard` for genuinely demanding work (it selects the strongest, most expensive model) and `easy` for mechanical changes.
 

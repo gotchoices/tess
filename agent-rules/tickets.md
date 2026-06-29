@@ -36,8 +36,8 @@ Stages (overview — full rules for your active stage appear under "Active stage
 - **fix** — reproduce + research a bug; output implement/ ticket(s).
 - **plan** — design a feature; output plan/ or implement/ ticket(s); park out-of-scope work in backlog/.
 - **implement** — build it; ensure build + tests pass; output a review/ handoff that is honest about gaps (the reviewer treats your work as a starting point, not a finish line).
-- **review** — adversarial pass over implement output: minor findings → fix inline; major → spawn new fix/plan/backlog ticket(s). Output complete/ with a `## Review findings` section.
-- **blocked** — last-resort park: missing-prereq-code (implement only) or design question needing human sign-off.
+- **review** — adversarial pass over implement output: minor findings → fix inline; major → spawn new fix/plan/backlog ticket(s); conditional/speculative → record as a tripwire, not a ticket. Output complete/ with a `## Review findings` section.
+- **blocked** — the human's inbox: a decision only a human should make, or a dependency outside this repo. Never "a sibling ticket isn't done" — that's `prereq:`.
 - **complete** — archived summary of finished work, including review findings.
 
 ## Active stage details
@@ -51,7 +51,7 @@ Stages (overview — full rules for your active stage appear under "Active stage
 <!-- /stage -->
 
 <!-- stage:plan -->
-**Plan** — specs for features and enhancements (not already designed/planned).  After research, output is one or more plan and implement/ tickets.  When you discover adjacent work that is out of scope for the current pass, park it in `backlog/` rather than growing the current ticket.  References should be made to key files and documentation.  TODO tasks should be at the bottom of the ticket file(s).  Don't switch to your agent's "planning mode" when working these tickets - that's too meta.  In the spirit of TDD, your plan may include bullets describing key tests that might come in later phases, and what the expected outputs should be.
+**Plan** — specs for features and enhancements (not already designed/planned).  After research, output is one or more plan and implement/ tickets.  When you discover adjacent work that is out of scope for the current pass, park it in `backlog/` (prefixed `feat-`/`debt-`; see *Backlog prefixes*) rather than growing the current ticket.  References should be made to key files and documentation.  TODO tasks should be at the bottom of the ticket file(s).  Don't switch to your agent's "planning mode" when working these tickets - that's too meta.  In the spirit of TDD, your plan may include bullets describing key tests that might come in later phases, and what the expected outputs should be.
 
 **Resolve the design before you emit an implement ticket.**  Only hand off to `implement/` once no major question or open option remains: settle it with more research, or pick the best option and document the tradeoff in the ticket.  If a genuine question of consequence has no defensible default, route to `blocked/` for human sign-off — never emit an under-specified implement ticket and leave the call to the implementer.
 
@@ -65,17 +65,17 @@ Stages (overview — full rules for your active stage appear under "Active stage
 <!-- /stage -->
 
 <!-- stage:review -->
-**Review** — adversarial pass over the completed implementation. The ticket will read as finished — find what it overlooked. **Read the implement-stage diff first**, with fresh eyes, before considering the handoff summary (find it via `git log --grep="ticket(implement): <slug>" -1 --format=%H` then `git show <hash>`). Scrutinize from every aspect angle (SPP, DRY, modular, scalable, maintainable, performant, resource cleanup, error handling, type safety). The implementer's tests are a *starting point* — cover happy path, edge cases, error paths, regressions, and interactions. Treat docs as out-of-date until you read every file the change touches — and the ones it *should* have touched — and confirm they reflect the new reality. Run lint + tests; they must pass. Disposition of findings: **minor** — fix in this pass; **major** — file new ticket(s). The output `complete/` ticket must include a `## Review findings` section listing what was checked, what was found, and what was done. Empty categories are fine — but say so *explicitly and with a reason*, not silently or "Looks good".
+**Review** — adversarial pass over the completed implementation. The ticket will read as finished — find what it overlooked. **Read the implement-stage diff first**, with fresh eyes, before considering the handoff summary (find it via `git log --grep="ticket(implement): <slug>" -1 --format=%H` then `git show <hash>`). Scrutinize from every aspect angle (SPP, DRY, modular, scalable, maintainable, performant, resource cleanup, error handling, type safety). The implementer's tests are a *starting point* — cover happy path, edge cases, error paths, regressions, and interactions. Treat docs as out-of-date until you read every file the change touches — and the ones it *should* have touched — and confirm they reflect the new reality. Run lint + tests; they must pass. Disposition of findings: **minor** — fix in this pass; **major** — file new ticket(s) (prefix backlog tickets per *Backlog prefixes*); **conditional/speculative** ("fine now; only matters if X happens later") — record as a tripwire, not a ticket (see *Tripwires*). The output `complete/` ticket must include a `## Review findings` section listing what was checked, what was found, and what was done. Empty categories are fine — but say so *explicitly and with a reason*, not silently or "Looks good".
 <!-- /stage -->
 
 <!-- stage:blocked -->
-**Blocked** — exclusively for what the runner cannot resolve on its own:
-  (a) a design question of consequence requiring human sign-off, with no defensible default, OR
-  (b) (implement stage only) a code prereq that is **not** a tess ticket and is not present (external upstream, stub primitive, premise mismatch).
+**Blocked** is the human's inbox — use it for the two things the runner genuinely cannot resolve on its own, and nothing else:
+  (a) **A decision only a human should make** — a design/product question or a go/no-go with no defensible default. This includes design questions you surface *during review or planning* that don't block any in-flight ticket: a decision that needs a human still goes here, not into `backlog/`.
+  (b) **A dependency outside this repo** that `prereq:` cannot track — an external service or upstream library, a stub primitive that doesn't exist yet, or a premise mismatch with code beyond this repo.
 
-Lead the file with one line stating which category and the exact thing that unblocks it.
+Lead the file with one line: which category, and the exact thing that unblocks it. Write it for a human with no prior context (see *Write for a reader without your context*) — a decision is only useful if the decider can act without reconstructing your session: state the question plainly, what happens if we do nothing, the options with a recommended default, and how reversible the call is.
 
-Not blocked: a `prereq:` ticket still in plan/fix/implement (deferred automatically), a `prereq:` ticket already in `blocked/` (transitively deferred — leave yours where it is), uncertainty more research would resolve (do the research), or "we'll get to it later" (that's `backlog/`).
+**Do not block on a sibling tess ticket.** If your only obstacle is that another ticket in this pipeline isn't done, that is *not* blocked — add it to `prereq:` and design as if it has already landed. The runner defers your dependent and re-picks it the moment the prereq chain clears, then cascades that deferral to anything depending on you; you never mirror this by hand. Also not blocked: uncertainty more research would resolve (do the research), or "we'll get to it later" (that's `backlog/`).
 <!-- /stage -->
 
 <!-- stage:complete -->
@@ -83,6 +83,34 @@ Not blocked: a `prereq:` ticket still in plan/fix/implement (deferred automatica
 <!-- /stage -->
 
 If the ticket contains a `<!-- resume-note -->` block, a prior agent run was interrupted before completion.  Read the referenced log file to understand what was already done, check the current codebase state for partial changes, and resume from where it left off.  If the prior run failed on a specific tool call or timed out, be careful not to just launch into the same situation.
+
+## Tripwires (conditional concerns)
+
+A **tripwire** is a concern that is fine *now* and only becomes work *if* some condition trips later — "this re-counts on every save; if scenarios get large, keep a running count", "reading this does one extra lookup; if it ever shows up as slow, cache it". A tripwire is knowledge, not a queued task — **do not file it as a ticket.** Record it where a future reader will actually meet it:
+
+- **Default — a code comment at the exact site,** tagged `NOTE:` so the set stays greppable: `// NOTE: re-counts every entity per save; if scenarios get large, keep a running count.`
+- **A bullet in the relevant `docs/` file** instead, when the concern is architectural and has no single code site.
+- **Always** add one line to the review's `## Review findings` saying what you noticed and where you parked it — findings is the *index*, not the home; don't restate the analysis.
+
+**Conditional, or just not-yet-reached?** Only demote things that are genuinely conditional ("fine now; *if* X then Y"). A concern that is *definitely wrong the moment a currently-dormant path runs* is a real latent defect, not a tripwire — keep it as a ticket (`debt-` if dormant, `bug-` if reachable now).
+
+## Backlog prefixes
+
+`backlog/` is the one stage that mixes kinds of work — every other stage encodes its type by its folder. So prefix each backlog ticket's slug with its kind, to keep the queue sortable at a glance:
+
+- `bug-` — a defect to fix
+- `feat-` — a new capability or enhancement
+- `debt-` — tests, guards, refactors, hardening
+
+Form: `bug-<slug>.md` (or `<seq>-bug-<slug>.md` if you number it — the sequence stays leading). The prefix is part of the slug and **travels with the ticket** for its whole life; `prereq:` references include it, and there's no need to strip it on promotion (`fix/bug-foo` is fine). Decisions don't get a prefix — they go to `blocked/`. Tickets you create directly into a working stage (`fix/`, `plan/`, …) don't need a prefix; the folder already says what they are. Sub-folders inside `backlog/` are the human's to curate — don't create or reorganize them.
+
+## Write for a reader without your context
+
+At every stage you are writing for someone — a teammate, the next agent, your future self — who does **not** have your session in their head. De-jargon as you go:
+
+- No coined vocabulary presented as established fact. If you must name an internal concept ("the lens seam", "covering structures"), define it on first use or don't use it.
+- Spell out acronyms and name the concrete thing (the actual limit, the actual file) instead of gesturing at it.
+- This matters most for the human-facing stages — `backlog/` and `blocked/` — where the reader is *deciding*, not implementing. A ticket dense with inside-baseball is one a human can't triage; if you can't state it plainly, you don't yet understand it well enough to file it.
 
 ## Pre-existing test failures
 
@@ -118,7 +146,7 @@ If you receive a `BUDGET_WARNING` from the runner, the conversation has crossed 
 
 For new tickets: put a new file into `fix/` or `plan/` (or `backlog/` if it's a future concern rather than active work) but focus on the **description, requirements, and specifications** of the issue or feature, expected behavior, use case, etc.  **Don't do planning, don't add TODO items, or get ahead**, unless you already possess key information that would be useful.  Think use cases, expectations, and specifications.
 
-**The `description:` field is the plain-language summary — write it for a newcomer, not for yourself.** One sentence (two at most) that someone with *no prior context* can understand: what is wrong / what to build, and why, in human terms. It is the first — often only — thing skimmers, dashboards, and the next agent read. Keep symbol names, file paths, acronyms, commit SHAs, ticket slugs, and internal-mechanism detail **out** of it; all of that belongs in the body below the header fence. A multi-paragraph `description:` block dense with jargon is an anti-pattern — it makes the queue unreadable. If you can't say what the ticket is about in a plain sentence, you don't yet understand it well enough to file it.
+**The `description:` field is the plain-language summary — write it for a newcomer, not for yourself.** One sentence (two at most) that someone with *no prior context* can understand: what is wrong / what to build, and why, in human terms. It is the first — often only — thing skimmers, dashboards, and the next agent read. Keep symbol names, file paths, acronyms, commit SHAs, ticket slugs, and internal-mechanism detail **out** of it; all of that belongs in the body below the header fence. A multi-paragraph `description:` block dense with jargon is an anti-pattern — it makes the queue unreadable. If you can't say what the ticket is about in a plain sentence, you don't yet understand it well enough to file it. The same plain-language standard applies to the whole ticket body, not just this field — see *Write for a reader without your context*.
 
 Ticket file template:
 
