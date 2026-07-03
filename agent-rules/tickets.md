@@ -114,16 +114,16 @@ At every stage you are writing for someone — a teammate, the next agent, your 
 
 ## Pre-existing test failures
 
-If the tests you run surface a failure that is plainly **not yours** — broken at HEAD before your edits, in a subsystem outside your diff, or otherwise clearly unrelated — do NOT try to chase it inside this ticket. Instead:
+If the tests you run surface a failure that is plainly **not yours** — broken at HEAD before your edits, in a subsystem outside your diff, or otherwise clearly unrelated — do NOT try to chase it inside this ticket. But equally, do **not** paper over it: `it.skip`, `describe.skip`, commenting out the test, or loosening its assertions to get a green run are **forbidden** — they bury a real defect and cost far more to rediscover later than to fix now. Instead:
 
-1. Write `tickets/.pre-existing-error.md` (overwrite if it already exists) containing:
+1. Check `tickets/.pre-existing-known.md` for the failing test. If it is already listed with an in-flight `fix/` or `blocked/` slug, the root cause is already tracked — do **not** re-report it. Note in your handoff that you are aware of / blocked on that slug and move on.
+2. Otherwise write `tickets/.pre-existing-error.md` (overwrite if it already exists) containing:
    - the exact test command(s) you ran (and from which package, for monorepos),
-   - the failing test name(s) and a short excerpt of the error output,
+   - the failing test name(s) and its exact path, plus a short excerpt of the error output,
    - one sentence on why you believe it is pre-existing (e.g. "fails on `main` at the same SHA", "asserts against module X which this ticket never touches").
-   - any steps you have done to disable or work-around the failure for the sake of completing your ticket
-2. Finish your own ticket normally.
+3. Finish your own ticket normally — without having skipped or disabled the failing test.
 
-After your ticket commits, the runner reads `.pre-existing-error.md` and dispatches a triage agent that either fixes the failure or files a `tickets/backlog/` ticket. Don't second-guess that pass — your job is to flag the failure, not resolve it. Failures clearly caused by your own changes are not pre-existing; fix those before handing off.
+After your ticket commits, the runner reads `.pre-existing-error.md` and dispatches a triage agent whose job is to **fix the root cause as early as possible**: it lands a scoped fix in place, or files a prioritized ticket into `tickets/fix/` (the top-priority stage) so the normal pipeline resolves it next — ahead of feature work — or, only if the cause is genuinely upstream, into `tickets/blocked/`. It never routes a reproducible failure to `backlog/` and never skips a test. Don't second-guess that pass — your job is to flag the failure accurately, not resolve or hide it. Failures clearly caused by your own changes are not pre-existing; fix those before handing off.
 
 ## BUDGET_WARNING
 

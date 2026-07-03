@@ -406,10 +406,13 @@ If the agent goes idle for too long (10 minutes with no output), the runner kill
 
 If the agent working a ticket runs tests and one fails in a way that is plainly unrelated to its own changes — broken at HEAD before its edits, in code it never touched — it writes `tickets/.pre-existing-error.md` summarising what it ran and what failed, then finishes its own ticket normally. The workflow rule for this lives in `agent-rules/tickets.md` (§ *Pre-existing test failures*).
 
-After each ticket commits (and again once the run is wrapping up), the runner checks for that file. If present, it dispatches a triage agent — same adapter, focused prompt — instructed to either:
+After each ticket commits (and again once the run is wrapping up), the runner checks for that file. Policy is **fix the root cause as early as possible — never work around, skip, or defer it**. If the report is present, it dispatches a triage agent — same adapter, focused prompt — instructed to either:
 
-- reproduce the failure, fix the root cause, and let the runner commit; or
-- file a `tickets/backlog/` ticket capturing the failing test and the evidence so a human can decide.
+- reproduce the failure, fix the root cause in place, and let the runner commit; or
+- file a prioritized ticket into `tickets/fix/` (the top-priority processing stage) so the normal fix→implement→review pipeline resolves the root cause on its next iteration, ahead of feature work; or
+- only when the cause is genuinely upstream, file into `tickets/blocked/` naming the external dependency.
+
+Triage never routes a reproducible failure to `backlog/` and never resolves one with `it.skip`, a deleted test, or a loosened assertion. To keep the same failure from being re-triaged from cold by every subsequent ticket, triage records the failing-test signature in `tickets/.pre-existing-known.md` (test signature → tracking slug → state); before dispatching, the runner consults that ledger and short-circuits when an in-flight `fix/`/`blocked/` ticket already owns the failure.
 
 The runner deletes the report afterwards and commits any resulting changes as `tess: triage pre-existing test failure`. Triage respects `--token-budget` and `--no-commit`. The `.pre-existing-error.md` file is gitignored.
 
