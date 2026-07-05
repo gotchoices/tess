@@ -47,8 +47,8 @@ export async function buildPrompt(ticket, tessRoot, repoRoot) {
 	}
 
 	sections.push(
-		'Work the ticket as described above.',
-		'Do NOT commit — the runner handles commits after you complete.',
+		'Work ticket as described above.',
+		'Do NOT commit — runner handles commits after you complete.',
 	);
 
 	return sections.join('\n');
@@ -86,16 +86,16 @@ function searchDirective(serverName) {
 		'',
 		'## Code-search tools',
 		'',
-		'These tools are deferred — load their schemas first:',
+		'Deferred tools — load schemas first:',
 		'',
 		`    ToolSearch({ query: "select:${toolNames.join(',')}" })`,
 		'',
-		'Then use them before grep/Glob/Read for codebase exploration. Picking the right one matters:',
+		'Use them before grep/Glob/Read for codebase exploration. Picking right one matters:',
 		'',
-		'- **Identifier-shaped query** (single symbol, camelCase, snake_case, or a list of names like `fooBar bazQux`) → `find_references`.',
-		'- **Prose query** ("where do we…", "what handles…", you do not yet know the identifier) → `search_code`.',
+		'- **Identifier-shaped query** (single symbol, camelCase, snake_case, or name list like `fooBar bazQux`) → `find_references`.',
+		'- **Prose query** ("where do we…", "what handles…", identifier unknown) → `search_code`.',
 		'',
-		'`search_code` embeds the query as natural language, so a bag of identifiers collapses to noise (negative cosine / "weak top" warning). On a weak-top result, switch tool or rephrase — do not trust the relative-% ranking on noisy hits. See AGENTS.md § Code search for the full tool surface, parameters, and fallback rules.',
+		'`search_code` embeds query as natural language, so identifier bag collapses to noise (negative cosine / "weak top" warning). On weak-top result, switch tool or rephrase — do not trust relative-% ranking on noisy hits. See AGENTS.md § Code search for full tool surface, parameters, fallback rules.',
 		'',
 	].join('\n');
 }
