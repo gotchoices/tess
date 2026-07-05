@@ -8,59 +8,60 @@ Tickets flow forward through stages:
                  blocked/
 ```
 
-Each stage's job: advance ticket to next stage. Tickets only move sideways into `blocked/` (and back out once unblocked); never flow backward. `review/` is **after** `implement/` — a review ticket exists because code already written, now needs a code-review pass.
+Each stage's job is to advance the ticket to the next stage. Tickets only move sideways into `blocked/` (and back out once unblocked); they never flow backward. In particular, `review/` is **after** `implement/` — a review ticket exists because code has already been written and now needs a code-review pass.
 
-**Cross-stage gating automatic.** If a `prereq:` slug sits anywhere earlier in the pipeline (including `blocked/` or `backlog/`), runner defers the dependent this run and re-picks once the chain clears. Runner also cascades: errored, deferred, or blocked-prereq slugs transitively defer their downstream. Never mirror this by hand. `prereq:` is a hint to the runner, not an instruction to you.
+**Cross-stage gating is automatic.** If a `prereq:` slug sits anywhere earlier in the pipeline (including `blocked/` or `backlog/`), the runner defers the dependent this run and re-picks it once the chain clears. The runner also cascades: errored, deferred, or blocked-prereq slugs transitively defer their downstream. You never mirror this by hand. `prereq:` is a hint to the runner, not an instruction to you.
 
-tickets/ folder at project root contains `backlog`, `fix`, `plan`, `implement`, `review`, `blocked`, `complete` subfolders. Each ticket = markdown file inside one of these folders.
+The tickets/ folder at the project root contains `backlog`, `fix`, `plan`, `implement`, `review`, `blocked`, and `complete` subfolders.  Each ticket is a markdown file inside one of these folders.
 
-Filename convention: `<slug>.md`, optionally prefixed with numeric **sequence** (integer or decimal) — `3-my-ticket.md` or `3.5-my-ticket.md`. **Lower sequence runs sooner.** Prefix optional; unnumbered tickets (`my-ticket.md`) follow after all numbered ones in same stage. Sequence number is not part of ticket identity — when referencing another ticket, use only its slug (`my-ticket`), not the full filename.
+Filename convention: `<slug>.md`, optionally prefixed with a numeric **sequence** (integer or decimal) — `3-my-ticket.md` or `3.5-my-ticket.md`.  **Lower sequence runs sooner.**  The prefix is optional; unnumbered tickets (`my-ticket.md`) follow after all numbered ones in the same stage.  The sequence number is not part of the ticket's identity — when referencing another ticket, use only its slug (`my-ticket`), not the full filename.
 
-You own the full stage transition. When done:
+You own the full stage transition.  When you are done:
   1. Create the next-stage output file(s) in the appropriate tickets/ subfolder.
-     May split one ticket into multiple next-stage tickets if warranted —
-     give each a distinct slug and chain with `prereq:` so runner enforces topo order.
-     Don't combine unrelated tickets. May keep, add, or adjust the sequence prefix.
+     You may split one ticket into multiple next-stage tickets if warranted —
+     give each a distinct slug and chain them with `prereq:` so the runner enforces topo order.
+     Don't combine unrelated tickets. You may keep, add, or adjust the sequence prefix.
      Respect `prereq:` relationships: a prereq must have a sequence ≤ its dependent (or be
-     unnumbered only if the dependent is also unnumbered) — runner fails fast on conflicts.
+     unnumbered only if the dependent is also unnumbered) — the runner fails fast on conflicts.
   2. Delete the original source ticket file from its current stage folder.
-     Delete only the file — leave the stage folder in place even when it ends up empty.
+     Delete only the file — leave the stage folder itself in place even when it
+     ends up empty.
 
-**Never sanitize the working tree.** Don't run `git checkout -- `, `git restore`, `git reset`, `git clean`, or `git stash`, and don't otherwise revert or discard changes you didn't make. Runner may be processing other tickets and a human may be promoting tickets concurrently — uncommitted board moves and in-flight tree edits are not yours to undo. Touch only the files your own ticket requires.
+**Never sanitize the working tree.** Don't run `git checkout -- `, `git restore`, `git reset`, `git clean`, or `git stash`, and don't otherwise revert or discard changes you didn't make. The runner may be processing other tickets and a human may be promoting tickets concurrently — uncommitted board moves and in-flight edits in the tree are not yours to undo. Touch only the files your own ticket requires.
 
 **`prereq:` is a hint, not an instruction to park.** Assume every `prereq:` ticket's work will land; design as if it has. The only reasons to deviate are the two `blocked/` categories below — neither is "an upstream tess ticket isn't done yet." Otherwise pick the best option, document the tradeoff in the next-stage ticket, and proceed.
 
-Stages (overview — full rules for your active stage under "Active stage details" below):
-- **backlog** — specs not yet ready to work; human (or `--stages backlog:N`) promotes into plan/.
+Stages (overview — full rules for your active stage appear under "Active stage details" below):
+- **backlog** — specs not yet ready to work; the human (or `--stages backlog:N`) promotes into plan/.
 - **fix** — reproduce + research a bug; output implement/ ticket(s).
 - **plan** — design a feature; output plan/ or implement/ ticket(s); park out-of-scope work in backlog/.
-- **implement** — build it; ensure build + tests pass; output a review/ handoff honest about gaps (reviewer treats your work as a starting point, not a finish line).
+- **implement** — build it; ensure build + tests pass; output a review/ handoff that is honest about gaps (the reviewer treats your work as a starting point, not a finish line).
 - **review** — adversarial pass over implement output: minor findings → fix inline; major → spawn new fix/plan/backlog ticket(s); conditional/speculative → record as a tripwire, not a ticket. Output complete/ with a `## Review findings` section.
-- **blocked** — human's inbox: a decision only a human should make, or a dependency outside this repo. Never "a sibling ticket isn't done" — that's `prereq:`.
+- **blocked** — the human's inbox: a decision only a human should make, or a dependency outside this repo. Never "a sibling ticket isn't done" — that's `prereq:`.
 - **complete** — archived summary of finished work, including review findings.
 
 ## Active stage details
 
 <!-- stage:backlog -->
-**Backlog** — specification tickets (like *plan*) that aren't ready to be worked yet. Use when splitting or scoping work: items the team will get to eventually but shouldn't enter the active pipeline. Prefer `backlog/` over `blocked/` when the reason is "not now" rather than "unresolved question." Not in the runner's default processing set — the human (or an explicit `--stages backlog:<max>` invocation) promotes these into `plan/` when ready.
+**Backlog** — specification tickets (like *plan*) that aren't ready to be worked yet.  Use this when splitting or scoping work: items the team will get to eventually but shouldn't enter the active pipeline.  Prefer `backlog/` over `blocked/` when the reason is "not now" rather than "unresolved question."  Not in the runner's default processing set — the human (or an explicit `--stages backlog:<max>` invocation) promotes these into `plan/` when ready.
 <!-- /stage -->
 
 <!-- stage:fix -->
-**Fix** — for bugs. Start with a reproducing test case, or a trace modality if the issue is intermittent. Once reproduced and researched, form one or more hypotheses as to the cause and correction. Output is one or more ticket file(s) in *implement/* (or blocked/backlog). Reference key files and documentation. TODO tasks at the bottom of the ticket file(s). Split into multiple tickets if warranted.
+**Fix** — for bugs.  Start with a reproducing test case, or a trace modality if the issue is intermittent.  Once reproduced and researched, form one or more hypotheses as to the cause and correction.  Output is one or more ticket file(s) in *implement/* (or blocked/backlog).  References should be made to key files and documentation.  TODO tasks should be at the bottom of the ticket file(s).  Split into multiple tickets if warranted.
 <!-- /stage -->
 
 <!-- stage:plan -->
-**Plan** — specs for features and enhancements (not already designed/planned). After research, output is one or more plan and implement/ tickets. When you discover adjacent work out of scope for the current pass, park it in `backlog/` (prefixed `feat-`/`debt-`; see *Backlog prefixes*) rather than growing the current ticket. Reference key files and documentation. TODO tasks at the bottom of the ticket file(s). Don't switch to your agent's "planning mode" for these tickets — too meta. In the spirit of TDD, your plan may include bullets describing key tests that might come in later phases, and expected outputs.
+**Plan** — specs for features and enhancements (not already designed/planned).  After research, output is one or more plan and implement/ tickets.  When you discover adjacent work that is out of scope for the current pass, park it in `backlog/` (prefixed `feat-`/`debt-`; see *Backlog prefixes*) rather than growing the current ticket.  References should be made to key files and documentation.  TODO tasks should be at the bottom of the ticket file(s).  Don't switch to your agent's "planning mode" when working these tickets - that's too meta.  In the spirit of TDD, your plan may include bullets describing key tests that might come in later phases, and what the expected outputs should be.
 
-**Resolve the design before you emit an implement ticket.** Hand off to `implement/` only once no major question or open option remains: settle it with more research, or pick the best option and document the tradeoff in the ticket. If a genuine question of consequence has no defensible default, route to `blocked/` for human sign-off — never emit an under-specified implement ticket and leave the call to the implementer.
+**Resolve the design before you emit an implement ticket.**  Only hand off to `implement/` once no major question or open option remains: settle it with more research, or pick the best option and document the tradeoff in the ticket.  If a genuine question of consequence has no defensible default, route to `blocked/` for human sign-off — never emit an under-specified implement ticket and leave the call to the implementer.
 
-**Enumerate the adversarial surface.** Every implement ticket you produce should carry an `## Edge cases & interactions` section naming the boundary states, concurrent/forked access, partial-failure paths, and cross-subsystem interactions the implementer must cover and the reviewer will check. A case you name here is a test written up front; a case you omit tends to return as a separate fix ticket.
+**Enumerate the adversarial surface.**  Every implement ticket you produce should carry an `## Edge cases & interactions` section naming the boundary states, concurrent/forked access, partial-failure paths, and cross-subsystem interactions the implementer must cover and the reviewer will check.  A case you name here is a test written up front; a case you omit tends to return as a separate fix ticket.
 
-**Size each ticket to one agent run.** Split so each implement ticket is a single coherent change an agent can finish well inside the runner's idle-timeout window. If a ticket would span several subsystems or carry multiple independent failure modes, break it into `prereq:`-chained tickets rather than one oversized ticket.
+**Size each ticket to one agent run.**  Split so each implement ticket is a single coherent change an agent can finish well inside the runner's idle-timeout window.  If a ticket would span several subsystems or carry multiple independent failure modes, break it into `prereq:`-chained tickets rather than one oversized ticket.
 <!-- /stage -->
 
 <!-- stage:implement -->
-**Implement** — these tickets are ready for implementation (fix, build, update, ...whatever the ticket specifies). If more than one agent would be useful without stepping on toes, spawn sub-agents. Ensure build and tests pass when done. Output is a distilled summary of the ticket, emphasis on use cases for testing, validation and usage, into the review/ folder. Write the handoff honestly — the reviewer is instructed to treat your work as a starting point and your tests as a floor, so flag known gaps rather than papering over them.
+**Implement** — these tickets are ready for implementation (fix, build, update, ...whatever the ticket specifies).  If more than one agent would be useful, without stepping on toes, spawn sub-agents.  Be sure the build and tests pass when done.  Output is a distilled summary of the ticket, with emphasis on use cases for testing, validation and usage into the review/ folder.  Write the handoff honestly — the reviewer is instructed to treat your work as a starting point and your tests as a floor, so flag known gaps rather than papering over them.
 <!-- /stage -->
 
 <!-- stage:review -->
@@ -78,10 +79,10 @@ Lead the file with one line: which category, and the exact thing that unblocks i
 <!-- /stage -->
 
 <!-- stage:complete -->
-**Complete** — archived summary of finished work. Briefly: what was built, key files, testing notes, and usage information.
+**Complete** — archived summary of finished work.  Contains briefly what was built, key files, testing notes, and usage information.
 <!-- /stage -->
 
-If the ticket contains a `<!-- resume-note -->` block, a prior agent run was interrupted before completion. Read the referenced log file to understand what was already done, check the current codebase state for partial changes, and resume from where it left off. If the prior run failed on a specific tool call or timed out, be careful not to just launch into the same situation.
+If the ticket contains a `<!-- resume-note -->` block, a prior agent run was interrupted before completion.  Read the referenced log file to understand what was already done, check the current codebase state for partial changes, and resume from where it left off.  If the prior run failed on a specific tool call or timed out, be careful not to just launch into the same situation.
 
 ## Tripwires (conditional concerns)
 
@@ -126,24 +127,24 @@ After your ticket commits, the runner reads `.pre-existing-error.md` and dispatc
 
 ## BUDGET_WARNING
 
-If you receive a `BUDGET_WARNING` from the runner, the conversation has crossed its soft token budget — wrap up rather than continuing to investigate or implement:
+If you receive a `BUDGET_WARNING` from the runner, the conversation has crossed its soft token budget and you should wrap up rather than continuing to investigate or implement:
 
 - Once you wrap up what you are in the middle of, update the ticket to reflect your progress and learnings.
 - If the work is too significant for one ticket, create additional ticket(s) in the **same stage** (not next) to decompose the work; use `prereq:` headers to determine the order.
 - If the additional tickets replace the original ticket, delete the original.
-- Exit cleanly and don't run more tests or tools after the ticket update/writes.
+- Exit cleanly and don't run more tests or run more tools after the ticket update/writes
 
 ## Efficiency tips:
 
 - Use the `files:` header in tickets — it saves the next agent from re-discovering paths.
-- Use the `prereq:` header to name other tickets (by slug, without sequence prefix) whose landing you depend on. Omit sequence prefixes — they may change.
+- Use the `prereq:` header to name other tickets (by slug, without sequence prefix) whose landing you depend on.  Omit sequence prefixes — they may change.
 - When spawning sub-agents, give them specific file paths rather than asking them to explore.
 - Use the appropriate section of AGENTS.md for the project layout — don't guess paths.
 - Run tests and type checks during implement, not just during review.
-- Long-running validation: runner kills if no output for 10 minutes (idle timeout). If a command might run that long, **stream its output** (e.g. `yarn foo 2>&1 | tee /tmp/foo.log`) — never `> /tmp/foo.log 2>&1`, since silent redirection lets the idle timer expire and the run is lost. If a command's wall-clock routinely exceeds ~10 minutes, it is **not agent-runnable**: skip it inside the ticket, document the deferral, and let a human or CI handle it out-of-band.
-- **Never use `run_in_background: true` / `Monitor` / wait-for-notification patterns under tess.** Agent in `claude -p` mode — first `result` message ends the turn and runner will tree-kill agent. Validate in foreground with `tee`. To parallelize, chain in single shell pipeline.
+- Long-running validation: runner kills if no output for 10 minutes (idle timeout).  If a command might run that long, **stream its output** (e.g. `yarn foo 2>&1 | tee /tmp/foo.log`) — never `> /tmp/foo.log 2>&1`, since silent redirection lets the idle timer expire and the run is lost.  If a command's wall-clock routinely exceeds ~10 minutes, it is **not agent-runnable**: skip it inside the ticket, document the deferral, and let a human or CI handle it out-of-band.
+- **Never use `run_in_background: true` / `Monitor` / wait-for-notification patterns under tess.** Agent in `claude -p` mode - first `result` message ends the turn and runner will tree-kill agent. Validate in foreground with `tee`. To parallelize, chain in single shell pipeline.
 
-For new tickets: put a new file into `fix/` or `plan/` (or `backlog/` if it's a future concern rather than active work) but focus on the **description, requirements, and specifications** of the issue or feature, expected behavior, use case, etc. **Don't do planning, don't add TODO items, or get ahead**, unless you already possess key information that would be useful. Think use cases, expectations, and specifications.
+For new tickets: put a new file into `fix/` or `plan/` (or `backlog/` if it's a future concern rather than active work) but focus on the **description, requirements, and specifications** of the issue or feature, expected behavior, use case, etc.  **Don't do planning, don't add TODO items, or get ahead**, unless you already possess key information that would be useful.  Think use cases, expectations, and specifications.
 
 **The `description:` field is the plain-language summary — write it for a newcomer, not for yourself.** One sentence (two at most) that someone with *no prior context* can understand: what is wrong / what to build, and why, in human terms. It is the first — often only — thing skimmers, dashboards, and the next agent read. Keep symbol names, file paths, acronyms, commit SHAs, ticket slugs, and internal-mechanism detail **out** of it; all of that belongs in the body below the header fence. A multi-paragraph `description:` block dense with jargon is an anti-pattern — it makes the queue unreadable. If you can't say what the ticket is about in a plain sentence, you don't yet understand it well enough to file it. The same plain-language standard applies to the whole ticket body, not just this field — see *Write for a reader without your context*.
 
