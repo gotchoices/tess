@@ -30,13 +30,22 @@
  * directives — because the report supplies the only context it needs.
  */
 
-import { readFile, unlink } from 'node:fs/promises';
+import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { runAgent } from './process.mjs';
+import { indexAllTickets } from './tickets.mjs';
 
 const REPORT_FILE = '.pre-existing-error.md';
 const LEDGER_FILE = '.pre-existing-known.md';
+
+/**
+ * A tracked ledger line has the shape
+ *   - `<test-signature>` → <slug> | <state> | <filed>
+ * (arrow may be `→` or `->`). Groups: 1=signature, 2=slug, 3=state.
+ * Non-matching lines (heading, blanks, human comments) are left untouched.
+ */
+const ENTRY_RE = /^-\s+`([^`]+)`\s*(?:→|->)\s*([^|]+)\|\s*([^|]+)\|/;
 
 function reportPath(ticketsDir) {
 	return join(ticketsDir, REPORT_FILE);
@@ -69,7 +78,7 @@ async function readLedgerEntries(ticketsDir) {
 	}
 	const entries = [];
 	for (const line of text.split('\n')) {
-		const m = line.match(/^-\s+`([^`]+)`\s*(?:→|->)\s*([^|]+)\|\s*([^|]+)\|/);
+		const m = line.match(ENTRY_RE);
 		if (m) entries.push({ signature: m[1].trim(), slug: m[2].trim(), state: m[3].trim() });
 	}
 	return entries;
@@ -85,6 +94,98 @@ function findKnownEntry(report, ledger) {
 	return ledger.find(
 		(e) => (e.state === 'in-flight' || e.state === 'blocked') && e.signature && report.includes(e.signature),
 	);
+}
+
+/**
+ * Reconcile the known-failures ledger against live ticket state.
+ *
+ * Each ledger entry names a tracking `slug` (a `fix/` ticket or a `blocked/`
+ * parking) that owns a pre-existing failure. Triage only removes an entry when
+ * it personally re-runs the test and finds it gone, or lands a fix in place —
+ * but the common case is a failure that flows fix→implement→review→complete
+ * through the normal pipeline, and nobody re-reads the ledger when that
+ * tracking ticket lands. Those entries go stale: they suppress re-triage of a
+ * *genuine* regression sharing the same test path, and the file grows forever.
+ *
+ * This sweep drops any entry whose tracking slug is no longer holding the
+ * failure — either absent from the board entirely (completed-then-pruned,
+ * renamed, or typo'd) or sitting in `complete/` (the fix landed). Entries whose
+ * slug is still live (fix/plan/implement/review/blocked/backlog) are kept.
+ *
+ * Safe-conservative: pruning removes only the *suppression*, never re-detection.
+ * If a failure is in fact still broken after its tracker completed, the next
+ * ticket that trips it re-runs the test, reproduces at HEAD, re-files, and
+ * re-adds the entry. Non-entry lines (heading, blanks, human notes) pass
+ * through untouched; if no tracked entries remain, the file is removed (triage
+ * recreates it with its heading on demand).
+ *
+ * Returns `{ removed, slugs }` where `slugs` are the pruned tracking slugs.
+ */
+export async function pruneKnownFailures(ticketsDir, repoRoot, { dryRun = false, noCommit = false } = {}) {
+	let text;
+	try {
+		text = await readFile(ledgerPath(ticketsDir), 'utf-8');
+	} catch {
+		return { removed: 0, slugs: [] };  // no ledger yet
+	}
+
+	const index = await indexAllTickets(ticketsDir);
+	const isStale = (slug) => {
+		const rec = index.get(slug);
+		return !rec || rec.stage === 'complete';
+	};
+
+	const kept = [];
+	const prunedSlugs = [];
+	let keptEntryCount = 0;
+	for (const line of text.split('\n')) {
+		const m = line.match(ENTRY_RE);
+		if (!m) {
+			kept.push(line);  // heading, blank, or human note — preserve verbatim
+			continue;
+		}
+		const slug = m[2].trim();
+		if (isStale(slug)) {
+			prunedSlugs.push(slug);
+		} else {
+			kept.push(line);
+			keptEntryCount++;
+		}
+	}
+
+	if (prunedSlugs.length === 0) return { removed: 0, slugs: [] };
+	if (dryRun) return { removed: prunedSlugs.length, slugs: prunedSlugs, dryRun: true };
+
+	if (keptEntryCount === 0) {
+		// Nothing tracked remains — drop the file rather than leave a bare heading.
+		await unlink(ledgerPath(ticketsDir)).catch(() => {});
+	} else {
+		// Preserve trailing newline shape; kept already excludes pruned lines.
+		await writeFile(ledgerPath(ticketsDir), kept.join('\n'), 'utf-8');
+	}
+
+	if (!noCommit) commitKnownFailurePrune(prunedSlugs.length, repoRoot);
+
+	return { removed: prunedSlugs.length, slugs: prunedSlugs };
+}
+
+/** Stage just the ledger change and commit it. Returns true on commit. */
+function commitKnownFailurePrune(count, repoRoot) {
+	try {
+		execSync('git add -A -- tickets/.pre-existing-known.md', { cwd: repoRoot, encoding: 'utf-8' });
+		const status = execSync('git status --porcelain -- tickets/.pre-existing-known.md', {
+			cwd: repoRoot,
+			encoding: 'utf-8',
+		}).trim();
+		if (!status) return false;
+		const plural = count === 1 ? 'entry' : 'entries';
+		const msg = `tess: prune ${count} resolved known-failure ledger ${plural}`;
+		execSync(`git commit -m "${msg}"`, { cwd: repoRoot, encoding: 'utf-8' });
+		return true;
+	} catch (err) {
+		console.error(`[runner] Known-failure ledger prune commit failed: ${err.message}`);
+		return false;
+	}
 }
 
 function buildTriagePrompt(report) {
