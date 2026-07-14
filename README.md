@@ -313,7 +313,7 @@ backlog/ ─→ plan/ ─┐
 - **fix** — Reproduce a bug, research cause, output implementation ticket(s)
 - **plan** — Design a feature, resolve questions, output implementation ticket(s)
 - **implement** — Build it, ensure tests pass, output review ticket
-- **review** — Inspect code quality, verify tests, update docs, output complete ticket
+- **review** — Inspect code quality and hygene, verify tests, update docs, output complete ticket
 - **complete** — Archived summary of finished work
 - **blocked** — The human's inbox: decisions only a human should make, plus dependencies outside this repo. Not for "a sibling ticket isn't done" — that's `prereq:`.
 
@@ -415,6 +415,8 @@ After each ticket commits (and again once the run is wrapping up), the runner ch
 Triage never routes a reproducible failure to `backlog/` and never resolves one with `it.skip`, a deleted test, or a loosened assertion. To keep the same failure from being re-triaged from cold by every subsequent ticket, triage records the failing-test signature in `tickets/.pre-existing-known.md` (test signature → tracking slug → state); before dispatching, the runner consults that ledger and short-circuits when an in-flight `fix/`/`blocked/` ticket already owns the failure.
 
 The runner deletes the report afterwards and commits any resulting changes as `tess: triage pre-existing test failure`. Triage respects `--token-budget` and `--no-commit`. The `.pre-existing-error.md` file is gitignored.
+
+**Ledger reconciliation.** The ledger is committed (not gitignored) so it persists across runs and agents — which means it also needs sweeping, or it accumulates entries for failures long since fixed and starts suppressing re-triage of *genuine regressions* that reuse the same test path. Triage removes an entry only when it personally re-runs the test and finds it gone, or lands a fix in place; the common case — a failure that flows `fix → implement → review → complete` through the normal pipeline — leaves its entry orphaned, since nothing re-reads the ledger when the tracking ticket lands. So at the start of every run (alongside the completed-ticket sweep, and gated by the same `--no-prune-completed` / `--dry-run` flags), the runner reconciles the ledger against live ticket state: any entry whose tracking slug has reached `complete/` or vanished from the board is dropped, and the change is committed as `tess: prune <n> resolved known-failure ledger entr(y/ies)`. Entries whose slug is still live (`fix`/`plan`/`implement`/`review`/`blocked`/`backlog`) stay. This is safe-conservative — pruning removes only the *suppression*, never re-detection: if a failure is in fact still broken after its tracker completed, the next ticket that trips it reproduces it at HEAD, re-files, and re-adds the entry.
 
 ## Design Philosophy
 

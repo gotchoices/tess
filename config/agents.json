@@ -14,7 +14,8 @@
       "default": "high"
     },
     "overrides": {
-      "review": { "easy": { "model": "claude-opus-4-8", "effort": "medium" } }
+      "review": { "easy": { "model": "claude-opus-4-8", "effort": "medium" } },
+      "implement": { "hard": { "model": "claude-fable-5", "effort": "hard" } }
     }
   }
 }

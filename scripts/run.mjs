@@ -48,7 +48,7 @@ import { ensureLogsDir, pruneOldLogs } from './lib/logging.mjs';
 import { getTessVersion, runMigrationIfNeeded } from './lib/git.mjs';
 import { parseArgs, formatStageSummary } from './lib/cli.mjs';
 import { strategies } from './lib/strategies/index.mjs';
-import { handlePreExistingError } from './lib/pre-existing-error.mjs';
+import { handlePreExistingError, pruneKnownFailures } from './lib/pre-existing-error.mjs';
 import { pruneCompletedTickets } from './lib/prune-completed.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -75,6 +75,18 @@ async function main() {
 		if (pruned.removed > 0) {
 			const verb = opts.dryRun ? 'Would prune' : 'Pruned';
 			console.log(`\n  ${verb} ${pruned.removed} completed ticket(s) older than ${opts.pruneCompletedDays} days.`);
+		}
+
+		// Reconcile the known-failure ledger: drop entries whose tracking ticket
+		// has landed in complete/ (or vanished), so a later regression of the same
+		// test isn't wrongly suppressed and the ledger doesn't grow unbounded.
+		const staleKnown = await pruneKnownFailures(ticketsDir, repoRoot, {
+			dryRun: opts.dryRun,
+			noCommit: opts.noCommit,
+		});
+		if (staleKnown.removed > 0) {
+			const verb = opts.dryRun ? 'Would prune' : 'Pruned';
+			console.log(`\n  ${verb} ${staleKnown.removed} resolved known-failure ledger entr${staleKnown.removed === 1 ? 'y' : 'ies'}.`);
 		}
 	}
 
