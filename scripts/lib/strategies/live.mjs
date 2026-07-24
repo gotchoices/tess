@@ -9,7 +9,7 @@
  * works the current highest-priority ticket given the live state of tickets/.
  *
  * Ordering policy is the same cross-stage priority batch uses: the `--stages`
- * order across stages (default `fix,review,implement,plan` — drive in-flight
+ * order across stages (default `review,implement,fix,plan` — drive in-flight
  * work toward done before opening new work), and within each stage prereq-topo
  * then sequence. Live just re-evaluates that policy continuously rather than
  * once.

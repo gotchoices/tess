@@ -28,7 +28,7 @@ export function printHelp() {
 		'                       Tickets with sequence > n are skipped; unnumbered tickets',
 		'                       are skipped whenever n is finite.',
 		'  --stages <list>      Comma-separated stages, optionally with per-stage max sequence',
-		'                       as  stage:n  (default: fix,review,implement,plan).  The order',
+		'                       as  stage:n  (default: review,implement,fix,plan).  The order',
 		'                       is the cross-stage priority — earlier stages run first.',
 		'                       e.g.  --stages review:5,implement:3,fix',
 		'                             --stages backlog:2  (backlog is not in the default set)',

@@ -116,7 +116,7 @@ node tess/scripts/run.mjs --strategy chase
 | Option | Default | Description |
 |---|---|---|
 | `--max-sequence <n>` | _unlimited_ | Default sequence ceiling for all stages (sequences can include decimals). Unnumbered tickets are skipped whenever this is finite. |
-| `--stages <list>` | `fix,review,implement,plan` | Stages to process, with optional per-stage max (`implement:12,review:10`). The order is the cross-stage priority (earlier = higher). `backlog` is a valid target but excluded from the default set. |
+| `--stages <list>` | `review,implement,fix,plan` | Stages to process, with optional per-stage max (`implement:12,review:10`). The order is the cross-stage priority (earlier = higher). `backlog` is a valid target but excluded from the default set. |
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, `auggie`, or `codex` |
 | `--strategy <name>` | `live` | Selection strategy: `live`, `batch`, or `chase`. See [Strategies](#strategies). |
 | `--max <n>` | _unlimited_ | Stop after processing at most n tickets (with `live`, caps stage transitions rather than snapshot size) |
@@ -148,7 +148,7 @@ The runner picks the next ticket to work using a strategy. All three strategies 
 
 ### `live` (default)
 
-After **every** stage transition, live re-discovers the entire ticket board from disk and re-applies the priority policy, then runs the current highest-priority ticket. The policy is the same one `batch` uses — cross-stage order from `--stages` (default `fix,review,implement,plan`: drive in-flight work toward done before opening new work), and within each stage prereqs before dependents then lower sequence first — but it is re-evaluated each iteration instead of once.
+After **every** stage transition, live re-discovers the entire ticket board from disk and re-applies the priority policy, then runs the current highest-priority ticket. The policy is the same one `batch` uses — cross-stage order from `--stages` (default `review,implement,fix,plan`: drive in-flight work toward done before opening new work), and within each stage prereqs before dependents then lower sequence first — but it is re-evaluated each iteration instead of once.
 
 Because it reads disk every iteration, a ticket created mid-run is picked up the same run: a `review` that files a `fix` sees that fix jump to the front (fix is highest-priority) and resolved next; a `plan` that splits into several `implement` tickets sees them ranked in immediately. A ticket whose prereq is still *behind but advancing* is skipped only for the current pass and becomes selectable the moment its prereq moves forward — so an entire prereq chain can drain in one run.
 
@@ -158,7 +158,7 @@ Best for: unattended runs that should clear the whole pipeline — including the
 
 ### `batch`
 
-Snapshot the ticket list at startup, then drain each stage in topo/sequence order: every snapshotted ticket advances exactly **one** stage per run, and tickets created during the run roll into the next run. The pipeline-wide order is `--stages` (default `fix,review,implement,plan`); within each stage, prereqs come before dependents and lower sequences come first.
+Snapshot the ticket list at startup, then drain each stage in topo/sequence order: every snapshotted ticket advances exactly **one** stage per run, and tickets created during the run roll into the next run. The pipeline-wide order is `--stages` (default `review,implement,fix,plan`); within each stage, prereqs come before dependents and lower sequences come first.
 
 Best for: steady, reviewable progress with a fixed, predictable batch per run. Each run produces a clean one-transition-per-ticket diff so you can inspect what each stage did before the next pass.
 
