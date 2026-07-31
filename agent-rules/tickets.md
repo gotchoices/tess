@@ -64,7 +64,7 @@ Stages (overview — full rules for your active stage under "Active stage detail
 <!-- /stage -->
 
 <!-- stage:review -->
-**Review** — adversarial pass over the completed implementation. The ticket will read as finished — find what it overlooked. **Read the implement-stage diff first**, with fresh eyes, before considering the handoff summary (find it via `git log --grep="ticket(implement): <slug>" -1 --format=%H` then `git show <hash>`). Scrutinize from every aspect angle (SPP, DRY, modular, scalable, maintainable, performant, resource cleanup, error handling, type safety). Watch source hygene: source file size, comment clarity and conciseness, short purposeful functions with naming and composition over comment blocks.  The implementer's tests are a *starting point* — cover happy path, edge cases, error paths, regressions, and interactions. Treat docs as out-of-date until you read every file the change touches — and the ones it *should* have touched — and confirm they reflect the new reality. Run lint + tests; they must pass. Disposition of findings: **minor** — fix in this pass; **major** — file new ticket(s) (prefix backlog tickets per *Backlog prefixes*, and work through *Before you file a ticket* first — review is where most duplicate tickets are born); **conditional/speculative** ("fine now; only matters if X happens later") — record as a tripwire, not a ticket (see *Tripwires*). The output `complete/` ticket must include a `## Review findings` section listing what was checked, what was found, and what was done. Empty categories are fine — but say so *explicitly and with a reason*, not silently or "Looks good".
+**Review** — adversarial pass over the completed implementation. The ticket will read as finished — find what it overlooked. **Read the implement-stage diff first**, with fresh eyes, before considering the handoff summary (find it via `git log --grep="ticket(implement): <slug>" -1 --format=%H` then `git show <hash>`). Scrutinize from every aspect angle (SPP, DRY, modular, scalable, maintainable, performant, resource cleanup, error handling, type safety). Watch source hygene: source file size, comment clarity and conciseness, short purposeful functions with naming and composition over comment blocks.  The implementer's tests are a *starting point* — cover happy path, edge cases, error paths, regressions, and interactions. Treat docs as out-of-date until you read every file the change touches — and the ones it *should* have touched — and confirm they reflect the new reality. Run lint + tests; they must pass. Disposition of findings: **minor** — fix in this pass; **major** — file new ticket(s) (prefix backlog tickets per *Backlog prefixes*; run *Before you file a ticket* first); **conditional/speculative** ("fine now; only matters if X happens later") — record as a tripwire, not a ticket (see *Tripwires*). The output `complete/` ticket must include a `## Review findings` section listing what was checked, what was found, and what was done. Empty categories are fine — but say so *explicitly and with a reason*, not silently or "Looks good".
 <!-- /stage -->
 
 <!-- stage:blocked -->
@@ -145,25 +145,25 @@ If you receive a `BUDGET_WARNING` from the runner, the conversation has crossed 
 
 ## Before you file a ticket
 
-**Gated on actually filing** — if every finding resolved inline, skip this section. But filing is the one moment a duplicate can enter the board, and the one moment it is cheap to prevent, so pay these costs when you do file.
+Gated on filing. Everything resolved inline — skip this.
 
-**Name the root cause, not the symptom.** Before writing the file, name the single code site — or the single unsettled decision — that has to change. Two findings that resolve at the same site are ONE ticket with two arms, not two tickets, *even when their user-visible symptoms look unrelated*. If you cannot name the site, the investigation isn't finished; finish it before filing.
+**Root cause, not symptom.** Name the one code site — or one unsettled decision — that must change. Two findings resolving at the same site are ONE ticket with two arms, even when the symptoms look unrelated. Can't name the site? Investigation isn't done.
 
-**Then check whether that site is already claimed.** The ticket board is not in the code-search index and nothing hands it to you, so you have to look — but one grep over the open stages is enough. For each path you are about to put in `files:`:
+**Check the site isn't already claimed.** The board is not in the code-search index and nothing hands it to you. For each path headed for `files:`:
 
 ```bash
 grep -rl "<path or symbol>" tickets/backlog tickets/fix tickets/plan tickets/implement tickets/review
 ```
 
-If an open ticket already names that site, **add your arm to that ticket's body instead of filing a new one**, and say so in your findings. File fresh only when nothing open touches it.
+Hit → append your arm to that ticket's body, say so in your findings. File fresh only when nothing open touches the site.
 
-**Route by what the ticket needs, not by how far off it is.** A finding whose open question is "should we do this at all" belongs in `blocked/` — that is a human decision. `backlog/` is for work whose *shape* is settled and only its *timing* is not. A ticket that asks a human to choose is not promotable as backlog and will sit there indefinitely.
+**"Should we do this at all" → `blocked/`**, not `backlog/`. Backlog = shape settled, timing not. A ticket asking a human to choose is never promotable.
 
-**Don't assert a magnitude you didn't measure.** If you claim a complexity class, a slowdown factor, or a data-loss blast radius, say how you measured it; if you didn't measure it, write the weaker claim. An inflated severity mis-sorts the queue as badly as a missed defect does.
+**No unmeasured magnitudes.** Complexity class, slowdown factor, blast radius — say how you measured. Didn't measure → write the weaker claim.
 
-**Say whether you reproduced it.** Bug tickets carry `repro:` — `verified` (you ran it and observed it), `static` (you read the code and inferred it), or `none`. Filing an unverified suspicion is fine and often right; filing it *as though* it were observed is not. A `repro: static` ticket should say what would confirm it.
+**Size-debt: state the line count you measured, with the command.** The split may already have shipped.
 
-**A size-debt ticket states the line count as measured at filing time**, with the command used. Sizes move under you — the split you're proposing may already have shipped.
+**Bug tickets carry `repro:`** — `verified` (ran it, saw it) | `static` (read code, inferred) | `none`. Unverified suspicion is fine; filing it *as* observed is not. `static` → name what would confirm it.
 
 For new tickets: put a new file into `fix/` or `plan/` (or `backlog/` if it's a future concern rather than active work) but focus on the **description, requirements, and specifications** of the issue or feature, expected behavior, use case, etc. **Don't do planning, don't add TODO items, or get ahead**, unless you already possess key information that would be useful. Think use cases, expectations, and specifications.
 
@@ -176,7 +176,7 @@ description: <ONE plain-language sentence (two at most), jargon-free, understand
 prereq: <slugs of other tickets that must land first — comma-separated, no sequence prefix, no .md>
 files: <list key files touched/relevant — saves the next agent significant discovery time>
 difficulty: <optional; easy|medium|hard — how much horsepower the work needs. Default medium. Drives model/effort selection (e.g. hard → a stronger model); omit unless the work is unusually simple or hard.>
-repro: <bug tickets only; verified|static|none — did you actually run the reproduction, infer it from the code, or neither. See *Before you file a ticket*.>
+repro: <bug tickets only; verified|static|none — ran it and saw it / inferred from code / neither.>
 ----
 <timeless architecture description focused on prose, diagrams, and interfaces/types/schema>
 
