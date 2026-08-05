@@ -223,6 +223,26 @@ node tess/scripts/run.mjs --no-prune-completed
 
 `--dry-run` reports what the sweep would remove without deleting anything. The sweep also honors `--no-commit` (deletes the files but leaves the commit to you).
 
+## Backlog Gardening
+
+Every processing stage generates backlog tickets, but `backlog/` drains only through a human — left alone it grows into a flat list that's expensive to triage. The **gardener** is a dedicated agent pass that turns that queue into fewer, better-ranked decisions:
+
+```bash
+node tess/scripts/garden.mjs                          # consolidate, backfill triage headers, rank
+node tess/scripts/garden.mjs --feedback decisions.md  # also execute declines/promotions from a file
+node tess/scripts/garden.mjs "decline the two CLI cosmetic bugs; promote the sync cluster"
+node tess/scripts/garden.mjs --dry-run                # print the inventory, invoke nothing
+```
+
+What it does (rules in `agent-rules/garden.md`):
+
+1. **Backfill** — every backlog bug gets `severity:` / `likelihood:`; every backlog ticket gets `tradeoffs:` (the honest one-sentence decline argument), derived from the ticket body and the code it references.
+2. **Merge & cluster** — duplicates fold together; several tickets that are symptoms of one underlying weakness become a single **theme ticket** whose deliverable is the invariant that retires the class (a type change, a property test, a boundary assertion), with the instances kept as evidence arms.
+3. **Rank** — sequence-prefixes the promote-first candidates and writes the full ranked picture to `tickets/.garden-report.md` (tracked, overwritten each pass).
+4. **Execute feedback** — only with explicit human feedback: declined tickets are deleted **and** recorded as an accepted-tradeoff `NOTE:` comment at the code site (so future reviewers don't re-discover and re-file the finding); promoted tickets move to `plan/` (or `fix/`). Without feedback the gardener never declines or promotes — those calls stay human.
+
+Options: `--agent` (default `claude`), `--difficulty` (model tier, default `hard`), `--token-budget`, `--no-commit`, `--dry-run`. The pass commits as `tess: garden backlog (<n> removed, <m> added, <k> updated)`.
+
 ## Local Code Search (optional)
 
 Tess can build a local vector index of the repository and expose it to the agent as an MCP `search_code` tool.  No API keys, no network calls after the first model download.

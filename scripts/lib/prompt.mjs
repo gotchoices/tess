@@ -33,7 +33,7 @@ export async function buildPrompt(ticket, tessRoot, repoRoot) {
 		'',
 		'## Ticket workflow rules:',
 		'',
-		selectActiveStage(rules, ticket.stage),
+		filterStageBlocks(rules, ticket.stage),
 		'',
 		`## Contents of \`${ticket.path}\`:`,
 		'',
@@ -55,23 +55,26 @@ export async function buildPrompt(ticket, tessRoot, repoRoot) {
 }
 
 // Strip every `<!-- stage:NAME -->...<!-- /stage -->` block except the one
-// matching `activeStage`.  Falls through unchanged when the file has no markers
-// (legacy) or the active stage isn't marked (config skew) — both are safer than
-// emptying the rules section.  Line endings are normalized to LF before
-// processing so CRLF checkouts (Windows) match the same regexes.
-function selectActiveStage(rules, activeStage) {
+// matching `keepStage`; pass `null` to strip ALL stage blocks (used by the
+// gardener, which wants only the cross-stage conventions).  Falls through
+// unchanged when the file has no markers (legacy) or a named keepStage isn't
+// marked (config skew) — both are safer than emptying the rules section.
+// Line endings are normalized to LF before processing so CRLF checkouts
+// (Windows) match the same regexes.
+export function filterStageBlocks(rules, keepStage) {
 	const normalized = rules.replace(/\r\n/g, '\n');
 	const stageNames = [...normalized.matchAll(/<!-- stage:(\w+) -->/g)].map(m => m[1]);
-	if (stageNames.length === 0 || !stageNames.includes(activeStage)) return normalized;
+	if (stageNames.length === 0) return normalized;
+	if (keepStage !== null && !stageNames.includes(keepStage)) return normalized;
 	const filtered = normalized.replace(
 		/<!-- stage:(\w+) -->\n?([\s\S]*?)\n?<!-- \/stage -->\n?/g,
-		(_match, name, body) => name === activeStage ? body + '\n' : '',
+		(_match, name, body) => name === keepStage ? body + '\n' : '',
 	);
 	// Collapse the blank-line runs left behind where blocks were removed.
 	return filtered.replace(/\n{3,}/g, '\n\n');
 }
 
-function searchDirective(serverName) {
+export function searchDirective(serverName) {
 	// MCP tool ids preserve the server name verbatim — e.g. server "code-search"
 	// gives `mcp__code-search__search_code` (with the dash, not an underscore).
 	// Full tool surface is documented in the project's root AGENTS.md (see

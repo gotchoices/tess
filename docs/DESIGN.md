@@ -90,7 +90,7 @@ A single parameterized loop (`depth` = 1 means batch, `depth` = ∞ means chase)
 
 ---
 
-## Backlog Gardening (planned)
+## Backlog Gardening
 
 ### Why
 
@@ -98,7 +98,7 @@ Every processing stage except `complete/` is generative: `fix` emits implement t
 
 ### What
 
-A **gardener** is a dedicated agent pass over `backlog/` (not part of the default stage set — invoked explicitly, like `--stages backlog:N` promotion) whose output is *fewer, better-ranked decisions* for the human, not code:
+A **gardener** is a dedicated agent pass over `backlog/` (its own script, `scripts/garden.mjs` — deliberately not a `run.mjs` stage, since it traverses the whole queue at once rather than transitioning tickets one at a time) whose output is *fewer, better-ranked decisions* for the human, not code:
 
 1. **Backfill** — verify every backlog ticket carries `severity:` / `likelihood:` / `tradeoffs:` headers (see agent rules); derive missing ones from the ticket body and code.
 2. **Cluster** — group tickets that are instances of one class (same root mechanism, e.g. "text/numeric coercion inconsistencies," "schema-change propagation") into a single **theme ticket** whose deliverable is the invariant that retires the class (type change, property test, boundary assertion), with the instances folded in as evidence arms. Merge duplicates outright.
@@ -107,10 +107,9 @@ A **gardener** is a dedicated agent pass over `backlog/` (not part of the defaul
 
 The gardener never promotes to `plan/` on its own and never declines without human direction — consolidation and ranking are autonomous; promotion and decline are the human's calls, made cheaper.
 
-### Runner support (to build)
+### Mechanics
 
-- A `garden` invocation mode (`run.mjs --garden` or `scripts/garden.mjs`) that hands the whole backlog to one agent with gardening rules, optionally with a human feedback file/message as input.
-- Commit as `tess: garden backlog (<n> merged, <m> declined, <k> backfilled)`.
+`scripts/garden.mjs` hands the whole backlog to one agent invocation: the prompt is `agent-rules/garden.md` + the shared cross-stage conventions from `tickets.md` (stage blocks stripped) + a header-level inventory of every backlog ticket (description + which triage headers are missing) + the human feedback, when given (`--feedback <file>` and/or bare CLI arguments). The agent reads full ticket bodies only for what it acts on. Model selection runs through the shared resolver with stage `garden` and difficulty `hard` by default — gardening is judgment-dense. Output lands in `tickets/.garden-report.md` (tracked, overwritten per pass); the runner commits as `tess: garden backlog (<n> removed, <m> added, <k> updated)`, counting removals/additions by slug so re-sequencing isn't miscounted as churn. The mass-deletion commit guard applies as everywhere else.
 
 ---
 

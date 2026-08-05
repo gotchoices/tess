@@ -25,8 +25,9 @@ function countDeletions(status) {
 	return status.split('\n').filter(line => line[0] === 'D' || line[1] === 'D').length;
 }
 
-/** Stage and commit all changes for a completed ticket.  Returns true if a commit was created. */
-export function commitTicket(ticket, cwd) {
+/** Stage and commit all working-tree changes under one message.  Returns true if a commit
+ *  was created.  `context` labels the abort message when the deletion guard trips. */
+export function commitAll(cwd, message, { context = message } = {}) {
 	try {
 		// Check if there are any changes to commit
 		const status = execSync('git status --porcelain', { cwd, encoding: 'utf-8' }).trim();
@@ -38,21 +39,25 @@ export function commitTicket(ticket, cwd) {
 		const deletions = countDeletions(status);
 		const maxDeletions = Number(process.env.TESS_MAX_DELETIONS ?? DEFAULT_MAX_DELETIONS);
 		if (deletions > maxDeletions) {
-			console.error(`[runner] ABORTING commit for ${ticket.slug}: ${deletions} deletions exceed the safety threshold (${maxDeletions}).`);
-			console.error('[runner] This looks like a spurious mass-deletion (transient/partial working tree), not a ticket change.');
+			console.error(`[runner] ABORTING commit for ${context}: ${deletions} deletions exceed the safety threshold (${maxDeletions}).`);
+			console.error('[runner] This looks like a spurious mass-deletion (transient/partial working tree), not an intended change.');
 			console.error('[runner] Nothing was staged or committed; inspect with `git status` and re-run once the tree is intact.');
 			console.error('[runner] If the deletion is genuinely intended, raise TESS_MAX_DELETIONS and re-run.');
 			return false;
 		}
 
 		execSync('git add -A', { cwd, encoding: 'utf-8' });
-		const msg = `ticket(${ticket.stage}): ${ticket.slug}`;
-		execSync(`git commit -m "${msg}"`, { cwd, encoding: 'utf-8' });
+		execSync(`git commit -m "${message}"`, { cwd, encoding: 'utf-8' });
 		return true;
 	} catch (err) {
 		console.error(`[runner] Git commit failed: ${err.message}`);
 		return false;
 	}
+}
+
+/** Stage and commit all changes for a completed ticket.  Returns true if a commit was created. */
+export function commitTicket(ticket, cwd) {
+	return commitAll(cwd, `ticket(${ticket.stage}): ${ticket.slug}`, { context: ticket.slug });
 }
 
 /** Run migration if needed and commit the result.  Returns whether a commit was made. */

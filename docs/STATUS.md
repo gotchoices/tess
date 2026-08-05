@@ -78,5 +78,5 @@
 - [x] Agent rules: *Architecture first* ladder — types → property test → boundary invariant → point ticket; Nth instance of a class appends to the theme ticket
 - [x] Agent rules: *Accepted tradeoffs* — declined findings recorded as `NOTE:` code comments at the site; reviewers must not re-file past one unless its revisit condition tripped
 - [x] DESIGN.md: Backlog Gardening section (rationale, gardener duties, decline-via-code-comment)
-- [ ] Runner: `garden` invocation mode (backfill → cluster → rank → execute human feedback)
+- [x] Gardener: `scripts/garden.mjs` + `agent-rules/garden.md` (backfill → cluster → rank → execute human feedback; writes `tickets/.garden-report.md`)
 - [ ] UI dashboard: surface `severity:`/`likelihood:` in backlog listing; sort/filter by them
