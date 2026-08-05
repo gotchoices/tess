@@ -64,7 +64,7 @@ Stages (overview — full rules for your active stage under "Active stage detail
 <!-- /stage -->
 
 <!-- stage:review -->
-**Review** — adversarial pass over the completed implementation. The ticket will read as finished — find what it overlooked. **Read the implement-stage diff first**, with fresh eyes, before considering the handoff summary (find it via `git log --grep="ticket(implement): <slug>" -1 --format=%H` then `git show <hash>`). Scrutinize from every aspect angle (SPP, DRY, modular, scalable, maintainable, performant, resource cleanup, error handling, type safety). Watch source hygene: source file size, comment clarity and conciseness, short purposeful functions with naming and composition over comment blocks.  The implementer's tests are a *starting point* — cover happy path, edge cases, error paths, regressions, and interactions. Treat docs as out-of-date until you read every file the change touches — and the ones it *should* have touched — and confirm they reflect the new reality. Run lint + tests; they must pass. Disposition of findings: **minor** — fix in this pass; **major** — file new ticket(s) (prefix backlog tickets per *Backlog prefixes*; run *Before you file a ticket* first); **conditional/speculative** ("fine now; only matters if X happens later") — record as a tripwire, not a ticket (see *Tripwires*). The output `complete/` ticket must include a `## Review findings` section listing what was checked, what was found, and what was done. Empty categories are fine — but say so *explicitly and with a reason*, not silently or "Looks good".
+**Review** — adversarial pass over the completed implementation. The ticket will read as finished — find what it overlooked. **Read the implement-stage diff first**, with fresh eyes, before considering the handoff summary (find it via `git log --grep="ticket(implement): <slug>" -1 --format=%H` then `git show <hash>`). Scrutinize from every aspect angle (SPP, DRY, modular, scalable, maintainable, performant, resource cleanup, error handling, type safety). Watch source hygene: source file size, comment clarity and conciseness, short purposeful functions with naming and composition over comment blocks.  The implementer's tests are a *starting point* — cover happy path, edge cases, error paths, regressions, and interactions. Treat docs as out-of-date until you read every file the change touches — and the ones it *should* have touched — and confirm they reflect the new reality. Run lint + tests; they must pass. Disposition of findings: **minor** — fix in this pass; **major** — climb *Architecture first* (in *Before you file a ticket*) before filing: prefer the invariant that retires the whole class over a ticket for the instance; then file new ticket(s) (prefix backlog tickets per *Backlog prefixes*); **conditional/speculative** ("fine now; only matters if X happens later") — record as a tripwire, not a ticket (see *Tripwires*); **considered-and-declined** — a finding whose site carries an accepted-tradeoff `NOTE:` is already decided; leave it alone unless its stated revisit condition has tripped (see *Accepted tradeoffs*). The output `complete/` ticket must include a `## Review findings` section listing what was checked, what was found, and what was done. Empty categories are fine — but say so *explicitly and with a reason*, not silently or "Looks good".
 <!-- /stage -->
 
 <!-- stage:blocked -->
@@ -92,6 +92,19 @@ A **tripwire** is a concern that is fine *now* and only becomes work *if* some c
 - **Always** add one line to the review's `## Review findings` saying what you noticed and where you parked it — findings is the *index*, not the home; don't restate the analysis.
 
 **Conditional, or just not-yet-reached?** Only demote things that are genuinely conditional ("fine now; *if* X then Y"). A concern that is *definitely wrong the moment a currently-dormant path runs* is a real latent defect, not a tripwire — keep it as a ticket (`debt-` if dormant, `bug-` if reachable now).
+
+## Accepted tradeoffs (declined findings)
+
+There is no perfect code — some findings get weighed by a human and **declined by design**. Deleting the ticket alone invites the next reviewer to re-discover and re-file the same finding. When a decline happens (typically during backlog gardening, on human feedback), record the decision where the next reviewer will actually look — at the code site:
+
+```
+// NOTE: accepted tradeoff — config reload re-parses the whole file on every change; simplicity weighed over incremental parsing and kept; revisit if reload ever shows up in profiles.
+```
+
+- Same greppable `NOTE:` tag as tripwires — one set to sweep.
+- One line at the most specific site; the relevant `docs/` file instead when the decision is architectural with no single site.
+- State **what** was declined, **why**, and the **revisit condition**. No revisit condition means a permanent decision — fine, but that should be deliberate.
+- **Reviewers:** an accepted-tradeoff `NOTE:` at your finding's site means the call was already made — do not re-file unless the stated revisit condition has tripped or the surrounding facts have materially changed (say which, in your findings).
 
 ## Backlog prefixes
 
@@ -149,6 +162,19 @@ Gated on filing. Everything resolved inline — skip this.
 
 **Root cause, not symptom.** Name the one code site — or one unsettled decision — that must change. Two findings resolving at the same site are ONE ticket with two arms, even when the symptoms look unrelated. Can't name the site? Investigation isn't done.
 
+**Architecture first — a point ticket is the last resort.** The goal is a codebase that gets *harder to break*, not a queue that gets longer. Before filing a bug instance, climb this ladder and file at the **highest rung that applies**:
+
+1. **Types/representation** — could a type or representation change make the bad state unrepresentable? File a `debt-` ticket for that change, citing this instance as evidence.
+2. **Property/generalized test** — would one general test or generator (e.g. "serialize-then-deserialize round-trips every value type") catch this whole class, now and after future edits? File a `debt-` ticket for the test, citing instances.
+3. **Boundary invariant** — would an assertion or layering check at a seam catch the class at runtime/build time? Same treatment.
+4. Only when the finding is genuinely a one-off with no class behind it: file the point `bug-` ticket.
+
+The Nth instance of a class that already has a ticket is **evidence, not a new ticket** — the site-claim grep below finds the theme ticket; append your instance as an arm.
+
+**Respect accepted tradeoffs.** The site-claim grep only sees open tickets; human decisions live in the code. Read around the site before filing — an accepted-tradeoff `NOTE:` there (see *Accepted tradeoffs*) means a human already weighed and declined this finding. Don't re-file unless its revisit condition has tripped.
+
+**Backlog tickets carry triage metadata.** The context that files a ticket knows its impact better than the human triaging a flat list weeks later — don't discard that. Bug tickets headed for `backlog/` carry `severity:` and `likelihood:`; **every** backlog ticket carries `tradeoffs:` — one honest sentence on why a maintainer might decline or defer it. If you can't articulate the decline argument, you haven't weighed the ticket enough to file it.
+
 **Check the site isn't already claimed.** The board is not in the code-search index and nothing hands it to you. For each path headed for `files:`:
 
 ```bash
@@ -177,6 +203,9 @@ prereq: <slugs of other tickets that must land first — comma-separated, no seq
 files: <list key files touched/relevant — saves the next agent significant discovery time>
 difficulty: <optional; easy|medium|hard — how much horsepower the work needs. Default medium. Drives model/effort selection (e.g. hard → a stronger model); omit unless the work is unusually simple or hard.>
 repro: <bug tickets only; verified|static|none — ran it and saw it / inferred from code / neither.>
+severity: <backlog bugs; corruption|wrong-result|edge-case|cosmetic — worst plausible user-visible effect.>
+likelihood: <backlog bugs; normal-use|unusual|contrived — how a user would actually hit it.>
+tradeoffs: <backlog tickets; one honest sentence on why a maintainer might decline or defer this.>
 ----
 <timeless architecture description focused on prose, diagrams, and interfaces/types/schema>
 

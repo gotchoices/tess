@@ -71,3 +71,12 @@
 - [x] Update README, DESIGN.md, INSTALLATION.md for v2 layout
 - [x] Update `ui/` dashboard (types, api-plugin, TicketCard, TicketDetail, StageView, Pipeline) — sequence + prereq + backlog; ascending sort; side-rail backlog
 - [ ] Migrate existing tess-consuming projects (lamina, …) and verify commit/test lanes remain green
+
+## Phase 7: Convergence (triage metadata, architecture-first, gardening)
+
+- [x] Agent rules: `severity:` / `likelihood:` / `tradeoffs:` headers required on backlog tickets (triage context captured at file time)
+- [x] Agent rules: *Architecture first* ladder — types → property test → boundary invariant → point ticket; Nth instance of a class appends to the theme ticket
+- [x] Agent rules: *Accepted tradeoffs* — declined findings recorded as `NOTE:` code comments at the site; reviewers must not re-file past one unless its revisit condition tripped
+- [x] DESIGN.md: Backlog Gardening section (rationale, gardener duties, decline-via-code-comment)
+- [ ] Runner: `garden` invocation mode (backfill → cluster → rank → execute human feedback)
+- [ ] UI dashboard: surface `severity:`/`likelihood:` in backlog listing; sort/filter by them

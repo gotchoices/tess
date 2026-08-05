@@ -90,6 +90,30 @@ A single parameterized loop (`depth` = 1 means batch, `depth` = ∞ means chase)
 
 ---
 
+## Backlog Gardening (planned)
+
+### Why
+
+Every processing stage except `complete/` is generative: `fix` emits implement tickets, `plan` emits implement + backlog tickets, `review` emits fix/plan/backlog tickets. `backlog/` has exactly one drain — the human — and it fills as a flat list with no severity signal, so triage cost grows linearly with agent throughput and the human ends up deciding from educated guesses. Ticket production is proportional to *work done* (each run audits each change's neighborhood), not to defect density, so the queue never converges on its own. Detection ability also rises with each model generation, so the fixed point is not "no findings" but "findings below an explicit interest threshold." Two rule-level counters already exist (triage metadata at file time, the *Architecture first* ladder); gardening is the queue-side counterpart.
+
+### What
+
+A **gardener** is a dedicated agent pass over `backlog/` (not part of the default stage set — invoked explicitly, like `--stages backlog:N` promotion) whose output is *fewer, better-ranked decisions* for the human, not code:
+
+1. **Backfill** — verify every backlog ticket carries `severity:` / `likelihood:` / `tradeoffs:` headers (see agent rules); derive missing ones from the ticket body and code.
+2. **Cluster** — group tickets that are instances of one class (same root mechanism, e.g. "text/numeric coercion inconsistencies," "schema-change propagation") into a single **theme ticket** whose deliverable is the invariant that retires the class (type change, property test, boundary assertion), with the instances folded in as evidence arms. Merge duplicates outright.
+3. **Rank** — order the surviving queue by severity × likelihood, surfacing the handful of genuine decisions.
+4. **Execute human feedback** — when the human declines tickets (via feedback the gardener is invoked with, or by prior conversation), the gardener deletes them **and plants an accepted-tradeoff `NOTE:` comment at the code site** (see agent rules, *Accepted tradeoffs*) so future reviewers don't re-discover and re-file the finding. The code comment — not a ledger file — is the durable decline record, because it sits exactly where the next reviewer will look.
+
+The gardener never promotes to `plan/` on its own and never declines without human direction — consolidation and ranking are autonomous; promotion and decline are the human's calls, made cheaper.
+
+### Runner support (to build)
+
+- A `garden` invocation mode (`run.mjs --garden` or `scripts/garden.mjs`) that hands the whole backlog to one agent with gardening rules, optionally with a human feedback file/message as input.
+- Commit as `tess: garden backlog (<n> merged, <m> declined, <k> backfilled)`.
+
+---
+
 ## Open Questions
 
 ### Q1: Should any `tickets/` subfolders be renamed for agile/kanban compatibility?

@@ -324,6 +324,9 @@ description: <brief description>
 prereq: <slugs of other tickets that must land first — comma-separated, no prefix, no .md>
 files: <optional list of relevant files>
 difficulty: <optional: easy | medium | hard — defaults to medium>
+severity: <backlog bugs: corruption | wrong-result | edge-case | cosmetic>
+likelihood: <backlog bugs: normal-use | unusual | contrived>
+tradeoffs: <backlog tickets: one sentence on why a maintainer might decline or defer this>
 ----
 <Architecture description — prose, diagrams, interfaces/types>
 
