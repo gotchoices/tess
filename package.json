@@ -10,7 +10,8 @@
 	"scripts": {
 		"index": "node scripts/index.mjs",
 		"mcp-search": "node scripts/mcp-search.mjs",
-		"search": "node scripts/search.mjs"
+		"search": "node scripts/search.mjs",
+		"test": "node --test scripts/lib/*.test.mjs"
 	},
 	"dependencies": {
 		"@huggingface/transformers": "^3.0.0",

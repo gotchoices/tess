@@ -23,9 +23,16 @@ export function logPath(logsDir, ticket) {
 	return join(logsDir, `${name}.${ticket.stage}.${ts}.log`);
 }
 
-function groupPrefix(name) {
-	for (const s of LOG_SUFFIXES) if (name.endsWith(s)) return name.slice(0, -s.length);
-	return null;
+/** Prefix used to group files for pruning. Files with a recognized suffix
+ *  group by their shared prefix (a .log + its sibling .prompt.md prune
+ *  together); anything else falls back to the whole filename, so an
+ *  unrecognized artifact (screenshot, JSON capture, ...) still ages out on
+ *  its own instead of being permanently exempt from pruning. A name that is
+ *  nothing but a suffix (`.log`) also falls back to itself — an empty prefix
+ *  would group it with every other such file and read as falsy downstream. */
+export function groupPrefix(name) {
+	for (const s of LOG_SUFFIXES) if (name.endsWith(s)) return name.slice(0, -s.length) || name;
+	return name;
 }
 
 /**
@@ -38,7 +45,11 @@ function groupPrefix(name) {
 export async function pruneOldLogs(logsDir, protectedLog = null) {
 	let entries;
 	try {
-		entries = await readdir(logsDir);
+		// Files only: a subdirectory has no suffix to strip, so it would otherwise
+		// become its own group and be "removed" by an unlink that always fails.
+		entries = (await readdir(logsDir, { withFileTypes: true }))
+			.filter((e) => e.isFile())
+			.map((e) => e.name);
 	} catch {
 		return { removedFiles: 0, removedGroups: 0 };
 	}
@@ -46,7 +57,6 @@ export async function pruneOldLogs(logsDir, protectedLog = null) {
 	const groups = new Map();
 	for (const name of entries) {
 		const prefix = groupPrefix(name);
-		if (!prefix) continue;
 		let group = groups.get(prefix);
 		if (!group) {
 			group = { files: [], mtime: 0 };
