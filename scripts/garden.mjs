@@ -26,7 +26,7 @@ import { execSync } from 'node:child_process';
 import { discoverTickets, parseSlug } from './lib/tickets.mjs';
 import { ensureLogsDir, logPath } from './lib/logging.mjs';
 import { runAgent } from './lib/process.mjs';
-import { commitAll, getTessVersion } from './lib/git.mjs';
+import { commitAll, getTessVersion, reconcileWorkingTree } from './lib/git.mjs';
 import { filterStageBlocks, searchDirective } from './lib/prompt.mjs';
 import { detectSearch } from './lib/detect-search.mjs';
 
@@ -211,6 +211,23 @@ async function main() {
 	const opts = parseArgs(process.argv.slice(2));
 	const repoRoot = process.cwd();
 	const ticketsDir = join(repoRoot, 'tickets');
+
+	// Garden has no `.in-progress` marker of its own — any residue found here always commits
+	// under the "no ticket in progress" message.  `salvage` is hard-coded (not a `--dirty-tree`
+	// flag like the runner's) because garden is a single human-invoked, single-shot pass: the
+	// operator is at the keyboard and sees the dirty-tree notice either way.
+	const reconciled = reconcileWorkingTree(repoRoot, {
+		owner: null,
+		mode: 'salvage',
+		noCommit: opts.noCommit,
+		dryRun: opts.dryRun,
+		label: 'the garden pass',
+	});
+	if (reconciled.action === 'abort') {
+		console.error('\nWorking tree could not be salvaged — halting before the garden pass.');
+		process.exit(1);
+	}
+
 	const tessVersion = getTessVersion(TESS_ROOT);
 
 	const tickets = await discoverTickets(ticketsDir, 'backlog', Infinity);

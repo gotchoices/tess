@@ -71,6 +71,14 @@ test('run-ticket.mjs reconciles once per ticket, outside the retry loop', () => 
 	assert.ok(reconcile < agentCall, 'the tree must be clean before an agent is allowed to add edits of its own');
 });
 
+test('garden.mjs reconciles before its end-of-run commit', () => {
+	const src = read('../garden.mjs');
+	const reconcile = soleIndex(src, 'reconcileWorkingTree(repoRoot', 'garden.mjs');
+	const commit = soleIndex(src, 'commitAll(repoRoot', 'garden.mjs');
+
+	assert.ok(reconcile < commit, 'the end-of-run commit must run AFTER the reconcile, or it sweeps up the residue first');
+});
+
 test('every unscoped tree sweep in the runner goes through commitAll', () => {
 	// A scoped `git add -- <path>` cannot pick up anything foreign and is fine on its own; a bare
 	// `git add -A` outside commitAll is the exact shape this whole invariant exists to contain.

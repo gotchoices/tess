@@ -117,9 +117,13 @@ commits that stage a *named path* instead (`prune-completed.mjs` for `tickets/co
 `pre-existing-error.mjs` for the known-failure ledger) are safe by their own construction and
 deliberately stay outside `commitAll` — a scoped `git add` cannot pick up anything foreign.
 
-`scripts/garden.mjs` is deliberately **outside** this pipeline. It commits at the repo root like
-the runner does, but it is human-invoked and single-shot, so a human is present to see what state
-the tree was in.
+`scripts/garden.mjs` is deliberately **outside** this pipeline — it is not part of `run.mjs`'s
+stage-transition flow, and it commits at the repo root in one shot rather than per-ticket. It still
+runs through the same `reconcileWorkingTree` invariant as `run.mjs`/`run-ticket.mjs`, at the top of
+its `main()`, before it commits — hard-coded to `salvage` since garden has no `.in-progress`
+ownership concept of its own to name an interrupted-ticket owner with. Being human-invoked and
+single-shot is why a hard-coded mode is enough: the operator is at the keyboard and sees the
+dirty-tree notice printed either way, so garden does not need its own `--dirty-tree` flag.
 
 ---
 
