@@ -27,6 +27,7 @@ import { discoverTickets, parseSlug } from './lib/tickets.mjs';
 import { ensureLogsDir, logPath } from './lib/logging.mjs';
 import { runAgent } from './lib/process.mjs';
 import { commitAll, getTessVersion, reconcileWorkingTree } from './lib/git.mjs';
+import { readInProgress } from './lib/state.mjs';
 import { filterStageBlocks, searchDirective } from './lib/prompt.mjs';
 import { detectSearch } from './lib/detect-search.mjs';
 
@@ -212,12 +213,15 @@ async function main() {
 	const repoRoot = process.cwd();
 	const ticketsDir = join(repoRoot, 'tickets');
 
-	// Garden has no `.in-progress` marker of its own — any residue found here always commits
-	// under the "no ticket in progress" message.  `salvage` is hard-coded (not a `--dirty-tree`
-	// flag like the runner's) because garden is a single human-invoked, single-shot pass: the
-	// operator is at the keyboard and sees the dirty-tree notice either way.
+	// Garden never writes an `.in-progress` marker of its own, but it reads the one the runner
+	// leaves behind: residue found here most plausibly belongs to whatever ticket was interrupted,
+	// and salvaging it under "no ticket in progress" would state something untrue.  Read
+	// non-destructively — clearing the marker stays the runner's job.  `salvage` is hard-coded
+	// (not a `--dirty-tree` flag like the runner's) because garden is a single human-invoked,
+	// single-shot pass: the operator is at the keyboard and sees the dirty-tree notice either way.
+	const interrupted = await readInProgress(ticketsDir);
 	const reconciled = reconcileWorkingTree(repoRoot, {
-		owner: null,
+		owner: interrupted ? { stage: interrupted.stage, slug: interrupted.slug } : null,
 		mode: 'salvage',
 		noCommit: opts.noCommit,
 		dryRun: opts.dryRun,

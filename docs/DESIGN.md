@@ -117,13 +117,20 @@ commits that stage a *named path* instead (`prune-completed.mjs` for `tickets/co
 `pre-existing-error.mjs` for the known-failure ledger) are safe by their own construction and
 deliberately stay outside `commitAll` — a scoped `git add` cannot pick up anything foreign.
 
-`scripts/garden.mjs` is deliberately **outside** this pipeline — it is not part of `run.mjs`'s
-stage-transition flow, and it commits at the repo root in one shot rather than per-ticket. It still
-runs through the same `reconcileWorkingTree` invariant as `run.mjs`/`run-ticket.mjs`, at the top of
-its `main()`, before it commits — hard-coded to `salvage` since garden has no `.in-progress`
-ownership concept of its own to name an interrupted-ticket owner with. Being human-invoked and
-single-shot is why a hard-coded mode is enough: the operator is at the keyboard and sees the
-dirty-tree notice printed either way, so garden does not need its own `--dirty-tree` flag.
+`scripts/garden.mjs` is deliberately **outside** the *stage-transition* pipeline — it is not a
+`run.mjs` stage, and it commits at the repo root in one shot rather than per-ticket. It is not
+outside the clean-tree invariant: its end-of-run commit is a fifth unscoped `commitAll`, so the
+same reasoning applies to it, and it calls `reconcileWorkingTree` at the top of its `main()` —
+before the gardening agent runs and before that commit. Ordering against the commit alone would
+not be enough: a reconcile sitting between the agent and the commit would salvage the gardener's
+own output under the salvage message.
+
+Two things differ from `run.mjs`. The mode is hard-coded to `salvage` — garden is human-invoked
+and single-shot, so the operator is at the keyboard and sees the notice either way, and a
+`--dirty-tree` flag of its own would be a knob nobody needs. Ownership still comes from the same
+`tickets/.in-progress` marker, read non-destructively: garden never writes one, but the runner
+may have left one behind, and salvaging that residue under "no ticket in progress" would state
+something untrue.
 
 ---
 

@@ -242,7 +242,7 @@ What it does (rules in `agent-rules/garden.md`):
 3. **Rank** — sequence-prefixes the promote-first candidates and writes the full ranked picture to `tickets/.garden-report.md` (tracked, overwritten each pass).
 4. **Execute feedback** — only with explicit human feedback: declined tickets are deleted **and** recorded as an accepted-tradeoff `NOTE:` comment at the code site (so future reviewers don't re-discover and re-file the finding); promoted tickets move to `plan/` (or `fix/`). Without feedback the gardener never declines or promotes — those calls stay human.
 
-Options: `--agent` (default `claude`), `--difficulty` (model tier, default `hard`), `--token-budget`, `--no-commit`, `--dry-run`. The pass commits as `tess: garden backlog (<n> removed, <m> added, <k> updated)`.
+Options: `--agent` (default `claude`), `--difficulty` (model tier, default `hard`), `--token-budget`, `--no-commit`, `--dry-run`. The pass commits as `tess: garden backlog (<n> removed, <m> added, <k> updated)`, and reconciles the working tree first (see [Clean Working Tree](#clean-working-tree)) so leftovers do not land under that message.
 
 ## Local Code Search (optional)
 
@@ -449,7 +449,7 @@ Every case except "the tree was already clean" prints the paths and what was don
 
 If a mid-run salvage cannot be committed (it would capture a suspicious mass deletion, or git itself failed), the runner stops before the next ticket and exits non-zero rather than working on a tree it does not understand.
 
-`scripts/garden.mjs` deliberately sits outside this check: it is human-invoked and single-shot, so somebody is already watching.
+`scripts/garden.mjs` runs the same check at the top of its pass, before it invokes the gardener and before its own `git add -A` commit — its commit is unscoped too, so leftovers sitting there would otherwise land under `tess: garden backlog (...)`. It has no `--dirty-tree` flag of its own: it is human-invoked and single-shot, so it always salvages and the operator sees the notice.
 
 ## Pre-existing Test Failure Triage
 
