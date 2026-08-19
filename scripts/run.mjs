@@ -231,18 +231,22 @@ async function main() {
 	}
 
 	const strategy = strategies[opts.strategy];
-	const triageCtx = { ticketsDir, repoRoot, logsDir, opts };
+	// One context object for the whole run: strategies pass it straight through to
+	// `runOneStage`, which hangs per-run state on it (`lastRanTicket`,
+	// `firstAgentErrorNoted`, `dirtyTreeHalt`), and the final triage sweep below reads
+	// the same object rather than a second copy that would miss those flags.
+	const runCtx = {
+		snapshot: allTickets,
+		ticketsDir,
+		repoRoot,
+		tessRoot: TESS_ROOT,
+		tessVersion,
+		logsDir,
+		opts,
+	};
 	let result;
 	try {
-		result = await strategy.run({
-			snapshot: allTickets,
-			ticketsDir,
-			repoRoot,
-			tessRoot: TESS_ROOT,
-			tessVersion,
-			logsDir,
-			opts,
-		});
+		result = await strategy.run(runCtx);
 	} finally {
 		// Agents sometimes rmdir a stage folder after deleting its last ticket.
 		// Re-create the standard set so the next run / human sees a stable layout.
@@ -253,7 +257,16 @@ async function main() {
 		// This final sweep catches reports left when the last ticket errored or
 		// timed out — i.e. the runner is about to conclude with a report still
 		// sitting in tickets/.
-		await handlePreExistingError(triageCtx);
+		await handlePreExistingError(runCtx);
+	}
+
+	// A mid-run dirty tree the runner could not salvage stops the strategy through the same
+	// `stopped` outcome a `.stop` file uses, but it is a failure, not a requested halt — say so
+	// and exit non-zero, so an unattended caller does not read it as a clean drain.
+	if (runCtx.dirtyTreeHalt) {
+		console.error('\nHalted: the working tree could not be salvaged mid-run; remaining tickets were not processed.');
+		console.error('Inspect with `git status`, sort the tree out, then re-run.');
+		process.exit(1);
 	}
 
 	const errors = result?.errors ?? [];

@@ -155,20 +155,33 @@ test('mode ignore: no commit, tree still dirty, but it says so', t => {
 	assert.match(lines.join('\n'), /--dirty-tree ignore/);
 });
 
-for (const mode of ['salvage', 'abort']) {
-	test(`noCommit under mode ${mode}: ignored, nothing committed`, t => {
-		const { dir } = makeRepo(t);
-		const before = commitCount(dir);
-		writeFileSync(join(dir, 'seed.txt'), 'seed edited\n');
+test('noCommit under mode salvage: ignored, nothing committed', t => {
+	const { dir } = makeRepo(t);
+	const before = commitCount(dir);
+	writeFileSync(join(dir, 'seed.txt'), 'seed edited\n');
 
-		const { result, lines } = captured(() => reconcileWorkingTree(dir, { owner: OWNER, mode, noCommit: true }));
+	const { result, lines } = captured(() => reconcileWorkingTree(dir, { owner: OWNER, noCommit: true }));
 
-		assert.equal(result.action, 'ignored');
-		assert.equal(commitCount(dir), before);
-		assert.notEqual(porcelain(dir), '');
-		assert.match(lines.join('\n'), /--no-commit/);
-	});
-}
+	assert.equal(result.action, 'ignored');
+	assert.equal(commitCount(dir), before);
+	assert.notEqual(porcelain(dir), '');
+	assert.match(lines.join('\n'), /--no-commit/);
+});
+
+test('noCommit under mode abort: still aborts — the refusal is not a commit', t => {
+	const { dir } = makeRepo(t);
+	const before = commitCount(dir);
+	writeFileSync(join(dir, 'seed.txt'), 'seed edited\n');
+	const statusBefore = porcelain(dir);
+
+	const { result, lines } = captured(() =>
+		reconcileWorkingTree(dir, { owner: OWNER, mode: 'abort', noCommit: true }));
+
+	assert.equal(result.action, 'abort', '--no-commit must not downgrade an explicit --dirty-tree abort into a proceed');
+	assert.equal(commitCount(dir), before);
+	assert.equal(porcelain(dir), statusBefore);
+	assert.match(lines.join('\n'), /Refusing to start with a dirty tree/);
+});
 
 test('dryRun: notice printed, nothing committed', t => {
 	const { dir } = makeRepo(t);
@@ -180,7 +193,55 @@ test('dryRun: notice printed, nothing committed', t => {
 	assert.equal(result.action, 'ignored');
 	assert.equal(commitCount(dir), before);
 	assert.notEqual(porcelain(dir), '');
-	assert.match(lines.join('\n'), /--dry-run/);
+	const notice = lines.join('\n');
+	assert.match(notice, /--dry-run/);
+	assert.match(notice, /would salvage it as: ticket\(implement\)/, 'a preview must name the commit a real run would make');
+});
+
+test('dryRun outranks abort: reports the refusal, does not return one', t => {
+	const { dir } = makeRepo(t);
+	writeFileSync(join(dir, 'seed.txt'), 'seed edited\n');
+
+	const { result, lines } = captured(() =>
+		reconcileWorkingTree(dir, { owner: OWNER, mode: 'abort', dryRun: true }));
+
+	assert.equal(result.action, 'ignored', 'a dry run previews; it must not make run.mjs exit 1');
+	assert.match(lines.join('\n'), /would refuse to start/);
+});
+
+test('deletions under the threshold are salvaged, not blocked', t => {
+	const { dir } = makeRepo(t);
+	const before = commitCount(dir);
+	unlinkSync(join(dir, 'seed.txt'));
+
+	const prior = process.env.TESS_MAX_DELETIONS;
+	process.env.TESS_MAX_DELETIONS = '1';
+	let result;
+	try {
+		({ result } = captured(() => reconcileWorkingTree(dir, { owner: OWNER })));
+	} finally {
+		if (prior === undefined) delete process.env.TESS_MAX_DELETIONS;
+		else process.env.TESS_MAX_DELETIONS = prior;
+	}
+
+	// The guard is `>`, not `>=`: one deletion at a threshold of one must pass. An inverted or
+	// off-by-one guard would refuse every ticket that deletes its own source file — i.e. every
+	// stage transition tess performs.
+	assert.equal(result.action, 'salvaged');
+	assert.equal(commitCount(dir), before + 1);
+	assert.equal(porcelain(dir), '');
+});
+
+test('the notice truncates long path lists instead of flooding the log', t => {
+	const { dir } = makeRepo(t);
+	for (let i = 0; i < 55; i++) writeFileSync(join(dir, `f${String(i).padStart(3, '0')}.txt`), 'x\n');
+
+	const { result, lines } = captured(() => reconcileWorkingTree(dir, { owner: OWNER, mode: 'ignore' }));
+
+	assert.equal(result.entries.length, 55, 'the returned entries are complete even when the notice is not');
+	const listed = lines.filter(l => /^\[runner]     \?\? f\d{3}\.txt$/.test(l));
+	assert.equal(listed.length, 50);
+	assert.ok(lines.some(l => l.includes('… +5 more')), `expected a truncation line, got:\n${lines.join('\n')}`);
 });
 
 test('deletion guard trips during salvage: abort, no commit, tree untouched', t => {
@@ -256,6 +317,17 @@ test('inspectWorkingTree parses porcelain codes, paths, and deletions', () => {
 		{ code: 'R ', path: 'docs/new-name.md' },
 	]);
 	assert.equal(probe.deletions, 2);
+});
+
+test('inspectWorkingTree tolerates CRLF-terminated porcelain output', () => {
+	const fixture = ' M docs/byte-formats.md\r\n?? vectors/new.json\r\n';
+
+	const probe = inspectWorkingTree('/anywhere', { exec: () => fixture });
+
+	assert.deepEqual(probe.entries, [
+		{ code: ' M', path: 'docs/byte-formats.md' },
+		{ code: '??', path: 'vectors/new.json' },
+	], 'a stray \\r would ride along on every path and break both the notice and the entry codes');
 });
 
 test('inspectWorkingTree treats no output as clean', () => {

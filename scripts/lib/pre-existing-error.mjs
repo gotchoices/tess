@@ -34,6 +34,7 @@ import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { runAgent } from './process.mjs';
+import { commitAll } from './git.mjs';
 import { indexAllTickets } from './tickets.mjs';
 
 const REPORT_FILE = '.pre-existing-error.md';
@@ -311,17 +312,10 @@ export async function handlePreExistingError(ctx) {
 	// Always remove the report so the loop terminates even if the agent left it.
 	await unlink(reportPath(ticketsDir)).catch(() => {});
 
-	if (!opts.noCommit) {
-		try {
-			const status = execSync('git status --porcelain', { cwd: repoRoot, encoding: 'utf-8' }).trim();
-			if (status) {
-				execSync('git add -A', { cwd: repoRoot, encoding: 'utf-8' });
-				execSync('git commit -m "tess: triage pre-existing test failure"', { cwd: repoRoot, encoding: 'utf-8' });
-				console.log('     Committed triage result.');
-			}
-		} catch (err) {
-			console.warn(`     Triage commit failed: ${err.message}`);
-		}
+	// Through commitAll like every other unscoped sweep the runner makes, so the triage agent's
+	// output is covered by the same mass-deletion guard and the same working-tree probe.
+	if (!opts.noCommit && commitAll(repoRoot, 'tess: triage pre-existing test failure', { context: 'pre-existing-failure triage' })) {
+		console.log('     Committed triage result.');
 	}
 	return true;
 }

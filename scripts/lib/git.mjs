@@ -107,7 +107,13 @@ export function commitAll(cwd, message, { context = message } = {}) {
 
 /** Print the dirty-tree notice.  Every reconcile branch except the clean one prints this — the
  *  mis-attribution this whole mechanism exists to prevent happened silently, and a run that
- *  says nothing about a dirty tree is how it stayed invisible. */
+ *  says nothing about a dirty tree is how it stayed invisible.
+ *
+ *  NOTE: `git status --porcelain` collapses a wholly-untracked directory into one `?? dir/`
+ *  entry, so the count is a signal that something is there, not an inventory of what gets
+ *  committed.  Fine while the notice exists to make a salvage visible; if it ever has to
+ *  enumerate exactly what was swept, the probe needs `-uall` — which also makes it walk every
+ *  file under a large untracked tree, on every ticket. */
 function printDirtyNotice(entries, label, owner) {
 	console.log(`[runner] Working tree dirty before ${label} — ${entries.length} uncommitted path(s):`);
 	for (const e of entries.slice(0, MAX_NOTICE_ENTRIES)) {
@@ -144,23 +150,41 @@ function salvageMessage(owner) {
  * Returns `{ action: 'clean' | 'salvaged' | 'ignored' | 'abort', entries }`.
  */
 export function reconcileWorkingTree(cwd, { owner = null, mode = 'salvage', noCommit = false, dryRun = false, label = 'the next ticket' } = {}) {
+	// NOTE: this probe is deliberately NOT wrapped — a `git status` that throws (git missing, the
+	// cwd not a repo, an `index.lock` held by a concurrent git command) fails the run at its first
+	// step rather than letting it proceed over a tree whose state is unknown.  If lock contention
+	// with a human working the same checkout ever makes startup flaky, retry the probe here; do
+	// not degrade it into "assume clean".
 	const probe = inspectWorkingTree(cwd);
 	if (!probe.dirty) return { action: 'clean', entries: [] };
 
 	printDirtyNotice(probe.entries, label, owner);
 
-	// `--dry-run` and `--no-commit` both mean "do not touch git", in every mode.
-	if (dryRun || noCommit || mode === 'ignore') {
-		const why = dryRun ? '--dry-run' : noCommit ? '--no-commit' : '--dirty-tree ignore';
-		console.log(`[runner]   Left in place (${why}) — it will be swept into the next commit the runner makes.`);
+	// `--dry-run` never changes what happens or what the process exits with — it reports what a
+	// real run would have done and leaves the tree exactly as it found it.
+	if (dryRun) {
+		const would = mode === 'abort'
+			? 'a real run would refuse to start (--dirty-tree abort)'
+			: mode === 'ignore'
+				? 'a real run would leave it in place (--dirty-tree ignore)'
+				: `a real run would salvage it as: ${salvageMessage(owner)}`;
+		console.log(`[runner]   Left in place (--dry-run) — ${would}.`);
 		return { action: 'ignored', entries: probe.entries };
 	}
 
+	// `abort` is a refusal to run, not a commit, so it outranks `--no-commit`: an operator who
+	// asked the runner not to start on a dirty tree means it whether or not commits are enabled.
 	if (mode === 'abort') {
 		console.error(`[runner]   Refusing to start with a dirty tree (--dirty-tree abort).  Commit or park it, then re-run:`);
 		console.error(`[runner]     git commit -a -m "<what this work actually was>"`);
 		console.error(`[runner]     git stash push -u -m "tess: pre-run working tree"`);
 		return { action: 'abort', entries: probe.entries };
+	}
+
+	if (noCommit || mode === 'ignore') {
+		const why = noCommit ? '--no-commit' : '--dirty-tree ignore';
+		console.log(`[runner]   Left in place (${why}) — it will be swept into the next commit the runner makes.`);
+		return { action: 'ignored', entries: probe.entries };
 	}
 
 	const message = salvageMessage(owner);
@@ -201,15 +225,10 @@ export async function runMigrationIfNeeded(ticketsDir, repoRoot, { noCommit, dry
 	}
 	console.log(`    Renamed ${result.renamed} ticket(s); rewrote ${result.rewrites} body/bodies; stamped .version=${FORMAT_VERSION}.`);
 	if (noCommit) return false;
-	try {
-		const status = execSync('git status --porcelain', { cwd: repoRoot, encoding: 'utf-8' }).trim();
-		if (!status) return false;
-		execSync('git add -A', { cwd: repoRoot, encoding: 'utf-8' });
-		execSync(`git commit -m "tess: migrate ticket format to v${FORMAT_VERSION}"`, { cwd: repoRoot, encoding: 'utf-8' });
-		console.log('    Committed migration.');
-		return true;
-	} catch (err) {
-		console.error(`    Migration commit failed: ${err.message}`);
-		return false;
-	}
+	// Through commitAll like every other commit the runner makes: same mass-deletion guard, and
+	// the same `--ignore-submodules=dirty` probe (a plain `git status` reads a repo whose
+	// submodule content is dirty as non-empty, then fails the commit with "nothing to commit").
+	if (!commitAll(repoRoot, `tess: migrate ticket format to v${FORMAT_VERSION}`, { context: 'ticket-format migration' })) return false;
+	console.log('    Committed migration.');
+	return true;
 }

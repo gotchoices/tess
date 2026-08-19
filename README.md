@@ -122,6 +122,7 @@ node tess/scripts/run.mjs --strategy chase
 | `--max <n>` | _unlimited_ | Stop after processing at most n tickets (with `live`, caps stage transitions rather than snapshot size) |
 | `--token-budget <n>` | _unset_ | Soft per-ticket context budget (claude only). When the running context size crosses *n* tokens, a one-shot `BUDGET_WARNING` is injected via a PreToolUse hook so the agent splits residual work into continuation tickets. See [Token Budget](#token-budget). |
 | `--no-commit` | — | Skip automatic git commit after each ticket (also skips the migration commit) |
+| `--dirty-tree <mode>` | `salvage` | What to do when the working tree is already dirty before a ticket starts: `salvage` (commit the leftovers first, under their own name), `abort` (refuse to start, exit 1), or `ignore` (proceed anyway). See [Clean Working Tree](#clean-working-tree). |
 | `--skip-blocked` | — | Pre-filter the snapshot: drop any ticket whose prereq chain reaches a slug parked in `blocked/`. The runtime cross-stage prereq gate still applies to other misses. |
 | `--refresh-index` | — | Run the local code indexer incrementally before each ticket. No-op if `tickets/.index/` does not exist. See [Local Code Search](#local-code-search-optional). |
 | `--prune-completed-days <n>` | `30` | Remove completed tickets whose landing commit is older than *n* days. Runs once per run. See [Pruning Completed Tickets](#pruning-completed-tickets). |
@@ -424,6 +425,31 @@ If the incomplete ticket is no longer present (e.g., it was manually moved), the
 ### Idle-timeout retries
 
 If the agent goes idle for too long (10 minutes with no output), the runner kills it and retries the same ticket once with a resume note pointing at the prior run's log. If the retry also times out, the runner commits a resume note to the ticket and moves on to the next one rather than aborting the whole batch — so an unattended run can finish the rest of the queue and you can pick up the timed-out ticket on the next invocation.
+
+## Clean Working Tree
+
+The runner commits with `git add -A`, so each commit it makes captures **whatever is in the tree**, not what that particular ticket changed. That is deliberate — ticket agents touch arbitrary paths and the runner cannot enumerate them ahead of time — but it means uncommitted edits that were already sitting there when a ticket started get absorbed into that ticket's commit, under that ticket's name. A killed agent leaves exactly those edits behind, and the mis-filing is silent. Nothing is lost; what breaks is attribution.
+
+So before it starts any ticket — once at startup, then again before each ticket — the runner checks the tree and, by default, commits anything it finds under its own honest message first:
+
+| What was found | Commit message |
+|---|---|
+| A ticket was interrupted (named by `tickets/.in-progress` at startup, or the previous ticket this run) | `ticket(<stage>): <slug> (partial — salvaged from interrupted run)` |
+| No owner can be worked out — your own uncommitted work, a prior `--no-commit` run | `tess: salvage uncommitted working tree (no ticket in progress)` |
+
+Every case except "the tree was already clean" prints the paths and what was done with them, and a salvage prints `git reset --soft HEAD~1` in case the attribution is wrong. A clean tree says nothing.
+
+`--dirty-tree` picks the behaviour:
+
+- **`salvage`** (default) — commit the leftovers, then carry on.
+- **`abort`** — refuse to start: print the paths and exit 1. Startup only; there is no useful place to stop mid-run, so a mid-run dirty tree is always salvaged.
+- **`ignore`** — proceed and let the leftovers roll into the next ticket's commit (the behaviour before this check existed), but say so loudly.
+
+`--no-commit` suppresses the salvage — nothing is committed, so nothing can be mis-attributed — but it does not soften `abort`. `--dry-run` reports what a real run would have done and changes nothing.
+
+If a mid-run salvage cannot be committed (it would capture a suspicious mass deletion, or git itself failed), the runner stops before the next ticket and exits non-zero rather than working on a tree it does not understand.
+
+`scripts/garden.mjs` deliberately sits outside this check: it is human-invoked and single-shot, so somebody is already watching.
 
 ## Pre-existing Test Failure Triage
 

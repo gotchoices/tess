@@ -91,7 +91,15 @@ a clean tree costs one `git status` and says nothing. `--dirty-tree` selects the
 - `ignore` — the pre-invariant behaviour (residue rolls into the next ticket's commit), still with
   the notice. An escape hatch, not a default.
 
-`--dry-run` and `--no-commit` print the notice and change nothing, in every mode.
+`--no-commit` suppresses the salvage — nothing commits, so nothing can be mis-attributed — but it
+does **not** soften `abort`: a refusal to start is not a commit, and an operator who asked for one
+gets it either way. `--dry-run` outranks everything: it prints the notice, names the commit a real
+run would have made (or the refusal it would have raised), and changes neither the tree nor the
+exit status.
+
+A mid-run salvage that cannot commit — the deletion guard tripped, or git failed — stops the run
+through the same `stopped` outcome a `.stop` file uses, but the runner exits **1** rather than
+concluding with a clean `Done.`: an unattended caller must not read a refusal as a drained board.
 
 Two details are load-bearing. The reconcile runs **before** the format migration and the
 completed-ticket prune, both of which make their own commits and would otherwise absorb the
@@ -102,9 +110,12 @@ because that gitlink bump is committable.
 
 Every unscoped `git add -A` in the runner — the per-ticket commit, the migration commit, the
 resume-note commit, the pre-existing-failure triage commit — is safe as a consequence of this
-invariant, and none of them needed changing. Salvage flows through the same `commitAll` as
-everything else, so the mass-deletion guard still applies: if salvage cannot commit, the runner
-refuses to proceed rather than starting a ticket on top of a tree it does not understand.
+invariant. All four, and the salvage itself, go through the single `commitAll` in
+`scripts/lib/git.mjs`, so one probe and one mass-deletion guard cover the lot: if a commit cannot
+be made, the runner says so rather than proceeding on a tree it does not understand. The two
+commits that stage a *named path* instead (`prune-completed.mjs` for `tickets/complete`,
+`pre-existing-error.mjs` for the known-failure ledger) are safe by their own construction and
+deliberately stay outside `commitAll` — a scoped `git add` cannot pick up anything foreign.
 
 `scripts/garden.mjs` is deliberately **outside** this pipeline. It commits at the repo root like
 the runner does, but it is human-invoked and single-shot, so a human is present to see what state

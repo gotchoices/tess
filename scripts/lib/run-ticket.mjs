@@ -101,6 +101,10 @@ export async function runOneStage(ticket, ctx, { label }) {
 	});
 	if (reconciled.action === 'abort') {
 		console.error('\n⏹  Working tree could not be salvaged — halting before next ticket.');
+		// `stopped` is what every strategy already breaks on, but a `.stop` file is a *requested*
+		// halt and this is a failure — flag it on the shared per-run ctx so run.mjs can exit
+		// non-zero instead of concluding with a clean "Done."
+		ctx.dirtyTreeHalt = true;
 		return { kind: 'stopped' };
 	}
 
