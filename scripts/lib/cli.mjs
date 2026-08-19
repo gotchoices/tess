@@ -5,6 +5,7 @@
 import { KNOWN_STAGES, PENDING_STAGES } from './tickets.mjs';
 import { KNOWN_STRATEGIES, DEFAULT_STRATEGY } from './strategies/index.mjs';
 import { DEFAULT_PRUNE_AGE_DAYS } from './prune-completed.mjs';
+import { DIRTY_TREE_MODES } from './git.mjs';
 
 export function printHelp() {
 	const lines = [
@@ -54,6 +55,15 @@ export function printHelp() {
 		'                       up next within the chain.  In `batch`, splits roll into',
 		'                       the next run.                          (default: unset)',
 		'  --no-commit          Skip automatic git commit after each ticket',
+		'  --dirty-tree <mode>  salvage | abort | ignore                 (default: salvage)',
+		'                       What to do when the working tree is already dirty before a',
+		'                       ticket starts (e.g. a killed agent left partial edits behind).',
+		'                       Commits capture the whole tree, so leftover edits would',
+		'                       otherwise land in the next ticket\'s commit under the wrong name.',
+		'                       salvage: commit the residue first, attributed to the ticket that',
+		'                                was interrupted (or as an explicit no-owner salvage).',
+		'                       abort:   refuse to start; print the paths and exit 1.',
+		'                       ignore:  proceed anyway (the old behaviour), but say so loudly.',
 		'  --skip-blocked       Pre-filter the snapshot: drop any ticket whose prereq',
 		'                       chain reaches a slug parked in blocked/.  The runtime',
 		'                       cross-stage prereq gate still applies to other misses',
@@ -90,6 +100,7 @@ export function parseArgs(argv) {
 		noCommit: false,
 		skipBlocked: false,
 		refreshIndex: false,
+		dirtyTree: DIRTY_TREE_MODES[0],
 		maxTickets: Infinity,
 		tokenBudget: Infinity,
 		stagesRaw: null,
@@ -114,6 +125,9 @@ export function parseArgs(argv) {
 				break;
 			case '--no-commit':
 				opts.noCommit = true;
+				break;
+			case '--dirty-tree':
+				opts.dirtyTree = argv[++i];
 				break;
 			case '--skip-blocked':
 				opts.skipBlocked = true;
@@ -154,6 +168,11 @@ export function parseArgs(argv) {
 
 	if (!KNOWN_STRATEGIES.includes(opts.strategy)) {
 		console.error(`Unknown strategy: "${opts.strategy}". Valid strategies: ${KNOWN_STRATEGIES.join(', ')}`);
+		process.exit(1);
+	}
+
+	if (!DIRTY_TREE_MODES.includes(opts.dirtyTree)) {
+		console.error(`Unknown --dirty-tree mode: "${opts.dirtyTree}". Valid modes: ${DIRTY_TREE_MODES.join(', ')}`);
 		process.exit(1);
 	}
 

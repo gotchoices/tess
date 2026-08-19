@@ -43,9 +43,9 @@ import { fileURLToPath } from 'node:url';
 
 import { discoverTickets, formatSeq, indexAllTickets, findUnsatisfiedPrereq, findTransitiveBlocker, KNOWN_STAGES } from './lib/tickets.mjs';
 import { topoSortAndCheck } from './lib/topo.mjs';
-import { readAndClearInProgress, addResumeNote } from './lib/state.mjs';
+import { readAndClearInProgress, readInProgress, addResumeNote } from './lib/state.mjs';
 import { ensureLogsDir, pruneOldLogs } from './lib/logging.mjs';
-import { getTessVersion, runMigrationIfNeeded } from './lib/git.mjs';
+import { getTessVersion, runMigrationIfNeeded, reconcileWorkingTree } from './lib/git.mjs';
 import { parseArgs, formatStageSummary } from './lib/cli.mjs';
 import { strategies } from './lib/strategies/index.mjs';
 import { handlePreExistingError, pruneKnownFailures } from './lib/pre-existing-error.mjs';
@@ -60,6 +60,25 @@ async function main() {
 
 	const repoRoot = process.cwd();
 	const ticketsDir = join(repoRoot, 'tickets');
+
+	// ── Clean-tree invariant ──
+	// Every commit the runner makes stages the whole tree, so anything already dirty when a
+	// ticket starts gets captured by whichever ticket finishes next, under that ticket's name.
+	// Reconcile first and the sweep has nothing foreign left to pick up.  This must stay ahead
+	// of the migration and prune steps below: both make their own commits and would otherwise
+	// absorb the residue before anyone looked at it.  Ownership comes from the `.in-progress`
+	// marker, read non-destructively — `readAndClearInProgress` still owns clearing it, after
+	// the `--dry-run` early return.
+	const interrupted = await readInProgress(ticketsDir);
+	const reconciled = reconcileWorkingTree(repoRoot, {
+		owner: interrupted ? { stage: interrupted.stage, slug: interrupted.slug } : null,
+		mode: opts.dirtyTree,
+		noCommit: opts.noCommit,
+		dryRun: opts.dryRun,
+		label: 'this run',
+	});
+	if (reconciled.action === 'abort') process.exit(1);
+
 	const tessVersion = getTessVersion(TESS_ROOT);
 
 	// Auto-migrate legacy format before snapshotting tickets.

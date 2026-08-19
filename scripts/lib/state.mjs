@@ -37,12 +37,35 @@ function inProgressPath(ticketsDir) {
 	return join(ticketsDir, IN_PROGRESS_FILE);
 }
 
-/** Read and clear any prior in-progress state. Returns parsed object or null. */
-export async function readAndClearInProgress(ticketsDir) {
-	const p = inProgressPath(ticketsDir);
+async function readInProgressRaw(ticketsDir) {
 	try {
-		const raw = await readFile(p, 'utf-8');
-		await unlink(p).catch(() => {});
+		return await readFile(inProgressPath(ticketsDir), 'utf-8');
+	} catch {
+		return null;
+	}
+}
+
+/** Peek at any prior in-progress state WITHOUT clearing it. Returns parsed object or null.
+ *  Used by the startup working-tree reconcile to attribute leftover edits to the ticket that
+ *  was interrupted; the marker must survive that read so the resume-note path (and `--dry-run`)
+ *  still sees it. */
+export async function readInProgress(ticketsDir) {
+	const raw = await readInProgressRaw(ticketsDir);
+	if (raw === null) return null;
+	try {
+		return JSON.parse(raw);
+	} catch {
+		return null;
+	}
+}
+
+/** Read and clear any prior in-progress state. Returns parsed object or null.  A marker that
+ *  fails to parse is still removed, so a corrupt file cannot wedge every future run. */
+export async function readAndClearInProgress(ticketsDir) {
+	const raw = await readInProgressRaw(ticketsDir);
+	if (raw === null) return null;
+	await unlink(inProgressPath(ticketsDir)).catch(() => {});
+	try {
 		return JSON.parse(raw);
 	} catch {
 		return null;

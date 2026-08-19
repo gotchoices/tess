@@ -13,7 +13,9 @@
  *   - 'agent-error'  : agent exited non-zero (non-timeout); the strategy
  *                      decides whether to abort the run.  `exitCode` is set.
  *   - 'skipped'      : ticket file was already moved before we ran it
- *   - 'stopped'      : .stop file detected; no work performed
+ *   - 'stopped'      : halt requested — either a .stop file was detected, or the runner
+ *                      refused to continue with a working tree it could not salvage; no
+ *                      work performed
  *   - 'deferred'     : a cross-stage prereq is still behind (or parked in
  *                      blocked/); the strategy adds the slug to its run-local
  *                      deferred set so dependents cascade
@@ -21,10 +23,9 @@
 
 import { writeFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { execSync } from 'node:child_process';
 import { NEXT_STAGE, formatSeq, findUnsatisfiedPrereq } from './tickets.mjs';
 import { runAgent, MAX_TIMEOUT_RETRIES } from './process.mjs';
-import { commitTicket } from './git.mjs';
+import { commitAll, commitTicket, reconcileWorkingTree } from './git.mjs';
 import { writeInProgress, clearInProgress, addResumeNote, checkStop } from './state.mjs';
 import { logPath } from './logging.mjs';
 import { buildPrompt } from './prompt.mjs';
@@ -44,12 +45,9 @@ async function persistResumeNote(ticket, ctx, { startedAt, logFile, commitVerb }
 		await access(ticket.path, constants.R_OK);
 		await addResumeNote(ticket.path, { startedAt, agent: opts.agent, logFile });
 		if (!opts.noCommit) {
-			try {
-				execSync('git add -A', { cwd: repoRoot, encoding: 'utf-8' });
-				execSync(`git commit -m "tess: ${commitVerb} on ${ticket.slug} — added resume note"`, { cwd: repoRoot, encoding: 'utf-8' });
-			} catch (err) {
-				console.warn(`    Failed to commit resume note: ${err.message}`);
-			}
+			// Through commitAll, not a bare `git add -A` + `git commit` pair, so this sweep is
+			// covered by the mass-deletion guard like every other commit the runner makes.
+			commitAll(repoRoot, `tess: ${commitVerb} on ${ticket.slug} — added resume note`, { context: ticket.slug });
 		}
 	} catch { /* ticket file may have been moved */ }
 }
@@ -81,6 +79,29 @@ export async function runOneStage(ticket, ctx, { label }) {
 	if (unsatisfied) {
 		console.log(`\n  ${label} Deferred ${ticket.file}: prereq "${unsatisfied.slug}" is in ${unsatisfied.stage}/.\n`);
 		return { kind: 'deferred', prereq: unsatisfied.slug, prereqStage: unsatisfied.stage };
+	}
+
+	// Clean-tree invariant, mid-run arm.  Anything dirty right now belongs to the ticket the
+	// runner ran *before* this one — the second-and-later agent-error path deliberately skips
+	// persistResumeNote and so commits nothing, carrying its residue forward.  Salvage it under
+	// the previous ticket's name before this agent adds edits of its own.
+	//
+	// Once per ticket, ahead of the retry loop: a retry's dirt is this ticket's own partial work,
+	// already correctly attributed, and salvaging it here would split it into a separate commit
+	// and defeat the resume-note mechanism.
+	//
+	// `abort` is a startup-only choice — aborting mid-run would leave the board half-processed —
+	// so mid-run salvages unless the operator asked to ignore.
+	const reconciled = reconcileWorkingTree(repoRoot, {
+		owner: ctx.lastRanTicket ? { stage: ctx.lastRanTicket.stage, slug: ctx.lastRanTicket.slug } : null,
+		mode: opts.dirtyTree === 'ignore' ? 'ignore' : 'salvage',
+		noCommit: opts.noCommit,
+		dryRun: opts.dryRun,
+		label: `${ticket.stage}/${ticket.file}`,
+	});
+	if (reconciled.action === 'abort') {
+		console.error('\n⏹  Working tree could not be salvaged — halting before next ticket.');
+		return { kind: 'stopped' };
 	}
 
 	let attempt = 0;
@@ -155,6 +176,14 @@ export async function runOneStage(ticket, ctx, { label }) {
 			}
 			throw err;
 		}
+		// From here on, an agent has touched the tree, so any dirt the *next* ticket finds is
+		// most plausibly this ticket's.  Set before the call, not after: an agent that errors or
+		// times out has still had the chance to edit files.
+		// NOTE: if a human edits the tree between two tickets, that edit is credited to this
+		// ticket instead.  Accepted: a loud, wrong-by-one attribution beats a silent sweep into
+		// whichever ticket happens to finish next.
+		ctx.lastRanTicket = ticket;
+
 		lastResult = await runAgent(opts.agent, prompt, repoRoot, currentLog, {
 			stage: ticket.stage,
 			tokenBudget: opts.tokenBudget,

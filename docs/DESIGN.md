@@ -60,9 +60,61 @@ The pipeline stages, adapted from the original optimystic system:
 
 ---
 
+## The Clean-Tree Invariant
+
+**Before any ticket agent starts, the working tree is clean.** This is the first step of every
+run, and it repeats before each ticket.
+
+The runner commits with `git add -A`, so every commit it makes captures *whatever is in the tree*,
+not *what that ticket changed*. That is deliberate — ticket agents touch arbitrary paths and the
+runner has no way to enumerate them ahead of time — but it means any edit already sitting in the
+tree gets absorbed by whichever ticket finishes next, under that ticket's name. A killed agent
+leaves exactly that residue behind, and the sweep that mis-files it is silent. Nothing is lost;
+what breaks is attribution, which is what `git blame`, `git bisect`, and any "these files landed
+together" audit rely on.
+
+Rather than scope each commit, the runner guarantees there is nothing foreign left to sweep.
+`reconcileWorkingTree` (`scripts/lib/git.mjs`) probes the tree and, by default, commits any
+residue under its own honest message *before* the next agent adds edits of its own:
+
+| Situation | Commit message |
+|---|---|
+| An interrupted ticket is named by the `.in-progress` marker (startup) or was the last ticket this run actually ran (mid-run) | `ticket(<stage>): <slug> (partial — salvaged from interrupted run)` |
+| No owner can be determined — human WIP, an earlier `--no-commit` run, a marker already cleared | `tess: salvage uncommitted working tree (no ticket in progress)` |
+
+Every outcome except "tree was already clean" prints the dirty paths and what was done with them;
+a clean tree costs one `git status` and says nothing. `--dirty-tree` selects the behaviour:
+
+- `salvage` (default) — commit the residue, then continue.
+- `abort` — refuse to start, print the paths and the commands to sort it out, exit 1. Startup only;
+  mid-run there is no useful place to stop, so mid-run always salvages.
+- `ignore` — the pre-invariant behaviour (residue rolls into the next ticket's commit), still with
+  the notice. An escape hatch, not a default.
+
+`--dry-run` and `--no-commit` print the notice and change nothing, in every mode.
+
+Two details are load-bearing. The reconcile runs **before** the format migration and the
+completed-ticket prune, both of which make their own commits and would otherwise absorb the
+residue first. And the probe uses `git status --porcelain --ignore-submodules=dirty`: a submodule's
+dirty *content* is not committable from the parent repo, so counting it as dirt would make every
+run attempt a salvage that stages nothing and fails. A submodule whose HEAD moved still counts,
+because that gitlink bump is committable.
+
+Every unscoped `git add -A` in the runner — the per-ticket commit, the migration commit, the
+resume-note commit, the pre-existing-failure triage commit — is safe as a consequence of this
+invariant, and none of them needed changing. Salvage flows through the same `commitAll` as
+everything else, so the mass-deletion guard still applies: if salvage cannot commit, the runner
+refuses to proceed rather than starting a ticket on top of a tree it does not understand.
+
+`scripts/garden.mjs` is deliberately **outside** this pipeline. It commits at the repo root like
+the runner does, but it is human-invoked and single-shot, so a human is present to see what state
+the tree was in.
+
+---
+
 ## Traversal Strategies
 
-The runner is split into two layers: a fixed pipeline (discover → topo-sort → agent invocation → commit) and a pluggable **strategy** that decides which ticket runs next. Strategies live in `tess/scripts/lib/strategies/` and share the same per-ticket runner (`lib/run-ticket.mjs`), so they cannot diverge on idle-timeout retries, in-progress state, or commit cadence — only on selection. `batch` and `chase` select from a snapshot frozen at startup; `live` re-runs discovery every iteration.
+The runner is split into two layers: a fixed pipeline (reconcile → discover → topo-sort → agent invocation → commit) and a pluggable **strategy** that decides which ticket runs next. Strategies live in `tess/scripts/lib/strategies/` and share the same per-ticket runner (`lib/run-ticket.mjs`), so they cannot diverge on idle-timeout retries, in-progress state, or commit cadence — only on selection. `batch` and `chase` select from a snapshot frozen at startup; `live` re-runs discovery every iteration.
 
 ### `live` — continuously reassessed (default)
 
