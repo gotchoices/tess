@@ -9,6 +9,7 @@
 import { readdir, readFile, access } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { constants } from 'node:fs';
+import { readTombstones } from './tombstones.mjs';
 
 /** Default stages from which to pull tickets (backlog excluded — parked by design). */
 export const PENDING_STAGES = ['review', 'implement', 'fix', 'plan'];
@@ -72,6 +73,12 @@ export function isPrereqSatisfied(prereqStage, ticketStage) {
  * Pass `{ withPrereqs: true }` to also read each ticket's `prereq:` header,
  * which lets callers walk the prereq DAG across stages (e.g. transitive
  * blocked-detection).  This costs one read per ticket and is opt-in.
+ *
+ * Tickets pruned out of `complete/` are folded in last, from the tombstone
+ * ledger, as `{ stage: 'complete', pruned: true, … }` records with no `file`.
+ * Without them a landed-then-pruned prereq reads exactly like a slug that
+ * never existed.  They are added last so a live board entry always wins — a
+ * slug reopened after a prior completion resolves to where it actually is.
  */
 const STAGE_INDEX_ORDER = ['complete', 'review', 'implement', 'fix', 'plan', 'backlog', 'blocked'];
 export async function indexAllTickets(ticketsDir, { withPrereqs = false } = {}) {
@@ -100,6 +107,17 @@ export async function indexAllTickets(ticketsDir, { withPrereqs = false } = {}) 
 			}
 			index.set(slug, record);
 		}
+	}
+	for (const [slug, tomb] of await readTombstones(ticketsDir)) {
+		if (index.has(slug)) continue;
+		index.set(slug, {
+			stage: 'complete',
+			file: null,
+			pruned: true,
+			completedAt: tomb.completedAt ?? null,
+			commit: tomb.commit ?? null,
+			...(withPrereqs ? { prereqs: [] } : {}),
+		});
 	}
 	return index;
 }
@@ -132,25 +150,67 @@ export function findTransitiveBlocker(ticket, index) {
 }
 
 /**
+ * Resolve every prereq of `ticket` against the cross-stage index, returning
+ * one record per slug with a `status`:
+ *
+ *   - `satisfied` — on the board in a strictly later rank (or the same stage,
+ *      where the topo sort orders it).
+ *   - `behind`    — on the board but at a lower/peer rank, or in `blocked/`.
+ *   - `pruned`    — not on the board but carrying a tombstone: it completed
+ *      and was later swept out of `complete/`.  Satisfied, and carries
+ *      `completedAt` / `commit` so the runner can say so out loud.
+ *   - `unknown`   — matches neither the board nor a tombstone.  Treated as
+ *      satisfied (the historical assumption: already complete, or a stale
+ *      reference), but reported, since it is the one case nothing can vouch
+ *      for.
+ */
+export function resolvePrereqs(ticket, index) {
+	return ticket.prereqs.map(slug => {
+		const found = index.get(slug);
+		if (!found) return { slug, status: 'unknown' };
+		if (found.pruned) {
+			return { slug, status: 'pruned', stage: found.stage, completedAt: found.completedAt, commit: found.commit };
+		}
+		const status = isPrereqSatisfied(found.stage, ticket.stage) ? 'satisfied' : 'behind';
+		return { slug, status, stage: found.stage };
+	});
+}
+
+/**
+ * One log line per prereq whose resolution is worth saying out loud — the
+ * pruned ones (so a landed prereq never reads as missing work) and the unknown
+ * ones (so a genuinely unresolvable slug stays visible instead of being
+ * silently assumed complete).  Board-resolved prereqs produce nothing; their
+ * state is already evident from the board.
+ */
+export function prereqNotes(resolutions) {
+	const notes = [];
+	for (const r of resolutions) {
+		if (r.status === 'pruned') {
+			const when = r.completedAt ?? 'unknown date';
+			const commit = r.commit ? `, commit ${r.commit.slice(0, 8)}` : '';
+			notes.push(`prereq "${r.slug}": completed ${when}, pruned${commit}`);
+		} else if (r.status === 'unknown') {
+			notes.push(`prereq "${r.slug}": not on the board and no tombstone — unknown, assumed complete`);
+		}
+	}
+	return notes;
+}
+
+/**
  * Resolve a ticket's prereqs against the cross-stage index and return the
  * first one that's *behind* (lower rank, peer-but-different stage, or
  * parked in `blocked/`).  Returns `null` when every prereq is either
- * satisfied (same stage or strictly later) or absent from the index
- * (assumed already complete or a stale reference).
+ * satisfied (same stage or strictly later), tombstoned (completed, then
+ * pruned out of `complete/`), or absent entirely (assumed already complete
+ * or a stale reference).
  *
  * Pass a prebuilt index to avoid re-scanning when checking many tickets;
  * omit it for one-shot checks at the moment of processing.
  */
 export async function findUnsatisfiedPrereq(ticket, ticketsDir, index) {
 	const idx = index ?? await indexAllTickets(ticketsDir);
-	for (const slug of ticket.prereqs) {
-		const found = idx.get(slug);
-		if (!found) continue;
-		if (!isPrereqSatisfied(found.stage, ticket.stage)) {
-			return { slug, stage: found.stage };
-		}
-	}
-	return null;
+	return resolvePrereqs(ticket, idx).find(r => r.status === 'behind') ?? null;
 }
 
 const SEQUENCE_PREFIX = /^(\d+(?:\.\d+)?)-(.+)\.md$/;
@@ -168,14 +228,71 @@ export function parseSlug(filename) {
 	return match ? match[1] : base;
 }
 
+/**
+ * Read a single-line header field's raw value, or null when the field is
+ * absent.  The header is the region above the first `----` divider.
+ *
+ * The horizontal-whitespace class matters: a plain `\s*` after the colon also
+ * matches the newline, so an empty field (`prereq:` with nothing after it)
+ * would swallow the *next* header line as its value — which is exactly how
+ * `prereq:` followed by `files: …` came to yield a file path as a prereq slug.
+ * An empty field yields `''`, which every caller treats as absent.
+ */
+function headerField(content, pattern) {
+	// `[ \t]` — a literal space and a literal tab — deliberately, not `[^\S\r\n]`.
+	// This pattern is assembled in a template literal, where a regex class escape
+	// silently degrades: `\S` becomes a bare `S`, so `[^\S\r\n]` compiles as
+	// "any char except S/CR/LF" and, under the `i` flag, greedily eats the value's
+	// leading characters up to its first `s` (`difficulty: easy` → `sy`). A tab
+	// written as `\t` survives, because a literal tab in a character class means
+	// the same thing. Keep regex-class escapes out of this string.
+	const match = headerRegion(content).match(new RegExp(`^(?:${pattern}):[ \t]*(.*)$`, 'mi'));
+	return match ? match[1].trim() : null;
+}
+
+/** A line consisting only of three-or-more dashes: `---`, `----`, and longer. */
+const FENCE_RE = /^-{3,}[^\S\r\n]*$/;
+
+/**
+ * Isolate a ticket's header block — the fields above the prose body.
+ *
+ * The fence is *optional and of two widths* in practice.  A census of this
+ * repo's 643 tickets found 433 opening with `---` (YAML-style), 56 with the
+ * `----` the template shows, and 154 with no fence at all, so anything that
+ * assumes one shape is wrong for most of the corpus.  We therefore treat the
+ * header as an optionally-fenced block:
+ *
+ *   - if line 0 is a fence, the header starts on the line after it;
+ *     otherwise it starts at line 0;
+ *   - the header ends at the next fence at or after that start, or at
+ *     end-of-document when there is none.
+ *
+ * The "at or after that start" is the load-bearing part.  Searching for a
+ * fence from index 0 would match the *opening* one, collapsing the header to
+ * nothing and silently dropping every `prereq:` in the 433 three-dash tickets
+ * — a far worse failure than the unbounded region it replaces.  (The previous
+ * `indexOf('\n----')` avoided that trap only by accident: requiring a leading
+ * newline skipped a fence at index 0, and the three-dash majority fell through
+ * to "no divider found → whole document".)
+ *
+ * For an unfenced ticket the result is strictly tighter than treating the
+ * whole document as header: a `---` rule in the prose now ends the region, so
+ * a body line beginning `prereq:` or `difficulty:` can no longer be read as a
+ * field.
+ */
+function headerRegion(content) {
+	const lines = content.split(/\r?\n/);
+	const start = lines.length > 0 && FENCE_RE.test(lines[0]) ? 1 : 0;
+	let end = start;
+	while (end < lines.length && !FENCE_RE.test(lines[end])) end++;
+	return lines.slice(start, end).join('\n');
+}
+
 /** Parse the `prereq:` header field into an array of slug strings.  Tolerates legacy `dependencies:`. */
 export function parsePrereqs(content) {
-	// Header sits above the first `----` divider; parse only that region.
-	const divIdx = content.indexOf('\n----');
-	const header = divIdx === -1 ? content : content.slice(0, divIdx);
-	const match = header.match(/^(?:prereq|dependencies):\s*(.*)$/mi);
-	if (!match) return [];
-	return match[1]
+	const value = headerField(content, 'prereq|dependencies');
+	if (value == null) return [];
+	return value
 		.split(',')
 		.map(s => s.trim())
 		.filter(Boolean)
@@ -192,12 +309,8 @@ export function parsePrereqs(content) {
  * token (and the `medium` default) happens at resolution time.
  */
 export function parseDifficulty(content) {
-	const divIdx = content.indexOf('\n----');
-	const header = divIdx === -1 ? content : content.slice(0, divIdx);
-	const match = header.match(/^difficulty:\s*(.*)$/mi);
-	if (!match) return null;
-	const value = match[1].trim().toLowerCase();
-	return value || null;
+	const value = headerField(content, 'difficulty');
+	return value ? value.toLowerCase() : null;
 }
 
 /**

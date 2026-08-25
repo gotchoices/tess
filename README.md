@@ -80,7 +80,8 @@ TODO
 **Cross-stage prereqs.** Prereqs are resolved across the whole pipeline, not just the current stage. The runner ranks stages as `backlog (0) < fix = plan (1) < implement (2) < review (3) < complete (4)` and treats a prereq as *satisfied* only when it sits in a strictly later rank than its dependent (same-stage ordering is enforced by topo sort). Practical effect:
 
 - Prereq still in an earlier stage, in a peer-but-different stage (e.g. dependent in `plan/` with prereq still in `fix/`), or parked in `blocked/` → the dependent is **deferred** for this run and any sibling listing it as `prereq:` is deferred too. The cascade is transitive through the queue.
-- Unresolved prereq slugs (not present anywhere in the pipeline) are assumed already complete and ignored.
+- Prereq slug not on the board but carrying a **tombstone** in `tickets/.pruned-tickets.jsonl` → it completed and was later swept out of `complete/` (see [Pruning Completed Tickets](#pruning-completed-tickets)). Satisfied, and the runner says so — `prereq "<slug>": completed <date>, pruned` — in the dry-run listing, the run log, and the agent's prompt, so a landed prereq never reads as missing work.
+- Prereq slug matching neither the board nor a tombstone is **unknown**: still assumed already complete and ignored (a stale reference, or work that predates the tombstone ledger), but reported rather than silently dropped, since it is the one case nothing can vouch for.
 
 Agents do **not** need to mirror this state by hand — `blocked/` is reserved for human sign-off and missing external code, never for "my prereq isn't done yet." See `agent-rules/tickets.md` for the agent-facing rule.
 
@@ -222,7 +223,15 @@ node tess/scripts/run.mjs --prune-completed-days 90
 node tess/scripts/run.mjs --no-prune-completed
 ```
 
-`--dry-run` reports what the sweep would remove without deleting anything. The sweep also honors `--no-commit` (deletes the files but leaves the commit to you).
+`--dry-run` reports what the sweep would remove without deleting anything (and writes no tombstones). The sweep also honors `--no-commit` (deletes the files but leaves the commit to you).
+
+**Tombstones.** Deleting a completed ticket also deletes the board's only evidence that the work landed: every `prereq:` naming that slug becomes unresolvable, and a *completed-and-pruned* prereq then reads exactly like one that never existed. So before each removal the sweep appends one record per ticket to `tickets/.pruned-tickets.jsonl`:
+
+```json
+{"slug":"session-store","file":"3-session-store.md","completedAt":"2026-01-02","commit":"<sha>","prunedAt":"2026-02-04T10:11:12.000Z"}
+```
+
+The ledger is git-tracked (that is the whole point — it outlives the ticket) and strictly append-only: a prune costs one append regardless of ledger size, and two branches that both pruned merge by union instead of conflicting. `completedAt` and `commit` come from the ticket file's last commit, so the record answers "did this land, and when?" without a `git log` dig. Malformed lines are skipped on read; a slug appearing twice (a ticket reopened, re-completed and re-pruned) resolves to its last record.
 
 ## Backlog Gardening
 
@@ -353,6 +362,10 @@ tradeoffs: <backlog tickets: one sentence on why a maintainer might decline or d
 
 <TODO list of sub-tasks, organized by phase if needed>
 ```
+
+**Header fences.** The header is the field block above the body. A **fence** is a line of three or more dashes and nothing else, and the parser accepts every shape found in practice: a closing fence only (as above), an opening *and* closing pair (`----` … `----` or YAML-style `---` … `---`), or no fence at all. If the first line is a fence the header starts after it; the header then ends at the next fence, or at end-of-file if there is none.
+
+Two consequences: in an unfenced ticket a `---` horizontal rule in the prose ends the header, and any line inside the header region beginning `prereq:` or `difficulty:` is read as a field regardless of intent. An empty field (`prereq:` with nothing after it) is valid and parses as absent.
 
 **Filename convention:** `<slug>.md` with an optional `<sequence>-` prefix where lower sequence runs sooner (integer or decimal, e.g. `3-my-feature.md` or `3.5-my-feature.md`). The sequence number is not part of the ticket's identity — reference tickets by slug only in `prereq:`.
 

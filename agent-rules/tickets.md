@@ -28,6 +28,8 @@ You own the full stage transition. When done:
 
 **Never sanitize the working tree.** Don't run `git checkout -- `, `git restore`, `git reset`, `git clean`, or `git stash`, and don't otherwise revert or discard changes you didn't make. Runner may be processing other tickets and a human may be promoting tickets concurrently — uncommitted board moves and in-flight tree edits are not yours to undo. Touch only the files your own ticket requires.
 
+**A `prereq:` slug you can't find on the board has probably already landed.** Completed tickets are archived, then swept out of `complete/` once they age out, so a finished prereq eventually leaves no ticket file behind. Check `tickets/.pruned-tickets.jsonl` — one JSON record per swept ticket, with its slug, completion date, and landing commit — before concluding anything is missing. The runner also resolves this for you: if your prompt carries a `## Prereq status` section, a slug marked `pruned` is **done**, and one marked `unknown` matched neither the board nor that ledger. Never file a ticket or route to `blocked/` on "the prereq doesn't exist."
+
 **`prereq:` is a hint, not an instruction to park.** Assume every `prereq:` ticket's work will land; design as if it has. The only reasons to deviate are the two `blocked/` categories below — neither is "an upstream tess ticket isn't done yet." Otherwise pick the best option, document the tradeoff in the next-stage ticket, and proceed.
 
 Stages (overview — full rules for your active stage under "Active stage details" below):
@@ -214,3 +216,14 @@ tradeoffs: <backlog tickets; one honest sentence on why a maintainer might decli
 <timeless architecture description focused on prose, diagrams, and interfaces/types/schema>
 
 <if implement: TODO list of tasks - avoid numbering of tasks, besides phases>
+----
+
+**Header fences.** The header is the field block above the body, and the parser accepts all three shapes already in the tree — write new tickets as shown above, but don't "correct" an existing ticket into a different one:
+
+- **Closing fence only** (the template above): fields from line 1, then a fence line.
+- **Opened and closed** — `----` … `----`, or YAML-style `---` … `---`. If the *first* line is a fence, the header starts after it.
+- **No fence at all**: the header runs to the first fence line anywhere in the file, or to end-of-file.
+
+A fence is a line of three or more dashes and nothing else. Two consequences worth knowing: a `---` horizontal rule in the prose of an unfenced ticket **ends the header**, and any body line starting `prereq:` or `difficulty:` inside the header region is read as a field. Keep prose that begins with a field name below the fence.
+
+**Leave a field off rather than leaving it empty** when it has no value — `prereq:` with nothing after it is fine and parses as "no prereqs", but the field name has to be alone on its line.

@@ -23,7 +23,7 @@
 
 import { writeFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { NEXT_STAGE, formatSeq, findUnsatisfiedPrereq } from './tickets.mjs';
+import { NEXT_STAGE, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs } from './tickets.mjs';
 import { runAgent, MAX_TIMEOUT_RETRIES } from './process.mjs';
 import { commitAll, commitTicket, reconcileWorkingTree } from './git.mjs';
 import { writeInProgress, clearInProgress, addResumeNote, checkStop } from './state.mjs';
@@ -75,11 +75,19 @@ export async function runOneStage(ticket, ctx, { label }) {
 	// Cross-stage prereq gate: if a prereq lives in an earlier-rank stage,
 	// a peer-but-different stage, or blocked/, defer this ticket.  Same-stage
 	// edges are handled by the per-stage topo sort and pass through here.
-	const unsatisfied = await findUnsatisfiedPrereq(ticket, ticketsDir);
+	// Resolving also surfaces the prereqs the board alone cannot explain —
+	// completed-then-pruned (satisfied, via tombstone) and unknown — which both
+	// the log and the agent's prompt carry, so neither reads as missing work.
+	const prereqStatus = ticket.prereqs.length > 0
+		? resolvePrereqs(ticket, await indexAllTickets(ticketsDir))
+		: [];
+	const unsatisfied = prereqStatus.find(r => r.status === 'behind');
 	if (unsatisfied) {
 		console.log(`\n  ${label} Deferred ${ticket.file}: prereq "${unsatisfied.slug}" is in ${unsatisfied.stage}/.\n`);
 		return { kind: 'deferred', prereq: unsatisfied.slug, prereqStage: unsatisfied.stage };
 	}
+	const notes = prereqNotes(prereqStatus);
+	for (const note of notes) console.log(`  ${label} ${note}`);
 
 	// Clean-tree invariant, mid-run arm.  Anything dirty right now belongs to the ticket the
 	// runner ran *before* this one — the second-and-later agent-error path deliberately skips
@@ -171,7 +179,7 @@ export async function runOneStage(ticket, ctx, { label }) {
 
 		let prompt;
 		try {
-			prompt = await buildPrompt(ticket, tessRoot, repoRoot);
+			prompt = await buildPrompt(ticket, tessRoot, repoRoot, notes);
 		} catch (err) {
 			if (err.code === 'ENOENT') {
 				await clearInProgress(ticketsDir);

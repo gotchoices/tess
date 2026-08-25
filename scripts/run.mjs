@@ -41,7 +41,7 @@ import { mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { discoverTickets, formatSeq, indexAllTickets, findUnsatisfiedPrereq, findTransitiveBlocker, KNOWN_STAGES } from './lib/tickets.mjs';
+import { discoverTickets, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, findTransitiveBlocker, KNOWN_STAGES } from './lib/tickets.mjs';
 import { topoSortAndCheck } from './lib/topo.mjs';
 import { readAndClearInProgress, readInProgress, addResumeNote } from './lib/state.mjs';
 import { ensureLogsDir, pruneOldLogs } from './lib/logging.mjs';
@@ -177,9 +177,11 @@ async function main() {
 		// actual deferral happens at runtime against the live filesystem.
 		const ticketIndex = await indexAllTickets(ticketsDir);
 		for (const t of allTickets) {
-			const unsat = await findUnsatisfiedPrereq(t, ticketsDir, ticketIndex);
+			const resolutions = resolvePrereqs(t, ticketIndex);
+			const unsat = resolutions.find(r => r.status === 'behind');
 			const note = unsat ? `  ⚠ deferred: prereq "${unsat.slug}" in ${unsat.stage}/` : '';
 			console.log(`  [${t.stage.padEnd(9)}] seq ${formatSeq(t.sequence).padStart(4)}  ${t.file}${note}`);
+			for (const line of prereqNotes(resolutions)) console.log(`${' '.repeat(24)}${line}`);
 		}
 		const limitNote = totalFound > allTickets.length ? ` (limited to ${allTickets.length} of ${totalFound})` : '';
 		console.log(`\n${allTickets.length} ticket(s) would be processed${limitNote}.`);

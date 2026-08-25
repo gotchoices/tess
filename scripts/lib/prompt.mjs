@@ -18,8 +18,16 @@ import { join } from 'node:path';
 import { NEXT_STAGE, formatSeq } from './tickets.mjs';
 import { detectSearch } from './detect-search.mjs';
 
-/** Build the full prompt for a ticket. */
-export async function buildPrompt(ticket, tessRoot, repoRoot) {
+/**
+ * Build the full prompt for a ticket.
+ *
+ * `prereqNotes` (from lib/tickets.mjs) carries the prereq resolutions the
+ * ticket file cannot explain on its own — a slug that landed and was later
+ * pruned out of `complete/`, or one nothing on the board vouches for.  Agents
+ * have mis-triaged the former as blocked-on-missing-work, so it goes in the
+ * prompt, not just the runner's console.
+ */
+export async function buildPrompt(ticket, tessRoot, repoRoot, prereqNotes = []) {
 	const rulesFile = join(tessRoot, 'agent-rules', 'tickets.md');
 	const [content, rules, searchServer] = await Promise.all([
 		readFile(ticket.path, 'utf-8'),
@@ -41,6 +49,17 @@ export async function buildPrompt(ticket, tessRoot, repoRoot) {
 		'',
 		'## End',
 	];
+
+	if (prereqNotes.length > 0) {
+		sections.push(
+			'',
+			'## Prereq status (resolved by the runner)',
+			'',
+			...prereqNotes.map(n => `- ${n}`),
+			'',
+			'A prereq marked `pruned` has already landed — its ticket was archived and swept out of `complete/`. Treat it as done.',
+		);
+	}
 
 	if (searchServer) {
 		sections.push(searchDirective(searchServer));
