@@ -9,9 +9,7 @@
  * subject starts `tess: prune `, `git show --diff-filter=D` on that commit
  * names exactly which tickets it deleted, and `git log` against the
  * commit's parent gives each deleted ticket's landing date and commit — the
- * same two values `pruneCompletedTickets` reads live.  See
- * `docs/site-cad.md`-adjacent ticket history for the derivation; this file
- * just re-runs it programmatically.
+ * same two values `pruneCompletedTickets` reads live.
  *
  * Idempotent by construction: a candidate record is skipped whenever its
  * `(slug, landing commit)` pair is already in the ledger, whether written
@@ -20,15 +18,21 @@
  * complete — there is no separate "already ran" flag to maintain.
  */
 
-import { appendFile, readFile } from 'node:fs/promises';
+import { appendFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { basename } from 'node:path';
-import { tombstonePath } from './tombstones.mjs';
+import { readTombstoneRecords, tombstonePath } from './tombstones.mjs';
 import { parseSlug } from './tickets.mjs';
 
 /** Commit subject prefix every prune sweep shares (see prune-completed.mjs's commitPrune). */
 const SWEEP_GREP = '^tess: prune ';
 
+// NOTE: one `git` process per deleted ticket, and execFileSync's default 1 MB
+// stdout buffer.  Both are comfortable at the scale this was written for (the
+// repo it was built against: 42 sweeps, 1342 tickets, 63 s measured, largest
+// single sweep ~38 KB of paths).  If a project ever runs this over a history
+// an order of magnitude larger, batch the per-ticket `git log` into one
+// `--name-only` walk and pass an explicit `maxBuffer`.
 function git(repoRoot, args) {
 	return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf-8' }).trim();
 }
@@ -59,25 +63,20 @@ function sweepEpoch(repoRoot, sweep) {
 	return parseInt(git(repoRoot, ['show', '-s', '--format=%ct', sweep]), 10);
 }
 
-/** Every `(slug, commit)` pair already in the ledger, regardless of which record is "latest" for a slug. */
+/** The dedup identity of a tombstone: one landing of one slug. */
+function recordKey(slug, commit) {
+	return `${slug} ${commit}`;
+}
+
+/**
+ * Every `(slug, commit)` pair already in the ledger — every record, not just
+ * whichever one `readTombstones` would elect as latest for a slug, because a
+ * slug pruned twice must not have its older landing reconstructed on top.
+ */
 async function existingKeys(ticketsDir) {
-	let text;
-	try {
-		text = await readFile(tombstonePath(ticketsDir), 'utf-8');
-	} catch {
-		return new Set();
-	}
 	const keys = new Set();
-	for (const line of text.split('\n')) {
-		const trimmed = line.trim();
-		if (!trimmed) continue;
-		let record;
-		try {
-			record = JSON.parse(trimmed);
-		} catch {
-			continue;
-		}
-		if (record && record.slug && record.commit) keys.add(record.slug + ' ' + record.commit);
+	for (const record of await readTombstoneRecords(ticketsDir)) {
+		if (record.commit) keys.add(recordKey(record.slug, record.commit));
 	}
 	return keys;
 }
@@ -88,9 +87,10 @@ async function existingKeys(ticketsDir) {
  * Walks every prune-sweep commit reachable from `ref` (default `HEAD`),
  * oldest first, and appends one record per deleted ticket not already
  * covered by an existing `(slug, commit)` pair in the ledger.  Records are
- * appended in sweep order, so a slug pruned more than once lands with its
- * repeats in the order they actually happened — matching the ledger's
- * "last record wins" read semantics (see readTombstones).
+ * appended in sweep order so the ledger reads as a history, but nothing
+ * depends on that: `readTombstones` elects a slug's winner by `completedAt`,
+ * precisely because these reconstructed records land *after* the newer live
+ * ones already in the file.
  *
  * In `dryRun`, computes and returns what would be added without touching
  * the ledger file.
@@ -112,7 +112,7 @@ export async function backfillTombstones(ticketsDir, repoRoot, { ref = 'HEAD', d
 			if (!landing) continue; // untracked before the sweep — nothing to reconstruct
 			const file = basename(path);
 			const slug = parseSlug(file);
-			const key = slug + ' ' + landing.commit;
+			const key = recordKey(slug, landing.commit);
 			if (seen.has(key)) continue; // already tombstoned — live write or an earlier backfill run
 			seen.add(key);
 			added.push({

@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, test } from 'node:test';
 
 import { backfillTombstones } from './backfill-tombstones.mjs';
@@ -128,4 +129,70 @@ test('dry run reports what would be added without writing the ledger', async () 
 
 	assert.equal(result.added.length, 1);
 	assert.equal((await readTombstones(ticketsDir)).size, 0);
+});
+
+test('a slug pruned twice resolves to its newer landing, even though the older record is appended last', async () => {
+	// The one ordering hazard the backfill introduces: reconstructed records are
+	// historically old but land at the *end* of a ledger that already holds newer
+	// live ones, so electing a slug's winner by file position would regress it.
+	const repo = await makeRepo();
+	const ticketsDir = join(repo, 'tickets');
+
+	const firstLanding = await land(repo, 'reopened.md', 90);
+	await oldStyleSweep(repo, ['reopened.md']);          // pre-ledger: no tombstone written
+	const secondLanding = await land(repo, 'reopened.md', 40);
+	await pruneCompletedTickets(ticketsDir, repo, { maxAgeDays: 30 });  // live: tombstones the newer landing
+
+	const result = await backfillTombstones(ticketsDir, repo);
+	assert.deepEqual(result.added.map(r => r.commit), [firstLanding], 'only the pre-ledger landing needs reconstructing');
+
+	const raw = await readFile(join(ticketsDir, TOMBSTONE_FILE), 'utf-8');
+	const order = raw.trim().split('\n').map(l => JSON.parse(l).commit);
+	assert.deepEqual(order, [secondLanding, firstLanding], 'the older record really is the last line');
+
+	const tomb = (await readTombstones(ticketsDir)).get('reopened');
+	assert.equal(tomb.commit, secondLanding, 'the most recent landing wins, not the last line');
+});
+
+test('two ticket files sharing a slug and a landing collapse into one tombstone', async () => {
+	// Sequence prefixes are not part of a ticket's identity, so `3-x.md` and
+	// `4-x.md` are one slug.  Pruned together from one landing commit, they
+	// resolve identically, and two indistinguishable records would only confuse
+	// a reader of the ledger.
+	const repo = await makeRepo();
+	const ticketsDir = join(repo, 'tickets');
+
+	await writeFile(join(repo, 'tickets', 'complete', '3-twin.md'), 'description: done\n----\nbody\n', 'utf-8');
+	await writeFile(join(repo, 'tickets', 'complete', '4-twin.md'), 'description: done\n----\nbody\n', 'utf-8');
+	git(repo, ['add', '-A']);
+	git(repo, ['commit', '-q', '-m', 'land both twins in one commit']);
+	const landing = git(repo, ['rev-parse', 'HEAD']).trim();
+	await oldStyleSweep(repo, ['3-twin.md', '4-twin.md']);
+
+	const result = await backfillTombstones(ticketsDir, repo);
+
+	assert.deepEqual(result.added.map(r => r.file), ['3-twin.md'], 'one record, keyed by the first file in sweep order');
+	assert.equal(result.added[0].commit, landing);
+});
+
+test('the CLI rejects an unrecognised argument instead of falling through to a real write', async () => {
+	// The default mode writes, so a mistyped --dry-run must not be shrugged off.
+	const repo = await makeRepo();
+	const ticketsDir = join(repo, 'tickets');
+	await land(repo, 'would-be-written.md', 60);
+	await oldStyleSweep(repo, ['would-be-written.md']);
+
+	const cli = fileURLToPath(new URL('../backfill-tombstones.mjs', import.meta.url));
+	let status = 0;
+	let stderr = '';
+	try {
+		execFileSync(process.execPath, [cli, '--project', repo, '--dryrun'], { encoding: 'utf-8', stdio: 'pipe' });
+	} catch (err) {
+		status = err.status;
+		stderr = err.stderr;
+	}
+
+	assert.equal(status, 2);
+	assert.match(stderr, /Unrecognised argument: --dryrun/);
+	assert.equal((await readTombstones(ticketsDir)).size, 0, 'nothing was appended');
 });

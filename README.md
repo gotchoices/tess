@@ -231,7 +231,19 @@ node tess/scripts/run.mjs --no-prune-completed
 {"slug":"session-store","file":"3-session-store.md","completedAt":"2026-01-02","commit":"<sha>","prunedAt":"2026-02-04T10:11:12.000Z"}
 ```
 
-The ledger is git-tracked (that is the whole point — it outlives the ticket) and strictly append-only: a prune costs one append regardless of ledger size, and two branches that both pruned merge by union instead of conflicting. `completedAt` and `commit` come from the ticket file's last commit, so the record answers "did this land, and when?" without a `git log` dig. Malformed lines are skipped on read; a slug appearing twice (a ticket reopened, re-completed and re-pruned) resolves to its last record.
+The ledger is git-tracked (that is the whole point — it outlives the ticket) and strictly append-only: a prune costs one append regardless of ledger size, and two branches that both pruned merge by union instead of conflicting. `completedAt` and `commit` come from the ticket file's last commit, so the record answers "did this land, and when?" without a `git log` dig. Malformed lines are skipped on read; a slug appearing twice (a ticket reopened, re-completed and re-pruned) resolves to the record with the **latest `completedAt`** — not to the last line, because a union merge and the backfill below both put records into the file out of chronological order.
+
+**Backfilling a pre-ledger history.** A project that pruned before it had a ledger has no tombstones for that older work, so every `prereq:` naming it still reads as unknown. Nothing is lost, though — a prune is its own commit, and the commit says what it deleted — so the records can be reconstructed from git history once:
+
+```bash
+# Rehearse: report what would be appended, write nothing
+node tess/scripts/backfill-tombstones.mjs --dry-run
+
+# Append the reconstructed records
+node tess/scripts/backfill-tombstones.mjs
+```
+
+For every commit whose subject starts `tess: prune `, the backfill reads the tickets that commit deleted and dates each one from the last commit to touch it beforehand — the same two values a live sweep records. It is idempotent: a record is skipped whenever its `(slug, landing commit)` pair is already in the ledger, so sweeps that wrote their own tombstones contribute nothing and a second run appends zero. `--project <dir>` points it at a project other than the working directory, `--ref <rev>` scans sweeps reachable from something other than `HEAD`. Two ticket files that differ only by sequence prefix (`3-x.md`, `4-x.md`) are one slug, so a sweep that removed both leaves one tombstone.
 
 ## Backlog Gardening
 

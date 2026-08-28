@@ -49,22 +49,20 @@ export async function appendTombstones(ticketsDir, records) {
 }
 
 /**
- * Read the ledger into `slug → record`.  A missing ledger yields an empty map;
- * malformed lines (hand-edits, a torn write, a merge artifact) are skipped
- * rather than throwing, because a damaged ledger must never stop a run.
- *
- * A slug can legitimately appear more than once — a ticket reopened after its
- * first completion is completed and pruned again — so the *last* record wins,
- * which is the most recent landing.
+ * Every well-formed record in the ledger, in file order.  A missing ledger
+ * yields an empty array; malformed lines (hand-edits, a torn write, a merge
+ * artifact) are skipped rather than throwing, because a damaged ledger must
+ * never stop a run.  A record carrying no usable `slug` is not a tombstone —
+ * nothing can be looked up by it — so it is dropped here too.
  */
-export async function readTombstones(ticketsDir) {
+export async function readTombstoneRecords(ticketsDir) {
 	let text;
 	try {
 		text = await readFile(tombstonePath(ticketsDir), 'utf-8');
 	} catch {
-		return new Map();
+		return [];
 	}
-	const bySlug = new Map();
+	const records = [];
 	for (const line of text.split('\n')) {
 		const trimmed = line.trim();
 		if (!trimmed) continue;
@@ -75,6 +73,35 @@ export async function readTombstones(ticketsDir) {
 			continue;
 		}
 		if (!record || typeof record.slug !== 'string' || !record.slug) continue;
+		records.push(record);
+	}
+	return records;
+}
+
+/** A record's landing date as a sortable string; '' when absent, which sorts lowest. */
+function landingKey(record) {
+	return typeof record.completedAt === 'string' ? record.completedAt : '';
+}
+
+/**
+ * Read the ledger into `slug → record`, keeping each slug's *most recent
+ * landing*.
+ *
+ * A slug can legitimately appear more than once — a ticket reopened after
+ * its first completion is completed and pruned again.  Which of those wins is
+ * decided on `completedAt`, not on file order, because the ledger is appended
+ * to from more than one direction and its line order is therefore not
+ * chronological: two branches that both pruned merge by union in whatever
+ * order the merge produces, and `backfill-tombstones.mjs` appends
+ * historically-old reconstructed records to the end of a ledger that already
+ * holds newer live ones.  Ties — and records with no `completedAt` at all —
+ * fall back to the later line.
+ */
+export async function readTombstones(ticketsDir) {
+	const bySlug = new Map();
+	for (const record of await readTombstoneRecords(ticketsDir)) {
+		const prior = bySlug.get(record.slug);
+		if (prior && landingKey(prior) > landingKey(record)) continue;
 		bySlug.set(record.slug, record);
 	}
 	return bySlug;
