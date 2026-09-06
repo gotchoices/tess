@@ -399,11 +399,13 @@ The resulting defaults for `claude` (in `scripts/lib/model-selection.mjs`, overr
 
 | stage | easy | medium | hard |
 |---|---|---|---|
-| fix / plan | `sonnet-4-6` · high | `opus-4-8` · high | `fable-5` · high |
-| implement | `sonnet-4-6` · xhigh | `opus-4-8` · xhigh | `fable-5` · xhigh |
-| review | **`opus-4-8` · medium** | `opus-4-8` · high | `fable-5` · high |
+| fix / plan | `sonnet` · high | `opus` · high | `fable` · high |
+| implement | `sonnet` · xhigh | `opus` · xhigh | `fable` · xhigh |
+| review | **`opus` · medium** | `opus` · high | `fable` · high |
 
-The `medium` column reproduces the historical effort profile (`xhigh` for `implement`, `high` elsewhere) while pinning the model explicitly instead of inheriting whatever was last configured interactively. `easy` saves cost with Sonnet; `hard` escalates to Fable 5. The bolded cell is an override: an `easy` review still runs on Opus (cheap models miss bugs) but at reduced effort.
+The `medium` column reproduces the historical effort profile (`xhigh` for `implement`, `high` elsewhere) while naming the model explicitly instead of inheriting whatever was last configured interactively. `easy` saves cost with Sonnet; `hard` escalates to Fable. The bolded cell is an override: an `easy` review still runs on Opus (cheap models miss bugs) but at reduced effort.
+
+Models are named by **tier alias** (`sonnet` / `opus` / `fable`) rather than a pinned id like `claude-opus-5`, because `claude --model` resolves an alias to the latest release in that family — so a new Opus or Fable is picked up without a config edit. Pin a full id in `config/agents.json` when a run must stay on a specific version. Aliases are a `claude` convention; other adapters use whatever their own CLI accepts.
 
 `config/agents.json` is deep-merged over the built-in defaults, so a partial file only restates what it changes. A `null` or missing model/effort means "pass no flag — use the agent's own default," which is how every non-`claude` agent behaves until you add a block for it. Example — pin a cross-cutting cell and add a `codex` policy:
 
@@ -411,7 +413,7 @@ The `medium` column reproduces the historical effort profile (`xhigh` for `imple
 {
   "claude": {
     "overrides": {
-      "review": { "easy": { "model": "claude-opus-4-8", "effort": "medium" } }
+      "review": { "easy": { "model": "claude-opus-5", "effort": "medium" } }
     }
   },
   "codex": {

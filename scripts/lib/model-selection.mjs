@@ -31,8 +31,12 @@ export const DEFAULT_DIFFICULTY = 'medium';
 
 /**
  * Built-in fallback, used when `config/agents.json` is absent or omits an
- * agent.  Difficulty → model tier (Fable reserved for the hardest work);
- * effort is per-stage with `implement` bumped one notch above the `default`
+ * agent.  Difficulty → model tier (Fable reserved for the hardest work).
+ * Models are named by *tier alias* (`sonnet` / `opus` / `fable`) rather than a
+ * pinned id like `claude-opus-5`, so each tier tracks the latest release of
+ * that family without a config edit; pin a full id in `config/agents.json`
+ * when a run needs a specific version.  Effort is per-stage with `implement`
+ * bumped one notch above the `default`
  * because it does the most synthesis.  `overrides[stage][difficulty]` pins a
  * specific cell's model and/or effort regardless of those base rules (here: an
  * easy review still runs on Opus, but at reduced effort).  Agents without an
@@ -42,16 +46,16 @@ export const DEFAULT_DIFFICULTY = 'medium';
 const BUILTIN_CONFIG = {
 	claude: {
 		model: {
-			easy: 'claude-sonnet-4-6',
-			medium: 'claude-opus-4-8',
-			hard: 'claude-opus-4-8',
+			easy: 'sonnet',
+			medium: 'opus',
+			hard: 'fable',
 		},
 		effort: {
 			implement: 'xhigh',
 			default: 'high',
 		},
 		overrides: {
-			review: { easy: { model: 'claude-opus-4-8', effort: 'medium' } },
+			review: { easy: { model: 'opus', effort: 'medium' } },
 		},
 	},
 };

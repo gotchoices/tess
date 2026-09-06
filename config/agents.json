@@ -1,9 +1,9 @@
 {
   "claude": {
     "model": {
-      "easy": "claude-sonnet-5",
-      "medium": "claude-opus-5",
-      "hard": "claude-opus-5"
+      "easy": "sonnet",
+      "medium": "opus",
+      "hard": "fable"
     },
     "effort": {
       "fix": "high",
@@ -13,8 +13,7 @@
       "default": "high"
     },
     "overrides": {
-      "review": { "easy": { "model": "claude-opus-5", "effort": "medium" } },
-      "implement": { "hard": { "model": "claude-fable-5", "effort": "xhigh" } }
+      "review": { "easy": { "model": "opus", "effort": "medium" } }
     }
   }
 }
