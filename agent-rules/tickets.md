@@ -17,14 +17,8 @@ tickets/ folder at project root contains `backlog`, `fix`, `plan`, `implement`, 
 Filename convention: `<slug>.md`, optionally prefixed with numeric **sequence** (integer or decimal) — `3-my-ticket.md` or `3.5-my-ticket.md`. **Lower sequence runs sooner.** Prefix optional; unnumbered tickets (`my-ticket.md`) follow after all numbered ones in same stage. Sequence number is not part of ticket identity — when referencing another ticket, use only its slug (`my-ticket`), not the full filename.
 
 You own the full stage transition. When done:
-  1. Create the next-stage output file(s) in the appropriate tickets/ subfolder.
-     May split one ticket into multiple next-stage tickets if warranted —
-     give each a distinct slug and chain with `prereq:` so runner enforces topo order.
-     Don't combine unrelated tickets. May keep, add, or adjust the sequence prefix.
-     Respect `prereq:` relationships: a prereq must have a sequence ≤ its dependent (or be
-     unnumbered only if the dependent is also unnumbered) — runner fails fast on conflicts.
-  2. Delete the original source ticket file from its current stage folder.
-     Delete only the file — leave the stage folder in place even when it ends up empty.
+  1. Create the next-stage output file(s) in the appropriate tickets/ subfolder. May split one ticket into multiple next-stage tickets if warranted — give each a distinct slug and chain with `prereq:` so runner enforces topo order. Don't combine unrelated tickets. May keep, add, or adjust the sequence prefix. Respect `prereq:` relationships: a prereq must have a sequence ≤ its dependent (or be unnumbered only if the dependent is also unnumbered) — runner fails fast on conflicts.
+  2. Delete the original source ticket file from its current stage folder. Delete only the file — leave the stage folder in place even when it ends up empty.
 
 **Never sanitize the working tree.** Don't run `git checkout -- `, `git restore`, `git reset`, `git clean`, or `git stash`, and don't otherwise revert or discard changes you didn't make. Runner may be processing other tickets and a human may be promoting tickets concurrently — uncommitted board moves and in-flight tree edits are not yours to undo. Touch only the files your own ticket requires.
 
@@ -70,9 +64,7 @@ Stages (overview — full rules for your active stage under "Active stage detail
 <!-- /stage -->
 
 <!-- stage:blocked -->
-**Blocked** is the human's inbox — use it for the two things the runner genuinely cannot resolve on its own, and nothing else:
-  (a) **A decision only a human should make** — a design/product question or a go/no-go with no defensible default. This includes design questions you surface *during review or planning* that don't block any in-flight ticket: a decision that needs a human still goes here, not into `backlog/`.
-  (b) **A dependency outside this repo** that `prereq:` cannot track — an external service or upstream library, a stub primitive that doesn't exist yet, or a premise mismatch with code beyond this repo.
+**Blocked** is the human's inbox — use it for the two things the runner genuinely cannot resolve on its own, and nothing else: (a) **A decision only a human should make** — a design/product question or a go/no-go with no defensible default. This includes design questions you surface *during review or planning* that don't block any in-flight ticket: a decision that needs a human still goes here, not into `backlog/`. (b) **A dependency outside this repo** that `prereq:` cannot track — an external service or upstream library, a stub primitive that doesn't exist yet, or a premise mismatch with code beyond this repo.
 
 Lead the file with one line: which category, and the exact thing that unblocks it. Write it for a human with no prior context (see *Write for a reader without your context*) — a decision is only useful if the decider can act without reconstructing your session: state the question plainly, what happens if we do nothing, the options with a recommended default, and how reversible the call is.
 
@@ -125,6 +117,7 @@ At every stage you are writing for someone — a teammate, the next agent, your 
 - No coined vocabulary presented as established fact. If you must name an internal concept ("the lens seam", "covering structures"), define it on first use or don't use it.
 - Spell out acronyms and name the concrete thing (the actual limit, the actual file) instead of gesturing at it.
 - This matters most for the human-facing stages — `backlog/` and `blocked/` — where the reader is *deciding*, not implementing. A ticket dense with inside-baseball is one a human can't triage; if you can't state it plainly, you don't yet understand it well enough to file it.
+- No hard-wrapping. One paragraph per line, editors soft-wrap; `yarn unwrap:md <path>` fixes existing files.
 
 ## Pre-existing test failures
 

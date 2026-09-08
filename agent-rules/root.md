@@ -1,6 +1,3 @@
 ## Tickets (tess)
 
-Project uses [tess](tess/) for AI-driven ticket management.
-Read + follow ticket workflow rules in tess/agent-rules/tickets.md.
-Tickets in [tickets/](tickets/) directory.
-If asked to "tend the garden" or similar, see tess/agent-rules/tend.md.
+Project uses [tess](tess/) for AI-driven ticket management. Read + follow ticket workflow rules in tess/agent-rules/tickets.md. Tickets in [tickets/](tickets/) directory. If asked to "tend the garden" or similar, see tess/agent-rules/tend.md.

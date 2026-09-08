@@ -62,75 +62,34 @@ The pipeline stages, adapted from the original optimystic system:
 
 ## The Clean-Tree Invariant
 
-**Before any ticket agent starts, the working tree is clean.** This is the first step of every
-run, and it repeats before each ticket.
+**Before any ticket agent starts, the working tree is clean.** This is the first step of every run, and it repeats before each ticket.
 
-The runner commits with `git add -A`, so every commit it makes captures *whatever is in the tree*,
-not *what that ticket changed*. That is deliberate — ticket agents touch arbitrary paths and the
-runner has no way to enumerate them ahead of time — but it means any edit already sitting in the
-tree gets absorbed by whichever ticket finishes next, under that ticket's name. A killed agent
-leaves exactly that residue behind, and the sweep that mis-files it is silent. Nothing is lost;
-what breaks is attribution, which is what `git blame`, `git bisect`, and any "these files landed
-together" audit rely on.
+The runner commits with `git add -A`, so every commit it makes captures *whatever is in the tree*, not *what that ticket changed*. That is deliberate — ticket agents touch arbitrary paths and the runner has no way to enumerate them ahead of time — but it means any edit already sitting in the tree gets absorbed by whichever ticket finishes next, under that ticket's name. A killed agent leaves exactly that residue behind, and the sweep that mis-files it is silent. Nothing is lost; what breaks is attribution, which is what `git blame`, `git bisect`, and any "these files landed together" audit rely on.
 
-Rather than scope each commit, the runner guarantees there is nothing foreign left to sweep.
-`reconcileWorkingTree` (`scripts/lib/git.mjs`) probes the tree and, by default, commits any
-residue under its own honest message *before* the next agent adds edits of its own:
+Rather than scope each commit, the runner guarantees there is nothing foreign left to sweep. `reconcileWorkingTree` (`scripts/lib/git.mjs`) probes the tree and, by default, commits any residue under its own honest message *before* the next agent adds edits of its own:
 
 | Situation | Commit message |
 |---|---|
 | An interrupted ticket is named by the `.in-progress` marker (startup) or was the last ticket this run actually ran (mid-run) | `ticket(<stage>): <slug> (partial — salvaged from interrupted run)` |
 | No owner can be determined — human WIP, an earlier `--no-commit` run, a marker already cleared | `tess: salvage uncommitted working tree (no ticket in progress)` |
 
-Every outcome except "tree was already clean" prints the dirty paths and what was done with them;
-a clean tree costs one `git status` and says nothing. `--dirty-tree` selects the behaviour:
+Every outcome except "tree was already clean" prints the dirty paths and what was done with them; a clean tree costs one `git status` and says nothing. `--dirty-tree` selects the behaviour:
 
 - `salvage` (default) — commit the residue, then continue.
-- `abort` — refuse to start, print the paths and the commands to sort it out, exit 1. Startup only;
-  mid-run there is no useful place to stop, so mid-run always salvages.
-- `ignore` — the pre-invariant behaviour (residue rolls into the next ticket's commit), still with
-  the notice. An escape hatch, not a default.
+- `abort` — refuse to start, print the paths and the commands to sort it out, exit 1. Startup only; mid-run there is no useful place to stop, so mid-run always salvages.
+- `ignore` — the pre-invariant behaviour (residue rolls into the next ticket's commit), still with the notice. An escape hatch, not a default.
 
-`--no-commit` suppresses the salvage — nothing commits, so nothing can be mis-attributed — but it
-does **not** soften `abort`: a refusal to start is not a commit, and an operator who asked for one
-gets it either way. `--dry-run` outranks everything: it prints the notice, names the commit a real
-run would have made (or the refusal it would have raised), and changes neither the tree nor the
-exit status.
+`--no-commit` suppresses the salvage — nothing commits, so nothing can be mis-attributed — but it does **not** soften `abort`: a refusal to start is not a commit, and an operator who asked for one gets it either way. `--dry-run` outranks everything: it prints the notice, names the commit a real run would have made (or the refusal it would have raised), and changes neither the tree nor the exit status.
 
-A mid-run salvage that cannot commit — the deletion guard tripped, or git failed — stops the run
-through the same `stopped` outcome a `.stop` file uses, but the runner exits **1** rather than
-concluding with a clean `Done.`: an unattended caller must not read a refusal as a drained board.
+A mid-run salvage that cannot commit — the deletion guard tripped, or git failed — stops the run through the same `stopped` outcome a `.stop` file uses, but the runner exits **1** rather than concluding with a clean `Done.`: an unattended caller must not read a refusal as a drained board.
 
-Two details are load-bearing. The reconcile runs **before** the format migration and the
-completed-ticket prune, both of which make their own commits and would otherwise absorb the
-residue first. And the probe uses `git status --porcelain --ignore-submodules=dirty`: a submodule's
-dirty *content* is not committable from the parent repo, so counting it as dirt would make every
-run attempt a salvage that stages nothing and fails. A submodule whose HEAD moved still counts,
-because that gitlink bump is committable.
+Two details are load-bearing. The reconcile runs **before** the format migration and the completed-ticket prune, both of which make their own commits and would otherwise absorb the residue first. And the probe uses `git status --porcelain --ignore-submodules=dirty`: a submodule's dirty *content* is not committable from the parent repo, so counting it as dirt would make every run attempt a salvage that stages nothing and fails. A submodule whose HEAD moved still counts, because that gitlink bump is committable.
 
-Every unscoped `git add -A` in the runner — the per-ticket commit, the migration commit, the
-resume-note commit, the pre-existing-failure triage commit — is safe as a consequence of this
-invariant. All four, and the salvage itself, go through the single `commitAll` in
-`scripts/lib/git.mjs`, so one probe and one mass-deletion guard cover the lot: if a commit cannot
-be made, the runner says so rather than proceeding on a tree it does not understand. The two
-commits that stage a *named path* instead (`prune-completed.mjs` for `tickets/complete`,
-`pre-existing-error.mjs` for the known-failure ledger) are safe by their own construction and
-deliberately stay outside `commitAll` — a scoped `git add` cannot pick up anything foreign.
+Every unscoped `git add -A` in the runner — the per-ticket commit, the migration commit, the resume-note commit, the pre-existing-failure triage commit — is safe as a consequence of this invariant. All four, and the salvage itself, go through the single `commitAll` in `scripts/lib/git.mjs`, so one probe and one mass-deletion guard cover the lot: if a commit cannot be made, the runner says so rather than proceeding on a tree it does not understand. The two commits that stage a *named path* instead (`prune-completed.mjs` for `tickets/complete`, `pre-existing-error.mjs` for the known-failure ledger) are safe by their own construction and deliberately stay outside `commitAll` — a scoped `git add` cannot pick up anything foreign.
 
-`scripts/garden.mjs` is deliberately **outside** the *stage-transition* pipeline — it is not a
-`run.mjs` stage, and it commits at the repo root in one shot rather than per-ticket. It is not
-outside the clean-tree invariant: its end-of-run commit is a fifth unscoped `commitAll`, so the
-same reasoning applies to it, and it calls `reconcileWorkingTree` at the top of its `main()` —
-before the gardening agent runs and before that commit. Ordering against the commit alone would
-not be enough: a reconcile sitting between the agent and the commit would salvage the gardener's
-own output under the salvage message.
+`scripts/garden.mjs` is deliberately **outside** the *stage-transition* pipeline — it is not a `run.mjs` stage, and it commits at the repo root in one shot rather than per-ticket. It is not outside the clean-tree invariant: its end-of-run commit is a fifth unscoped `commitAll`, so the same reasoning applies to it, and it calls `reconcileWorkingTree` at the top of its `main()` — before the gardening agent runs and before that commit. Ordering against the commit alone would not be enough: a reconcile sitting between the agent and the commit would salvage the gardener's own output under the salvage message.
 
-Two things differ from `run.mjs`. The mode is hard-coded to `salvage` — garden is human-invoked
-and single-shot, so the operator is at the keyboard and sees the notice either way, and a
-`--dirty-tree` flag of its own would be a knob nobody needs. Ownership still comes from the same
-`tickets/.in-progress` marker, read non-destructively: garden never writes one, but the runner
-may have left one behind, and salvaging that residue under "no ticket in progress" would state
-something untrue.
+Two things differ from `run.mjs`. The mode is hard-coded to `salvage` — garden is human-invoked and single-shot, so the operator is at the keyboard and sees the notice either way, and a `--dirty-tree` flag of its own would be a knob nobody needs. Ownership still comes from the same `tickets/.in-progress` marker, read non-destructively: garden never writes one, but the runner may have left one behind, and salvaging that residue under "no ticket in progress" would state something untrue.
 
 ---
 
