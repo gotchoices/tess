@@ -203,3 +203,22 @@ test('project rules errors are board errors, after the release-list errors', asy
 		'tickets/rules/open.md: unterminated header — line 1 is a fence with no closing fence, so the file appends and declares nothing',
 	]);
 });
+
+test('an unanchored ticket lists the project rules errors that may explain it; an anchored ticket is not held up by them', async () => {
+	// The shape of an addendum broken mid-run, which the startup board check never sees.
+	const brokenRubric = ['rubric.md', '---\nanchor-fields: features, aspects\n'];
+
+	assert.deepEqual(await problemsFor({
+		implement: [
+			['features-only.md', '---\ndescription: x\nfeatures: SIT-BRA\n---\n'],
+			['anchored.md', withHeader('features: SIT-BRA')],
+		],
+		rules: [brokenRubric],
+	}), {
+		'features-only': [
+			'no anchor — add architecture: to the header',
+			'project rules error, which may be why a field does not count: tickets/rules/rubric.md: unterminated header — line 1 is a fence with no closing fence, so the file appends and declares nothing',
+		],
+		anchored: [],
+	});
+});

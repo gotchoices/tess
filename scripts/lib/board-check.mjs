@@ -117,7 +117,7 @@ function releaseOrderWarnings(index) {
  * when it is runnable.
  */
 export function ticketProblems(ticket, context) {
-	return [...targetProblems(ticket, context.releases), ...anchorProblems(ticket, context.anchorFields)];
+	return [...targetProblems(ticket, context.releases), ...anchorProblems(ticket, context)];
 }
 
 /**
@@ -147,9 +147,16 @@ export function hasAnchor(header, anchorFields) {
  * project addendum declares.  Presence only — whether an `architecture:` path
  * or its `#section` exists is left to the project's link checking, since
  * resolving section slugs would mean re-implementing heading-slug rules.
+ *
+ * A malformed addendum can be why a field the ticket uses does not count.  The
+ * startup board check stops the run on such errors, but an addendum broken
+ * mid-run is seen only here, so its errors are listed with the problem.
  */
-function anchorProblems({ header }, anchorFields) {
+function anchorProblems({ header }, { anchorFields, rules }) {
 	if (hasAnchor(header, anchorFields)) return [];
 	const named = anchorFields.map(field => `${field}:`);
-	return [`no anchor — add ${named.length === 1 ? named[0] : `one of ${named.join(', ')}`} to the header`];
+	return [
+		`no anchor — add ${named.length === 1 ? named[0] : `one of ${named.join(', ')}`} to the header`,
+		...rules.errors.map(error => `project rules error, which may be why a field does not count: ${error}`),
+	];
 }
