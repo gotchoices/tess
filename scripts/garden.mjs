@@ -5,12 +5,16 @@
  * Every processing stage generates backlog tickets, but the backlog drains
  * only through a human.  The gardener turns a flat, ever-growing queue into
  * fewer, better-ranked decisions: it backfills triage headers
- * (severity/likelihood/tradeoffs), merges duplicates, clusters instances of
- * one underlying weakness into theme tickets, ranks the queue, and — only on
- * explicit human feedback — executes declines (recorded as accepted-tradeoff
- * `NOTE:` comments at the code site, so reviewers don't re-file) and
- * promotions.  It rewrites `tickets/.garden-report.md` for the human every
- * pass.  Agent rules live in agent-rules/garden.md.
+ * (severity/likelihood/tradeoffs) and specification anchors, merges
+ * duplicates, clusters instances of one underlying weakness into theme
+ * tickets, ranks the queue (release first, then severity), proposes declining
+ * top-level tickets that have waited too long, and — only on explicit human
+ * feedback — executes declines (recorded as accepted-tradeoff `NOTE:`
+ * comments at the code site, so reviewers don't re-file), promotions,
+ * deferrals to a later release and pull-forwards.  It rewrites
+ * `tickets/.garden-report.md` for the human every pass.  Agent rules live in
+ * agent-rules/garden.md; the prompt is built by lib/prompt.mjs
+ * `buildGardenPrompt`.
  *
  * Usage:
  *   node tess/scripts/garden.mjs [options] [feedback text...]
@@ -18,19 +22,20 @@
  * See `--help` for options.
  */
 
-import { readFile, writeFile, readdir } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 
-import { discoverTickets, parseSlug } from './lib/tickets.mjs';
+import { discoverTickets, indexAllTickets, parseSlug, readBacklogLayout } from './lib/tickets.mjs';
 import { ensureLogsDir, logPath } from './lib/logging.mjs';
 import { runAgent } from './lib/process.mjs';
 import { commitAll, getTessVersion, reconcileWorkingTree } from './lib/git.mjs';
 import { readInProgress } from './lib/state.mjs';
-import { filterStageBlocks, projectRuleSections, searchDirective } from './lib/prompt.mjs';
-import { readProjectRules } from './lib/project-rules.mjs';
-import { detectSearch } from './lib/detect-search.mjs';
+import { buildGardenPrompt } from './lib/prompt.mjs';
+import { checkBoard, readBoardContext } from './lib/board-check.mjs';
+import { DEFAULT_DECLINE_AFTER_DAYS, topLevelArrivals } from './lib/backlog-age.mjs';
+import { boardCheckLines, buildInventory, inventoryText, releaseSummary } from './lib/garden-inventory.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TESS_ROOT = join(__dirname, '..');
@@ -40,21 +45,25 @@ function printHelp() {
 		'Backlog Gardener — consolidate, triage, and rank tickets/backlog/ via one agent pass',
 		'',
 		'Without feedback the gardener only consolidates (merge duplicates, cluster class',
-		'instances into theme tickets), backfills severity/likelihood/tradeoffs headers, ranks',
-		'the queue, and rewrites tickets/.garden-report.md.  Declining or promoting tickets',
-		'requires explicit human feedback; declines are recorded as accepted-tradeoff NOTE:',
-		'comments at the code site so future reviewers do not re-file the finding.',
+		'instances into theme tickets), backfills severity/likelihood/tradeoffs headers and',
+		'specification anchors, ranks the queue (current release first), proposes declining',
+		'top-level tickets that have waited --decline-after-days, and rewrites',
+		'tickets/.garden-report.md.  Declining, promoting, deferring a ticket to a later',
+		'release, or pulling a deferred ticket forward requires explicit human feedback;',
+		'declines are recorded as accepted-tradeoff NOTE: comments at the code site so',
+		'future reviewers do not re-file the finding.',
 		'',
 		'Usage: node tess/scripts/garden.mjs [options] [feedback text...]',
 		'',
 		'Options:',
-		'  --feedback <file>    Human feedback file (decisions to execute: declines, promotes)',
-		'  --agent <name>       claude | auggie | cursor | codex      (default: claude)',
-		'  --difficulty <d>     easy | medium | hard — model tier      (default: hard)',
-		'  --token-budget <n>   Soft context budget (claude only)      (default: unset)',
-		'  --no-commit          Skip the automatic git commit',
-		'  --dry-run            Print the backlog inventory without invoking the agent',
-		'  --help               Show this help',
+		'  --feedback <file>         Human feedback file (decisions to execute: declines, promotes, defers)',
+		'  --agent <name>            claude | auggie | cursor | codex      (default: claude)',
+		'  --difficulty <d>          easy | medium | hard — model tier      (default: hard)',
+		`  --decline-after-days <n>  Propose declining top-level tickets that have waited n days (default: ${DEFAULT_DECLINE_AFTER_DAYS})`,
+		'  --token-budget <n>        Soft context budget (claude only)      (default: unset)',
+		'  --no-commit               Skip the automatic git commit',
+		'  --dry-run                 Print the grouped inventory and board check without invoking the agent',
+		'  --help                    Show this help',
 		'',
 		'Bare arguments are joined into an inline feedback message (combined with',
 		'--feedback file content when both are given).',
@@ -66,6 +75,7 @@ function parseArgs(argv) {
 		agent: 'claude',
 		difficulty: 'hard',
 		tokenBudget: Infinity,
+		declineAfterDays: DEFAULT_DECLINE_AFTER_DAYS,
 		feedbackFile: null,
 		feedbackText: [],
 		dryRun: false,
@@ -83,6 +93,15 @@ function parseArgs(argv) {
 			case '--difficulty':
 				opts.difficulty = argv[++i];
 				break;
+			case '--decline-after-days': {
+				const value = argv[++i];
+				if (!/^\d+(?:\.\d+)?$/.test(value ?? '')) {
+					console.error('--decline-after-days must be a non-negative number of days.');
+					process.exit(1);
+				}
+				opts.declineAfterDays = Number(value);
+				break;
+			}
 			case '--token-budget':
 				opts.tokenBudget = parseInt(argv[++i], 10);
 				break;
@@ -110,95 +129,14 @@ function parseArgs(argv) {
 	return opts;
 }
 
-/** First single-line header field match near the top of a ticket file, or null. */
-function headerField(content, name) {
-	const head = content.slice(0, 4000);
-	const m = head.match(new RegExp(`^${name}:\\s*(.+)$`, 'mi'));
-	return m ? m[1].trim() : null;
-}
-
-function truncate(s, n) {
-	return s.length > n ? `${s.slice(0, n - 1)}…` : s;
-}
-
-/** One inventory entry: filename, description, and triage-header presence. */
-function inventoryLine(ticket, content) {
-	const desc = truncate(headerField(content, 'description') ?? '(no description: header)', 200);
-	const triage = [];
-	if (ticket.slug.startsWith('bug-')) {
-		triage.push(`severity: ${headerField(content, 'severity') ?? 'MISSING'}`);
-		triage.push(`likelihood: ${headerField(content, 'likelihood') ?? 'MISSING'}`);
-	}
-	triage.push(`tradeoffs: ${headerField(content, 'tradeoffs') ? 'present' : 'MISSING'}`);
-	return `- ${ticket.file} — ${desc}\n  [${triage.join(' | ')}]`;
-}
-
-async function buildInventory(tickets) {
-	const lines = [];
-	for (const t of tickets) {
-		let content;
-		try {
-			content = await readFile(t.path, 'utf-8');
-		} catch {
-			continue; // raced with a remove/move
-		}
-		lines.push(inventoryLine(t, content));
-	}
-	return lines;
-}
-
-async function buildGardenPrompt({ inventory, feedback, repoRoot }) {
-	const [gardenRules, sharedRules, projectRules, searchServer] = await Promise.all([
-		readFile(join(TESS_ROOT, 'agent-rules', 'garden.md'), 'utf-8'),
-		readFile(join(TESS_ROOT, 'agent-rules', 'tickets.md'), 'utf-8'),
-		readProjectRules(join(repoRoot, 'tickets')),
-		detectSearch(repoRoot),
-	]);
-
-	const sections = [
-		`# Backlog gardening pass — ${inventory.length} ticket(s) in tickets/backlog/`,
-		'',
-		'## Gardening rules:',
-		'',
-		gardenRules,
-		'',
-		'## Shared workflow conventions (stage-specific blocks removed):',
-		'',
-		filterStageBlocks(sharedRules, null),
-		...projectRuleSections(projectRules.rules, null),
-		'',
-		'## Backlog inventory (headers only — read the full files you act on):',
-		'',
-		...inventory,
-		'',
-		'## Human feedback:',
-		'',
-		feedback ?? 'None provided this pass — consolidate, backfill, and rank only. Do NOT decline or promote any ticket.',
-		'',
-		'## End',
-	];
-
-	if (searchServer) {
-		sections.push(searchDirective(searchServer));
-	}
-
-	sections.push(
-		'Work the gardening pass as described above.',
-		'Do NOT commit — the runner handles the commit after you complete.',
-	);
-
-	return sections.join('\n');
-}
-
-/** Slugs currently in backlog/ (post-run re-scan; sequence prefixes ignored). */
+/**
+ * Slugs now in backlog/ and its sub-folders (post-run re-scan; sequence
+ * prefixes ignored), so neither a re-sequence nor a move between the top level
+ * and a folder counts as a removal plus an addition.
+ */
 async function backlogSlugs(ticketsDir) {
-	let entries;
-	try {
-		entries = await readdir(join(ticketsDir, 'backlog'));
-	} catch {
-		return new Set();
-	}
-	return new Set(entries.filter(f => f.endsWith('.md')).map(parseSlug));
+	const { top, folders } = await readBacklogLayout(ticketsDir);
+	return new Set([...top, ...folders.flatMap(folder => folder.files)].map(parseSlug));
 }
 
 /** Count modified (not added/deleted) tracked files under tickets/backlog/. */
@@ -237,7 +175,7 @@ async function main() {
 
 	const tessVersion = getTessVersion(TESS_ROOT);
 
-	const tickets = await discoverTickets(ticketsDir, 'backlog', Infinity);
+	const tickets = await discoverTickets(ticketsDir, 'backlog', Infinity, { includeFolders: true });
 	if (tickets.length === 0) {
 		console.log('Backlog is empty — nothing to garden.');
 		return;
@@ -251,29 +189,58 @@ async function main() {
 		feedback = (feedback ? `${feedback}\n\n` : '') + opts.feedbackText.join(' ');
 	}
 
-	const inventory = await buildInventory(tickets);
+	// The runner exits on board errors; the gardener passes them on instead.  It works no ticket,
+	// so an inconsistent board cannot mis-order work here, and fixing folders is a human's call the
+	// report should surface rather than a reason to skip the pass.
+	const context = await readBoardContext(ticketsDir);
+	const board = await checkBoard(ticketsDir, context, await indexAllTickets(ticketsDir, { withPrereqs: true }));
+	const inventory = buildInventory(tickets, {
+		releases: context.releases,
+		anchorFields: context.anchorFields,
+		arrivals: topLevelArrivals(repoRoot, 'tickets', { warn: message => console.warn(`[garden] warning: ${message}`) }),
+		nowSeconds: Math.floor(Date.now() / 1000),
+		declineAfterDays: opts.declineAfterDays,
+	});
+	const { top, folders, proposed } = inventory.counts;
+	const boardLines = boardCheckLines(board);
+	const summary = {
+		backlog: `${tickets.length} ticket(s) — ${top} at the top level, ${folders} in sub-folders`,
+		aging: `propose declining after ${opts.declineAfterDays} days at the top level — ${proposed} proposed`,
+		board: boardLines.length === 0
+			? 'clean'
+			: `${board.errors.length} error(s), ${board.warnings.length} warning(s) — passed to the gardener to report`,
+		feedback: feedback ? 'provided — declines/promotions/deferrals enabled' : 'none — consolidate/backfill/rank/propose only',
+	};
 
 	if (opts.dryRun) {
 		console.log(`\ntess (${tessVersion}) — garden dry run`);
-		console.log(`Backlog: ${inventory.length} ticket(s)\n`);
-		for (const line of inventory) console.log(line);
-		console.log(`\nFeedback: ${feedback ? `${feedback.length} chars — declines/promotions enabled` : 'none — consolidate/backfill/rank only'}`);
+		console.log(`Backlog: ${summary.backlog}`);
+		console.log(releaseSummary(context.releases));
+		console.log(`Aging: ${summary.aging}\n`);
+		for (const line of inventoryText(inventory.groups)) console.log(line);
+		console.log(`Board check: ${summary.board}`);
+		for (const line of boardLines) console.log(`  ${line}`);
+		console.log(`\nFeedback: ${feedback ? `${feedback.length} chars, ${summary.feedback}` : summary.feedback}`);
 		return;
 	}
 
 	const banner = [
 		`${'═'.repeat(72)}`,
 		`  tess garden (${tessVersion})`,
-		`  Backlog: ${inventory.length} ticket(s)  |  Agent: ${opts.agent}  |  Difficulty: ${opts.difficulty}`,
-		`  Feedback: ${feedback ? 'provided — declines/promotions enabled' : 'none — consolidate/backfill/rank only'}`,
+		`  Backlog: ${summary.backlog}`,
+		`  Agent: ${opts.agent}  |  Difficulty: ${opts.difficulty}`,
+		`  Aging: ${summary.aging}`,
+		`  Board check: ${summary.board}`,
+		`  Feedback: ${summary.feedback}`,
 		`${'═'.repeat(72)}`,
 	].join('\n');
 	console.log(banner);
+	for (const line of boardLines) console.log(`  ${line}`);
 
 	const logsDir = await ensureLogsDir(ticketsDir);
 	const logFile = logPath(logsDir, { file: 'backlog.md', stage: 'garden' });
 	await writeFile(logFile, [
-		`Garden pass over tickets/backlog/ (${inventory.length} tickets)`,
+		`Garden pass over tickets/backlog/ (${tickets.length} tickets)`,
 		`Agent: ${opts.agent}`,
 		`Tess: ${tessVersion}`,
 		`Started: ${new Date().toISOString()}`,
@@ -283,7 +250,14 @@ async function main() {
 	console.log(`  Log: ${logFile}\n`);
 
 	const beforeSlugs = new Set(tickets.map(t => t.slug));
-	const prompt = await buildGardenPrompt({ inventory, feedback, repoRoot });
+	const prompt = await buildGardenPrompt(TESS_ROOT, repoRoot, {
+		inventory,
+		releases: context.releases,
+		rules: context.rules.rules,
+		board,
+		declineAfterDays: opts.declineAfterDays,
+		feedback,
+	});
 	const result = await runAgent(opts.agent, prompt, repoRoot, logFile, {
 		stage: 'garden',
 		tokenBudget: opts.tokenBudget,
@@ -297,7 +271,7 @@ async function main() {
 		process.exit(result.exitCode || 1);
 	}
 
-	// Slug-level diff (rename-tolerant: re-sequencing a ticket isn't a remove+add).
+	// Slug-level diff (rename-tolerant: re-sequencing a ticket or moving it between folders isn't a remove+add).
 	const afterSlugs = await backlogSlugs(ticketsDir);
 	const removed = [...beforeSlugs].filter(s => !afterSlugs.has(s)).length;
 	const added = [...afterSlugs].filter(s => !beforeSlugs.has(s)).length;

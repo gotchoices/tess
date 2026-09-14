@@ -1,5 +1,7 @@
 /**
- * Builds the per-ticket prompt: workflow rules + ticket contents + framing.
+ * Builds agent prompts: the per-ticket prompt (workflow rules + ticket
+ * contents + framing) and the gardener's (garden rules + shared conventions +
+ * backlog inventory + human feedback).
  *
  * If the project has the local code-search MCP server wired up AND the index
  * has been built, a directive block is injected at the END of the prompt
@@ -20,6 +22,7 @@ import { join } from 'node:path';
 import { NEXT_STAGE, formatSeq } from './tickets.mjs';
 import { RULES_DIR, readProjectRules } from './project-rules.mjs';
 import { detectSearch } from './detect-search.mjs';
+import { boardCheckLines, inventoryText, releaseSummary } from './garden-inventory.mjs';
 
 /**
  * Build the full prompt for a ticket.
@@ -75,6 +78,75 @@ export async function buildPrompt(ticket, tessRoot, repoRoot, prereqNotes = []) 
 	sections.push(
 		'Work ticket as described above.',
 		'Do NOT commit — runner handles commits after you complete.',
+	);
+
+	return sections.join('\n');
+}
+
+/**
+ * Build the gardener's prompt for one pass over the backlog.
+ *
+ * `inventory` is lib/garden-inventory.mjs `buildInventory`'s result, `rules`
+ * the project rules addenda (`readProjectRules(…).rules`), and `board`
+ * `checkBoard`'s `{ errors, warnings }`, which get a section only when there
+ * are any.  A null `feedback` means none was given, and the prompt then
+ * forbids every move the garden rules reserve for the human.
+ */
+export async function buildGardenPrompt(tessRoot, repoRoot, { inventory, releases, rules, board, declineAfterDays, feedback }) {
+	const [gardenRules, sharedRules, searchServer] = await Promise.all([
+		readFile(join(tessRoot, 'agent-rules', 'garden.md'), 'utf-8'),
+		readFile(join(tessRoot, 'agent-rules', 'tickets.md'), 'utf-8'),
+		detectSearch(repoRoot),
+	]);
+	const { top, folders } = inventory.counts;
+	const boardLines = boardCheckLines(board);
+
+	const sections = [
+		`# Backlog gardening pass — ${top + folders} ticket(s) in tickets/backlog/ (${top} at the top level, ${folders} in sub-folders)`,
+		'',
+		'## Gardening rules:',
+		'',
+		gardenRules,
+		'',
+		'## Shared workflow conventions (stage-specific blocks removed):',
+		'',
+		filterStageBlocks(sharedRules, null),
+		...projectRuleSections(rules, null),
+	];
+
+	if (boardLines.length > 0) {
+		sections.push(
+			'',
+			'## Board check',
+			'',
+			'The runner\'s startup board check finds these on the current board. Report them; do not rename folders or move tickets to clear them.',
+			'',
+			...boardLines,
+		);
+	}
+
+	sections.push(
+		'',
+		'## Backlog inventory (headers only — read the full files you act on):',
+		'',
+		releaseSummary(releases),
+		`Paths are relative to tickets/backlog/. \`age\` is whole days since the ticket arrived at the top level of backlog/, read from git history (\`new\`: no commit has put it there yet). \`PROPOSE-DECLINE\` marks an age of ${declineAfterDays} days or more.`,
+		'',
+		...inventoryText(inventory.groups),
+		'## Human feedback:',
+		'',
+		feedback ?? 'None provided this pass — consolidate, backfill, rank, and propose declines only. Do NOT decline, promote, defer, or pull forward any ticket.',
+		'',
+		'## End',
+	);
+
+	if (searchServer) {
+		sections.push(searchDirective(searchServer));
+	}
+
+	sections.push(
+		'Work the gardening pass as described above.',
+		'Do NOT commit — the runner handles the commit after you complete.',
 	);
 
 	return sections.join('\n');

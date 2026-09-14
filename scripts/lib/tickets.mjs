@@ -354,7 +354,9 @@ export function parseSlug(filename) {
 
 /**
  * Read a single-line header field's raw value, or null when the field is
- * absent.  The header is the region above the first `----` divider.
+ * absent.  `pattern` is a field name, or an alternation of names
+ * (`prereq|dependencies`); the header is `headerRegion`'s, so `content` may
+ * be a whole ticket or `ticket.header`.
  *
  * The horizontal-whitespace class matters: a plain `\s*` after the colon also
  * matches the newline, so an empty field (`prereq:` with nothing after it)
@@ -362,7 +364,7 @@ export function parseSlug(filename) {
  * `prereq:` followed by `files: …` came to yield a file path as a prereq slug.
  * An empty field yields `''`, which every caller treats as absent.
  */
-function headerField(content, pattern) {
+export function headerField(content, pattern) {
 	// `[ \t]` — a literal space and a literal tab — deliberately, not `[^\S\r\n]`.
 	// This pattern is assembled in a template literal, where a regex class escape
 	// silently degrades: `\S` becomes a bare `S`, so `[^\S\r\n]` compiles as

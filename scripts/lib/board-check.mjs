@@ -137,6 +137,11 @@ function targetProblems({ target, folder, stage }, releases) {
 	return [`target: ${target} is a later release, but ${stage}/ holds current work — move it to backlog/${target}/ or drop the field`];
 }
 
+/** True when a ticket header gives any of `anchorFields` a non-empty value. */
+export function hasAnchor(header, anchorFields) {
+	return anchorFields.some(field => parseListField(header, field).length > 0);
+}
+
 /**
  * A ticket names at least one anchor: a non-empty `architecture:` or a field a
  * project addendum declares.  Presence only — whether an `architecture:` path
@@ -144,7 +149,7 @@ function targetProblems({ target, folder, stage }, releases) {
  * resolving section slugs would mean re-implementing heading-slug rules.
  */
 function anchorProblems({ header }, anchorFields) {
-	if (anchorFields.some(field => parseListField(header, field).length > 0)) return [];
+	if (hasAnchor(header, anchorFields)) return [];
 	const named = anchorFields.map(field => `${field}:`);
 	return [`no anchor — add ${named.length === 1 ? named[0] : `one of ${named.join(', ')}`} to the header`];
 }

@@ -322,20 +322,29 @@ Shipping has no command yet. It means dropping the current entry from `releases.
 Every processing stage generates backlog tickets, but `backlog/` drains only through a human — left alone it grows into a flat list that's expensive to triage. The **gardener** is a dedicated agent pass that turns that queue into fewer, better-ranked decisions:
 
 ```bash
-node tess/scripts/garden.mjs                          # consolidate, backfill triage headers, rank
-node tess/scripts/garden.mjs --feedback decisions.md  # also execute declines/promotions from a file
-node tess/scripts/garden.mjs "decline the two CLI cosmetic bugs; promote the sync cluster"
-node tess/scripts/garden.mjs --dry-run                # print the inventory, invoke nothing
+node tess/scripts/garden.mjs                          # consolidate, backfill headers and anchors, rank, propose declines
+node tess/scripts/garden.mjs --feedback decisions.md  # also execute declines/promotions/deferrals from a file
+node tess/scripts/garden.mjs "decline the two CLI cosmetic bugs; defer the sync cluster to GA"
+node tess/scripts/garden.mjs --dry-run                # print the grouped inventory and board check, invoke nothing
 ```
+
+The gardener reads the whole backlog, sub-folders included, grouped by [release](#releases): the top level of `backlog/` (current work), then each release folder in `releases.md` order, then any other folder. It also runs the [startup board check](#startup-board-check), but unlike the runner it does not stop on errors: it hands them to the agent, which reports them and leaves the folders alone, because fixing them is a human's call.
 
 What it does (rules in `agent-rules/garden.md`):
 
-1. **Backfill** — every backlog bug gets `severity:` / `likelihood:`; every backlog ticket gets `tradeoffs:` (the honest one-sentence decline argument), derived from the ticket body and the code it references.
-2. **Merge & cluster** — duplicates fold together; several tickets that are symptoms of one underlying weakness become a single **theme ticket** whose deliverable is the invariant that retires the class (a type change, a property test, a boundary assertion), with the instances kept as evidence arms.
-3. **Rank** — sequence-prefixes the promote-first candidates and writes the full ranked picture to `tickets/.garden-report.md` (tracked, overwritten each pass).
-4. **Execute feedback** — only with explicit human feedback: declined tickets are deleted **and** recorded as an accepted-tradeoff `NOTE:` comment at the code site (so future reviewers don't re-discover and re-file the finding); promoted tickets move to `plan/` (or `fix/`). Without feedback the gardener never declines or promotes — those calls stay human.
+1. **Backfill** — every backlog bug gets `severity:` / `likelihood:`; every backlog ticket gets `tradeoffs:` (the honest one-sentence decline argument), derived from the ticket body and the code it references. Every backlog ticket also gets an **anchor** (see [Ticket Format](#ticket-format)): a project-declared field such as `features:` when the body names that kind of thing, otherwise `architecture:` naming the document the work touches. The gardener never invents a code; a ticket nothing fits is listed for the human instead.
+2. **Merge & cluster** — duplicates fold together; several tickets that are symptoms of one underlying weakness become a single **theme ticket** whose deliverable is the invariant that retires the class (a type change, a property test, a boundary assertion), with the instances kept as evidence arms. Merges stay within one place, since a merge across folders would move work between releases.
+3. **Rank** — release first (the top level before any release folder, folders in `releases.md` order), then severity × likelihood, then cost (`difficulty:` and the size of the change). Only top-level tickets get sequence prefixes, because the runner never promotes a folder ticket. The full ranked picture, grouped by release, goes to `tickets/.garden-report.md` (tracked, overwritten each pass).
+4. **Propose declines** — a top-level ticket that has waited `--decline-after-days` (default 60) or longer is listed under *Propose decline* with its age and the reason from its `tradeoffs:` line. Age is days since the ticket arrived at the top level of `backlog/`, read from a single `git log` over `tickets/backlog`: a re-sequence keeps it, arriving from a release folder or from another stage restarts it, and an uncommitted ticket reads `new` and is never proposed. Nothing is declined without feedback.
+5. **Execute feedback** — only with explicit human feedback:
+   - **Decline** — the ticket is deleted **and** recorded as an accepted-tradeoff `NOTE:` comment at the code site, so future reviewers don't re-discover and re-file the finding.
+   - **Promote** — the ticket moves to `plan/` (or `fix/`).
+   - **Defer** — the ticket moves into `backlog/<CODE>/`. The code must be listed in `releases.md`; a request naming any other code is reported as unresolvable and nothing moves.
+   - **Pull forward** — a folder ticket moves up to `backlog/`.
 
-Options: `--agent` (default `claude`), `--difficulty` (model tier, default `hard`), `--token-budget`, `--no-commit`, `--dry-run`. The pass commits as `tess: garden backlog (<n> removed, <m> added, <k> updated)`, and reconciles the working tree first (see [Clean Working Tree](#clean-working-tree)) so leftovers do not land under that message.
+   Without feedback the gardener never declines, promotes, defers or pulls forward — those calls stay human.
+
+Options: `--agent` (default `claude`), `--difficulty` (model tier, default `hard`), `--decline-after-days` (default `60`), `--token-budget`, `--no-commit`, `--dry-run`. The pass commits as `tess: garden backlog (<n> removed, <m> added, <k> updated)`, counting removals and additions by slug across `backlog/` and its sub-folders, so neither a re-sequence nor a move between folders reads as churn. It reconciles the working tree first (see [Clean Working Tree](#clean-working-tree)) so leftovers do not land under that message.
 
 ## Local Code Search (optional)
 
