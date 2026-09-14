@@ -12,10 +12,11 @@
  * just ran.
  *
  * Deferral cascade: a slug enters `deferred` when (a) the agent moved it
- * to blocked/ or backlog/ during the chain, (b) the cross-stage prereq
- * gate in `runOneStage` rejected it because a prereq is still behind, or
- * (c) the agent errored on it.  In all three cases the chain ends but the
- * run continues with the next root.  Subsequent root tickets that list a
+ * to blocked/ or backlog/ (a release folder included) during the chain,
+ * (b) the cross-stage prereq gate in `runOneStage` rejected it because a
+ * prereq is still behind, (c) `runOneStage` found it not runnable, or
+ * (d) the agent errored on it.  In every case the chain ends but the run
+ * continues with the next root.  Subsequent root tickets that list a
  * deferred slug as a prereq are skipped — and they themselves are added
  * to `deferred`, so the skip cascades transitively through the queue.
  * Agent errors are also collected and surfaced as a non-zero exit code at
@@ -115,7 +116,7 @@ export async function run(ctx) {
 			if (outcome.kind === 'stopped') break rootLoop;
 			if (outcome.kind === 'skipped') break;
 			if (outcome.kind === 'timed-out') break;
-			if (outcome.kind === 'deferred') {
+			if (outcome.kind === 'deferred' || outcome.kind === 'invalid') {
 				deferred.add(t.slug);
 				break;
 			}

@@ -23,6 +23,7 @@ tickets/
 ├── review/        # Code review and validation
 ├── complete/      # Archived completed work
 ├── blocked/       # Parked — unresolved questions
+├── releases.md    # Optional ordered release list (see Releases)
 ├── AGENTS.md      # Points to tess agent rules
 ├── CLAUDE.md      # Points to tess agent rules
 ├── .version       # Ticket format version (managed by tess)
@@ -80,6 +81,7 @@ TODO
 **Cross-stage prereqs.** Prereqs are resolved across the whole pipeline, not just the current stage. The runner ranks stages as `backlog (0) < fix = plan (1) < implement (2) < review (3) < complete (4)` and treats a prereq as *satisfied* only when it sits in a strictly later rank than its dependent (same-stage ordering is enforced by topo sort). Practical effect:
 
 - Prereq still in an earlier stage, in a peer-but-different stage (e.g. dependent in `plan/` with prereq still in `fix/`), or parked in `blocked/` → the dependent is **deferred** for this run and any sibling listing it as `prereq:` is deferred too. The cascade is transitive through the queue.
+- Prereq deferred to a later release than its dependent (filed in a `backlog/<CODE>/` folder further down `tickets/releases.md`) → the dependent is **deferred** whatever the stages, and the runner says which ticket to move. See [Releases](#releases).
 - Prereq slug not on the board but carrying a **tombstone** in `tickets/.pruned-tickets.jsonl` → it completed and was later swept out of `complete/` (see [Pruning Completed Tickets](#pruning-completed-tickets)). Satisfied, and the runner says so — `prereq "<slug>": completed <date>, pruned` — in the dry-run listing, the run log, and the agent's prompt, so a landed prereq never reads as missing work.
 - Prereq slug matching neither the board nor a tombstone is **unknown**: still assumed already complete and ignored (a stale reference, or work that predates the tombstone ledger), but reported rather than silently dropped, since it is the one case nothing can vouch for.
 
@@ -154,7 +156,7 @@ After **every** stage transition, live re-discovers the entire ticket board from
 
 Because it reads disk every iteration, a ticket created mid-run is picked up the same run: a `review` that files a `fix` sees that fix jump to the front (fix is highest-priority) and resolved next; a `plan` that splits into several `implement` tickets sees them ranked in immediately. A ticket whose prereq is still *behind but advancing* is skipped only for the current pass and becomes selectable the moment its prereq moves forward — so an entire prereq chain can drain in one run.
 
-A slug that errors or times out is excluded for the rest of the run (next run resumes it via its resume note); its dependents stay gated behind it. A per-slug transition cap (12) and a global run cap backstop an agent that regresses or re-spawns a ticket in a loop. `--max <n>` caps the number of transitions (not a snapshot length).
+A slug that errors, times out or is not runnable (see [Releases](#releases)) is excluded for the rest of the run (next run resumes an interrupted one via its resume note), and its dependents stay gated behind it — including a dependent in the same stage, which the stage-rank gate alone would let through. A per-slug transition cap (12) and a global run cap backstop an agent that regresses or re-spawns a ticket in a loop. `--max <n>` caps the number of transitions (not a snapshot length).
 
 Best for: unattended runs that should clear the whole pipeline — including the follow-up work earlier stages generate — in a single invocation, always working the most important thing next.
 
@@ -170,7 +172,7 @@ Pick one root ticket and follow it through **every** stage to `complete/` before
 
 After each stage transition, chase looks up the same slug in any forward-ranked stage (an agent is free to jump straight from `fix/` to `review/` when no separate implementation pass is needed), then in `blocked/` and `backlog/`. It does **not** rely on a filesystem diff — other agents may be modifying `tickets/` in parallel. If the slug landed somewhere past its current stage, the chase continues from there; if it landed in `blocked/` or `backlog/`, the chain ends and the slug is recorded as **deferred** for the rest of the run.
 
-**Deferral cascade.** A slug enters the run's deferred set when the agent moves it to `blocked/` or `backlog/`, when the cross-stage prereq gate rejects it because a prereq is still behind, *or* when the agent errors on it. A queued root that lists a deferred slug as `prereq:` is skipped — and the skipped root is itself added to the deferred set, so the skip cascades transitively through the queue. The same cascade applies in `batch` mode. This prevents tess from charging into work whose prerequisite just bounced, hasn't caught up, or failed — without throwing away independent work elsewhere in the queue. Any agent errors collected during the run surface as a non-zero exit code once the runner finishes the rest of the snapshot.
+**Deferral cascade.** A slug enters the run's deferred set when the agent moves it to `blocked/` or `backlog/`, when the cross-stage prereq gate rejects it because a prereq is still behind, when the ticket is not runnable (see [Releases](#releases)), *or* when the agent errors on it. A queued root that lists a deferred slug as `prereq:` is skipped — and the skipped root is itself added to the deferred set, so the skip cascades transitively through the queue. The same cascade applies in `batch` mode. This prevents tess from charging into work whose prerequisite just bounced, hasn't caught up, or failed — without throwing away independent work elsewhere in the queue. Any agent errors collected during the run surface as a non-zero exit code once the runner finishes the rest of the snapshot.
 
 **Splits.** If an agent splits one ticket into multiple next-stage tickets, chase follows the same-slug branch and leaves the siblings in place for the next run.
 
@@ -244,6 +246,73 @@ node tess/scripts/backfill-tombstones.mjs
 ```
 
 For every commit whose subject starts `tess: prune `, the backfill reads the tickets that commit deleted and dates each one from the last commit to touch it beforehand — the same two values a live sweep records. It is idempotent: a record is skipped whenever its `(slug, landing commit)` pair is already in the ledger, so sweeps that wrote their own tombstones contribute nothing and a second run appends zero. `--project <dir>` points it at a project other than the working directory, `--ref <rev>` scans sweeps reachable from something other than `HEAD`. Two ticket files that differ only by sequence prefix (`3-x.md`, `4-x.md`) are one slug, so a sweep that removed both leaves one tombstone.
+
+## Releases
+
+Everything not explicitly deferred is due in the **current** release. Tess reads the releases from one optional file, `tickets/releases.md`, and reads what is deferred from where a ticket sits: a ticket in `backlog/<CODE>/` is deferred to release `<CODE>`, and every other ticket is current.
+
+### The release list
+
+```markdown
+# Releases
+
+Optional preamble prose — ignored, and kept as-is when tess rewrites the file.
+
+## BETA
+due: 2026-11-01
+
+Free-form exit criteria: any markdown except a level-2 heading.
+
+## GA
+
+Exit criteria.
+```
+
+The file is a line grammar, not a general markdown document:
+
+- Every line starting `## ` outside a fenced code block starts an entry, and its heading text is the release **code**. A code is an uppercase letter followed by 1–7 uppercase letters or digits (`BETA`, `GA`, `V2`) — no hyphens.
+- The first non-blank line after a heading may be `due: YYYY-MM-DD`, which must be a real calendar date. Every other line is exit-criteria text.
+- The first entry is the **current** release; the entries below it are later releases, in order.
+
+**No `releases.md` → the release model is off.** Sub-folders of `backlog/` are plain human-curated folders and nothing about them is validated; a `target:` header makes a ticket not runnable. **`releases.md` present → the model is on**, even when it lists no releases. An empty list means everything is current, so every backlog sub-folder is then an error.
+
+### Deferral folders
+
+With the model on, each sub-folder of `backlog/` must be named after a listed code other than the current one: `backlog/GA/` holds work deferred to `GA`. Current work lives at `backlog/` top level and in every other stage. Tess reads the tickets directly inside a folder and nothing deeper.
+
+The runner never works a folder ticket — `--stages backlog` processes the top level only — but folder tickets are on the board for prereq resolution, with or without `releases.md`, so a `prereq:` naming one resolves to where it sits instead of reading as unknown.
+
+### Startup board check
+
+Before anything runs, `--dry-run` included, the runner checks the board against the list. Any error is printed and the runner exits 1, as it does for a prereq cycle:
+
+- a `releases.md` problem — a malformed code, a code listed twice, a malformed or impossible `due:` date — named with its line number;
+- a backlog sub-folder that is not a listed code; matching is exact and case-sensitive, so `beta/` is not `BETA`, even on Windows;
+- a backlog sub-folder named after the current release — current tickets live directly in `backlog/`;
+- the same slug filed in two places across `backlog/` and its sub-folders (checked with or without `releases.md`).
+
+Warnings are printed and the run continues: a directory nested inside a release folder (tess ignores it), and any ticket whose prereq is deferred to a later release than the ticket itself — including a folder ticket, which the runner would otherwise never mention. The check runs once per run, not between tickets.
+
+### Prereqs into a later release
+
+A prereq deferred to a later release than its dependent cannot land first, so it defers the dependent whatever their stages. The run log, the dry-run and the startup warning give the same message, naming which ticket to move:
+
+```
+prereq "session-store" is deferred to release GA (backlog/GA/) but this ticket is due in BETA — pull the prereq into backlog/ or defer this ticket to backlog/GA/
+```
+
+### `target:` and not-runnable tickets
+
+A ticket's location already says its release, so the `target:` header is normally left off. When present it must agree with the location. If it does not, the ticket is **not runnable**: the runner logs `Not runnable <stage>/<file>:` with one line per problem, runs no agent, commits nothing, and leaves the ticket where it is so its dependents defer (`batch` and `chase` defer the slug; `live` excludes it for the rest of the run). `--dry-run` prints the same problems as `⚠ not runnable:` lines. The problems are:
+
+- `target:` on any ticket when `releases.md` does not exist;
+- `target:` naming a code the list does not have;
+- a ticket in `backlog/<CODE>/` whose `target:` names a different release;
+- a ticket anywhere else whose `target:` names a later release than the current one.
+
+### Shipping a release
+
+Shipping has no command yet. It means dropping the current entry from `releases.md` so the next one becomes current, moving that release's folder tickets up into `backlog/`, and removing the `target:` lines that named the shipped release; until a command exists, make those edits by hand in one commit.
 
 ## Backlog Gardening
 
@@ -366,6 +435,7 @@ description: <brief description>
 prereq: <slugs of other tickets that must land first — comma-separated, no prefix, no .md>
 files: <optional list of relevant files>
 difficulty: <optional: easy | medium | hard — defaults to medium>
+target: <optional: a release code from tickets/releases.md — normally omitted; the ticket's location already says its release>
 severity: <backlog bugs: corruption | wrong-result | edge-case | cosmetic>
 likelihood: <backlog bugs: normal-use | unusual | contrived>
 tradeoffs: <backlog tickets: one sentence on why a maintainer might decline or defer this>
@@ -381,9 +451,11 @@ Two consequences: in an unfenced ticket a `---` horizontal rule in the prose end
 
 **Filename convention:** `<slug>.md` with an optional `<sequence>-` prefix where lower sequence runs sooner (integer or decimal, e.g. `3-my-feature.md` or `3.5-my-feature.md`). The sequence number is not part of the ticket's identity — reference tickets by slug only in `prereq:`.
 
-**Backlog prefixes.** `backlog/` is the one stage that mixes kinds of work, so prefix each backlog ticket's slug with its kind — `bug-`, `feat-`, or `debt-` (e.g. `feat-export-csv.md`). The prefix is part of the slug and travels with the ticket for its whole life, so there's no need to strip it on promotion (`fix/bug-export-csv` is fine). Decisions aren't prefixed — they go to `blocked/`. Sub-folders inside `backlog/` are a human-curated convenience; agents don't create them.
+**Backlog prefixes.** `backlog/` is the one stage that mixes kinds of work, so prefix each backlog ticket's slug with its kind — `bug-`, `feat-`, or `debt-` (e.g. `feat-export-csv.md`). The prefix is part of the slug and travels with the ticket for its whole life, so there's no need to strip it on promotion (`fix/bug-export-csv` is fine). Decisions aren't prefixed — they go to `blocked/`. When `tickets/releases.md` exists, sub-folders of `backlog/` are release deferral folders, one per listed code (see [Releases](#releases)); without it they are a human-curated convenience. Agents don't create them.
 
 **Difficulty (`easy` | `medium` | `hard`, default `medium`):** a portable, agent-agnostic estimate of how much horsepower a ticket needs. The runner maps it — together with the pipeline stage and per-agent config — to a concrete model and reasoning-effort. See [Model & Effort Selection](#model--effort-selection). Reserve `hard` for genuinely demanding work (it selects the strongest, most expensive model) and `easy` for mechanical changes.
+
+**Target (`target:`, optional):** the release a ticket is due in. Normally omitted — a ticket's location already says it (see [Releases](#releases)). When present it must agree with that location, or the runner treats the ticket as not runnable.
 
 ## Model & Effort Selection
 

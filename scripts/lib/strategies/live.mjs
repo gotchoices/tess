@@ -18,12 +18,13 @@
  *   1. Re-discover every processing stage in `--stages` order, topo-sort within
  *      the stage, concatenate preserving cross-stage priority → the live queue.
  *   2. Build one cross-stage index and pick the first queue ticket that is
- *      runnable: not excluded (agent-errored / timed-out this run), under the
- *      per-slug transition cap, not transitively blocked (when --skip-blocked),
- *      and with every prereq satisfied (strictly-later rank). A ticket whose
- *      prereq is merely *behind but still in the pipeline* is skipped THIS pass
- *      only — it becomes selectable once that prereq advances, which is the
- *      whole point of reassessing live.
+ *      runnable: not excluded (agent-errored / timed-out / not runnable this
+ *      run) nor held behind a same-stage prereq that is, under the per-slug
+ *      transition cap, not transitively blocked (when --skip-blocked), and with
+ *      every prereq satisfied (strictly-later rank, not deferred to a later
+ *      release). A ticket whose prereq is merely *behind but still in the
+ *      pipeline* is skipped THIS pass only — it becomes selectable once that
+ *      prereq advances, which is the whole point of reassessing live.
  *   3. Run it. On success the ticket leaves its stage and its successor re-enters
  *      the board to compete by priority again. When nothing is runnable, the
  *      board is drained or wedged on blocked prereqs — stop.
@@ -95,10 +96,40 @@ async function buildQueue(ticketsDir, stages) {
 	return queue;
 }
 
+/**
+ * The highest-priority runnable ticket in the live queue, or null when nothing
+ * is runnable.
+ *
+ * Holding is the same-stage arm of the deferral cascade. A slug excluded this
+ * run stays in its stage, so a dependent in a *later* stage is already gated
+ * by rank — but a dependent in the *same* stage passes the rank gate (in-stage
+ * order is the topo sort's job) and would run ahead of work that has not
+ * landed. So a same-stage dependent of an excluded or held slug is held too;
+ * the queue is topo-sorted within each stage, so one forward pass carries the
+ * hold down a chain. A dependent in an *earlier* stage is left to the rank
+ * gate: the stages its prereq has already passed through have landed.
+ */
+export async function pickNext(queue, { ticketsDir, index, blockIndex = null, excluded, transitions }) {
+	const held = new Set(excluded);
+	for (const t of queue) {
+		if (!NEXT_STAGE[t.stage]) continue;                                   // terminal stage — nothing to advance
+		if (held.has(t.slug)) continue;                                       // excluded this run, or held behind a slug that is
+		if ((transitions.get(t.slug) ?? 0) >= MAX_TRANSITIONS_PER_SLUG) continue;  // regression loop
+		if (t.prereqs.some(p => held.has(p) && index.get(p)?.stage === t.stage)) {
+			held.add(t.slug);                                                 // same-stage prereq cannot land this run
+			continue;
+		}
+		if (blockIndex && findTransitiveBlocker(t, blockIndex)) continue;     // --skip-blocked: prereq chain hits blocked/
+		if (await findUnsatisfiedPrereq(t, ticketsDir, index)) continue;      // prereq behind but in-pipeline → retry later
+		return t;
+	}
+	return null;
+}
+
 export async function run(ctx) {
 	const { ticketsDir, opts } = ctx;
 
-	const excluded = new Set();      // slugs that errored / timed out this run — not retried until next run
+	const excluded = new Set();      // slugs that errored / timed out / were not runnable this run — not retried until next run
 	const transitions = new Map();   // slug → agent-run count this run (regression-loop backstop)
 	const errors = [];
 
@@ -108,6 +139,10 @@ export async function run(ctx) {
 
 	let runs = 0;
 	let staleSkips = 0;   // consecutive no-state-change skips; bounded by MAX_STALE_SKIPS
+	// NOTE: the startup board check (run.mjs `checkBoard`) is not repeated per iteration — it reads
+	// every ticket file. A board error introduced mid-run (say, an agent creating a backlog folder
+	// for an unlisted release code) surfaces at the next run's startup; if agents start creating
+	// release folders, run the check per iteration.
 	while (runs < runCap) {
 		const queue = await buildQueue(ticketsDir, opts.stages);
 		if (queue.length === 0) break;
@@ -119,18 +154,7 @@ export async function run(ctx) {
 			: null;
 
 		// Pick the highest-priority runnable ticket given the live board.
-		let pick = null;
-		for (const t of queue) {
-			if (!NEXT_STAGE[t.stage]) continue;                                   // terminal stage — nothing to advance
-			if (excluded.has(t.slug)) continue;                                   // errored/timed-out this run
-			if ((transitions.get(t.slug) ?? 0) >= MAX_TRANSITIONS_PER_SLUG) continue;  // regression loop
-			if (blockIndex && findTransitiveBlocker(t, blockIndex)) continue;     // --skip-blocked: prereq chain hits blocked/
-			const unsat = await findUnsatisfiedPrereq(t, ticketsDir, index);      // prereq behind but in-pipeline → retry later
-			if (unsat) continue;
-			pick = t;
-			break;
-		}
-
+		const pick = await pickNext(queue, { ticketsDir, index, blockIndex, excluded, transitions });
 		if (!pick) break;  // board drained, or every remaining ticket is gated/blocked
 
 		const label = `[live ${runs + 1}]`;
@@ -146,10 +170,12 @@ export async function run(ctx) {
 			}
 			continue;
 		}
-		if (outcome.kind === 'deferred') {
-			// Pre-selection already cleared the prereq gate, so this is a rare race
+		if (outcome.kind === 'deferred' || outcome.kind === 'invalid') {
+			// deferred: pre-selection already cleared the prereq gate, so this is a rare race
 			// (the board shifted between our index and runOneStage's re-check).
-			// Exclude for the run to avoid a tight no-progress loop; next run retries.
+			// invalid: the ticket contradicts the board; re-picking it would only fail again.
+			// Either way no agent ran: exclude for the run to avoid a tight no-progress loop,
+			// without counting a run; next run retries.
 			excluded.add(pick.slug);
 			staleSkips = 0;  // excluded set grew → state changed, not a stale spin
 			continue;

@@ -1,46 +1,29 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 
-import { findUnsatisfiedPrereq, indexAllTickets, parseDifficulty, parsePrereqs, prereqNotes, resolvePrereqs } from './tickets.mjs';
+import {
+	deferralReason,
+	discoverTickets,
+	findTicketBySlug,
+	findUnsatisfiedPrereq,
+	indexAllTickets,
+	parseDifficulty,
+	parsePrereqs,
+	parseTarget,
+	prereqNotes,
+	resolvePrereqs,
+} from './tickets.mjs';
 import { TOMBSTONE_FILE } from './tombstones.mjs';
-
-const tempDirs = [];
-after(async () => {
-	for (const dir of tempDirs) await rm(dir, { recursive: true, force: true });
-});
-
-/**
- * A tickets/ tree from a `{ stage: [filename, ...] }` map plus optional
- * tombstone records.  No git: prereq resolution reads the board and the
- * ledger, nothing else.
- */
-async function makeBoard(stages = {}, tombstoneRecords = []) {
-	const dir = await mkdtemp(join(tmpdir(), 'tess-tickets-test-'));
-	tempDirs.push(dir);
-	const ticketsDir = join(dir, 'tickets');
-	for (const [stage, files] of Object.entries(stages)) {
-		await mkdir(join(ticketsDir, stage), { recursive: true });
-		for (const file of files) {
-			await writeFile(join(ticketsDir, stage, file), 'description: x\n----\nbody\n', 'utf-8');
-		}
-	}
-	await mkdir(ticketsDir, { recursive: true });
-	if (tombstoneRecords.length > 0) {
-		const lines = tombstoneRecords.map(r => JSON.stringify(r) + '\n').join('');
-		await writeFile(join(ticketsDir, TOMBSTONE_FILE), lines, 'utf-8');
-	}
-	return ticketsDir;
-}
+import { makeBoard, withHeader } from './test-board.mjs';
 
 const ticket = (slug, stage, prereqs) => ({ slug, stage, prereqs, file: `${slug}.md` });
 
 const TOMB = { slug: 'session-store', file: '3-session-store.md', completedAt: '2026-01-02', commit: 'abcdef1234567890', prunedAt: '2026-02-04T00:00:00.000Z' };
 
 test('a prereq with a tombstone but no ticket file resolves as pruned, not unknown', async () => {
-	const ticketsDir = await makeBoard({ implement: ['user-model.md'] }, [TOMB]);
+	const ticketsDir = await makeBoard({ implement: ['user-model.md'] }, { tombstones: [TOMB] });
 	const index = await indexAllTickets(ticketsDir);
 
 	const [resolution] = resolvePrereqs(ticket('user-model', 'implement', ['session-store']), index);
@@ -51,7 +34,7 @@ test('a prereq with a tombstone but no ticket file resolves as pruned, not unkno
 });
 
 test('a tombstoned prereq satisfies its dependent instead of deferring it', async () => {
-	const ticketsDir = await makeBoard({ implement: ['user-model.md'] }, [TOMB]);
+	const ticketsDir = await makeBoard({ implement: ['user-model.md'] }, { tombstones: [TOMB] });
 
 	const unsatisfied = await findUnsatisfiedPrereq(ticket('user-model', 'implement', ['session-store']), ticketsDir);
 
@@ -59,7 +42,7 @@ test('a tombstoned prereq satisfies its dependent instead of deferring it', asyn
 });
 
 test('the runner reports a tombstoned prereq as completed and pruned', async () => {
-	const ticketsDir = await makeBoard({ implement: ['user-model.md'] }, [TOMB]);
+	const ticketsDir = await makeBoard({ implement: ['user-model.md'] }, { tombstones: [TOMB] });
 	const index = await indexAllTickets(ticketsDir);
 
 	const notes = prereqNotes(resolvePrereqs(ticket('user-model', 'implement', ['session-store']), index));
@@ -68,7 +51,7 @@ test('the runner reports a tombstoned prereq as completed and pruned', async () 
 });
 
 test('a slug matching neither the board nor a tombstone stays unknown and stays visible', async () => {
-	const ticketsDir = await makeBoard({ implement: ['user-model.md'] }, [TOMB]);
+	const ticketsDir = await makeBoard({ implement: ['user-model.md'] }, { tombstones: [TOMB] });
 	const index = await indexAllTickets(ticketsDir);
 	const dependent = ticket('user-model', 'implement', ['never-existed']);
 
@@ -82,7 +65,7 @@ test('a slug matching neither the board nor a tombstone stays unknown and stays 
 test('a live ticket outranks a stale tombstone for the same slug', async () => {
 	// A slug reopened after an earlier completion must resolve to where it now
 	// sits, so the dependent still defers on it.
-	const ticketsDir = await makeBoard({ implement: ['user-model.md'], plan: ['session-store.md'] }, [TOMB]);
+	const ticketsDir = await makeBoard({ implement: ['user-model.md'], plan: ['session-store.md'] }, { tombstones: [TOMB] });
 	const index = await indexAllTickets(ticketsDir);
 
 	assert.equal(index.get('session-store').pruned, undefined);
@@ -111,6 +94,146 @@ test('a damaged tombstone ledger degrades to skipping bad lines rather than fail
 
 	assert.equal(index.get('session-store').pruned, true);
 	assert.equal(index.size, 2);
+});
+
+// ── Backlog sub-folders and releases ──────────────────────────────────────
+
+const RELEASES = '# Releases\n\n## BETA\n\n## GA\n\n## V2\n';
+
+/** The fields of an index record that say where it sits. */
+const placeOf = record => ({ stage: record.stage, folder: record.folder, releaseRank: record.releaseRank });
+
+test('discovery reads backlog sub-folders only when asked, one level deep, skipping dot-folders and non-.md files', async () => {
+	const ticketsDir = await makeBoard({
+		backlog: ['top.md', 'notes.txt'],
+		'backlog/GA': ['deferred.md', 'readme.txt'],
+		'backlog/GA/nested': ['too-deep.md'],
+		'backlog/.hidden': ['hidden.md'],
+	}, { releases: RELEASES });
+
+	const plain = await discoverTickets(ticketsDir, 'backlog', Infinity);
+	const withFolders = await discoverTickets(ticketsDir, 'backlog', Infinity, { includeFolders: true });
+
+	assert.deepEqual(plain.map(t => t.slug), ['top']);
+	assert.deepEqual(withFolders.map(t => [t.slug, t.folder, t.releaseRank, t.release]), [['top', null, 0, 'BETA'], ['deferred', 'GA', 1, 'GA']]);
+	// Identity is unchanged: the folder is part of the path, not of the file name or slug.
+	assert.equal(withFolders[1].file, 'deferred.md');
+	assert.equal(withFolders[1].path, join(ticketsDir, 'backlog', 'GA', 'deferred.md'));
+});
+
+test('the index always includes backlog folder tickets: top level first, folders in name order', async () => {
+	const ticketsDir = await makeBoard({
+		backlog: ['shared.md'],
+		'backlog/GA': ['shared.md', 'in-both.md'],
+		'backlog/V2': ['in-both.md', 'only-v2.md'],
+		'backlog/V2/nested': ['too-deep.md'],
+	}, { releases: RELEASES, tombstones: [TOMB] });
+
+	const index = await indexAllTickets(ticketsDir);
+
+	assert.deepEqual(placeOf(index.get('shared')), { stage: 'backlog', folder: null, releaseRank: 0 });
+	assert.deepEqual(placeOf(index.get('in-both')), { stage: 'backlog', folder: 'GA', releaseRank: 1 });
+	assert.deepEqual(placeOf(index.get('only-v2')), { stage: 'backlog', folder: 'V2', releaseRank: 2 });
+	assert.deepEqual(placeOf(index.get('session-store')), { stage: 'complete', folder: null, releaseRank: 0 });
+	assert.equal(index.has('too-deep'), false);
+});
+
+test('findTicketBySlug looks inside backlog folders when backlog is one of the stages searched', async () => {
+	const ticketsDir = await makeBoard({ 'backlog/GA': [['2-parked.md', withHeader('target: GA', 'prereq: a')]] }, { releases: RELEASES });
+
+	const found = await findTicketBySlug(ticketsDir, 'parked', ['blocked', 'backlog']);
+
+	assert.deepEqual(
+		[found.stage, found.folder, found.file, found.releaseRank, found.target, found.prereqs],
+		['backlog', 'GA', '2-parked.md', 1, 'GA', ['a']],
+	);
+	assert.equal(await findTicketBySlug(ticketsDir, 'parked', ['plan']), null);
+});
+
+test('a discovered ticket carries its target: and its header region', async () => {
+	const content = '---\ndescription: x\ntarget: GA\n---\n\ntarget: V2 in the body is prose\n';
+	const ticketsDir = await makeBoard({ implement: [['x.md', content], 'plain.md'] }, { releases: RELEASES });
+
+	const tickets = await discoverTickets(ticketsDir, 'implement', Infinity);
+	const bySlug = Object.fromEntries(tickets.map(t => [t.slug, t]));
+
+	assert.equal(bySlug.x.target, 'GA');
+	assert.equal(bySlug.x.header, 'description: x\ntarget: GA');
+	assert.equal(bySlug.plain.target, null);
+	assert.equal(parseTarget('---\ntarget:\nprereq: a\n---\n'), null);  // an empty field is absent
+});
+
+test('a prereq deferred to a later release is release-order: it defers the dependent and says which way to move', async () => {
+	const ticketsDir = await makeBoard({
+		implement: [['user-model.md', withHeader('prereq: session-store')]],
+		'backlog/GA': ['session-store.md'],
+	}, { releases: RELEASES });
+	const [dependent] = await discoverTickets(ticketsDir, 'implement', Infinity);
+	const index = await indexAllTickets(ticketsDir);
+
+	const [resolution] = resolvePrereqs(dependent, index);
+
+	const message = 'prereq "session-store" is deferred to release GA (backlog/GA/) but this ticket is due in BETA — pull the prereq into backlog/ or defer this ticket to backlog/GA/';
+	assert.equal(resolution.status, 'release-order');
+	assert.equal(resolution.folder, 'GA');
+	assert.equal((await findUnsatisfiedPrereq(dependent, ticketsDir, index))?.slug, 'session-store');
+	assert.equal(deferralReason(resolution), message);
+	assert.deepEqual(prereqNotes([resolution]), [message]);
+});
+
+test('a top-level backlog ticket whose prereq sits in a release folder is release-order', async () => {
+	// The --stages backlog case: the dependent is current, its prereq is not.
+	const ticketsDir = await makeBoard({
+		backlog: [['promote-me.md', withHeader('prereq: later')]],
+		'backlog/V2': ['later.md'],
+	}, { releases: RELEASES });
+	const [dependent] = await discoverTickets(ticketsDir, 'backlog', Infinity);
+
+	const [resolution] = resolvePrereqs(dependent, await indexAllTickets(ticketsDir));
+
+	assert.equal(resolution.status, 'release-order');
+});
+
+test('without releases.md, a prereq in a curated backlog folder is behind, not unknown', async () => {
+	const ticketsDir = await makeBoard({
+		implement: [['user-model.md', withHeader('prereq: session-store')]],
+		'backlog/post-release-features': ['session-store.md'],
+	});
+	const [dependent] = await discoverTickets(ticketsDir, 'implement', Infinity);
+
+	const [resolution] = resolvePrereqs(dependent, await indexAllTickets(ticketsDir));
+
+	assert.equal(resolution.status, 'behind');
+	assert.equal(deferralReason(resolution), 'prereq "session-store" is in backlog/post-release-features/');
+	assert.deepEqual(prereqNotes([resolution]), []);
+});
+
+test('a top-level backlog ticket whose prereq sits in a backlog folder is behind: the topo sort never sees folder tickets', async () => {
+	// Same stage normally means "the topo sort orders it", but `--stages backlog` snapshots the top
+	// level only, so nothing would stop the dependent being promoted ahead of its parked prereq.
+	const ticketsDir = await makeBoard({
+		backlog: [['promote-me.md', withHeader('prereq: parked, sibling')], 'sibling.md'],
+		'backlog/libraries': ['parked.md'],
+	});
+	const dependent = (await discoverTickets(ticketsDir, 'backlog', Infinity)).find(t => t.slug === 'promote-me');
+
+	const resolutions = resolvePrereqs(dependent, await indexAllTickets(ticketsDir));
+
+	assert.deepEqual(resolutions.map(r => [r.slug, r.status]), [['parked', 'behind'], ['sibling', 'satisfied']]);
+});
+
+test('release order only looks forward: a prereq in the same or an earlier release is judged by stage and folder', async () => {
+	const ticketsDir = await makeBoard({
+		'backlog/V2': [['late.md', withHeader('prereq: early, same, current')], 'same.md'],
+		'backlog/GA': ['early.md'],
+		plan: ['current.md'],
+	}, { releases: RELEASES });
+	const late = (await discoverTickets(ticketsDir, 'backlog', Infinity, { includeFolders: true })).find(t => t.slug === 'late');
+
+	const resolutions = resolvePrereqs(late, await indexAllTickets(ticketsDir));
+
+	// None is release-order.  `early` is behind only because it sits in another folder: nothing has promoted it yet.
+	assert.deepEqual(resolutions.map(r => [r.slug, r.status]), [['early', 'behind'], ['same', 'satisfied'], ['current', 'satisfied']]);
 });
 
 // An empty header field used to swallow the following line, so `prereq:` with

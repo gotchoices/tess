@@ -1,15 +1,15 @@
 /**
  * Ticket discovery and parsing.
  *
- * Encapsulates the on-disk shape of a ticket: stage folder, optional sequence
- * prefix, slug, and the `prereq:` header field.  All filesystem-touching reads
- * for the snapshot live here.
+ * Encapsulates the on-disk shape of a ticket: stage folder, optional backlog
+ * sub-folder, optional sequence prefix, slug, and the header fields.  All
+ * filesystem-touching reads for the snapshot live here.
  */
 
-import { readdir, readFile, access } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { join, basename } from 'node:path';
-import { constants } from 'node:fs';
 import { readTombstones } from './tombstones.mjs';
+import { readReleases, releasePlacement } from './releases.mjs';
 
 /** Default stages from which to pull tickets (backlog excluded — parked by design). */
 export const PENDING_STAGES = ['review', 'implement', 'fix', 'plan'];
@@ -61,14 +61,90 @@ export function isPrereqSatisfied(prereqStage, ticketStage) {
 	return pr > tr;
 }
 
+/** `stage/` or `stage/folder/` — where a ticket sits, as the runner prints it. */
+export function boardLocation(stage, folder) {
+	return folder ? `${stage}/${folder}/` : `${stage}/`;
+}
+
+/** `readdir` with file types, or null when the directory is missing, unreadable, or raced away. */
+async function readDirents(dir) {
+	try {
+		return await readdir(dir, { withFileTypes: true });
+	} catch {
+		return null;
+	}
+}
+
+const isTicketFile = d => !d.isDirectory() && d.name.endsWith('.md');
+const isSubfolder = d => d.isDirectory() && !d.name.startsWith('.');
+/** Code-unit order: identical on every platform and filesystem, and case-sensitive like release codes. */
+const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
 /**
- * One-shot scan of every known stage folder, returning `slug → { stage, file }`.
+ * The layout of `backlog/`: its top-level ticket files, and each immediate
+ * sub-folder (dot-folders skipped) with its ticket files and the directories
+ * nested inside it.  Folders come in name order, files in directory order.
+ * Discovery never reads deeper than one level; `nested` exists so the board
+ * check can say what is being ignored.
+ */
+export async function readBacklogLayout(ticketsDir) {
+	const backlogDir = join(ticketsDir, 'backlog');
+	const dirents = await readDirents(backlogDir) ?? [];
+	const folders = [];
+	for (const name of dirents.filter(isSubfolder).map(d => d.name).sort(byName)) {
+		const inner = await readDirents(join(backlogDir, name));
+		if (!inner) continue;  // raced with a remove/rename
+		folders.push({
+			name,
+			files: inner.filter(isTicketFile).map(d => d.name),
+			nested: inner.filter(isSubfolder).map(d => d.name).sort(byName),
+		});
+	}
+	return { top: dirents.filter(isTicketFile).map(d => d.name), folders };
+}
+
+/**
+ * Every ticket file of one stage as `{ entry, folder, path }`: the top level
+ * first, then — for `backlog` with `includeFolders` — each sub-folder's files,
+ * folders in name order.
+ */
+async function stageFiles(ticketsDir, stage, includeFolders) {
+	const stageDir = join(ticketsDir, stage);
+	if (stage === 'backlog' && includeFolders) {
+		const { top, folders } = await readBacklogLayout(ticketsDir);
+		return [
+			...top.map(entry => ({ entry, folder: null, path: join(stageDir, entry) })),
+			...folders.flatMap(({ name, files }) => files.map(entry => ({ entry, folder: name, path: join(stageDir, name, entry) }))),
+		];
+	}
+	const dirents = await readDirents(stageDir) ?? [];
+	return dirents.filter(isTicketFile).map(d => ({ entry: d.name, folder: null, path: join(stageDir, d.name) }));
+}
+
+/** A ticket file's text, or null when it was removed or moved between listing and reading. */
+async function readTicketFile(path) {
+	try {
+		return await readFile(path, 'utf-8');
+	} catch (err) {
+		if (err.code === 'ENOENT') return null;
+		throw err;
+	}
+}
+
+/**
+ * One-shot scan of every known stage folder, returning `slug → record`, where
+ * a record is `{ stage, file, folder, releaseRank, release }`.
  *
  * When the same slug appears in multiple stages (e.g. an agent split or a
  * stale duplicate), the most-advanced copy wins — iteration runs in reverse
  * pipeline order so a slug found in `complete/` masks one still sitting in
  * `plan/`.  Used to resolve cross-stage prereq edges that aren't in the
  * snapshot's own stage bucket.
+ *
+ * Backlog sub-folders are always included — the runner never processes their
+ * tickets, but a prereq naming one must resolve to where it sits rather than
+ * read as unknown.  Within `backlog`, top-level entries come before folder
+ * entries and folders go in name order; the first copy of a slug wins.
  *
  * Pass `{ withPrereqs: true }` to also read each ticket's `prereq:` header,
  * which lets callers walk the prereq DAG across stages (e.g. transitive
@@ -82,28 +158,17 @@ export function isPrereqSatisfied(prereqStage, ticketStage) {
  */
 const STAGE_INDEX_ORDER = ['complete', 'review', 'implement', 'fix', 'plan', 'backlog', 'blocked'];
 export async function indexAllTickets(ticketsDir, { withPrereqs = false } = {}) {
+	const releases = await readReleases(ticketsDir);
 	const index = new Map();
 	for (const stage of STAGE_INDEX_ORDER) {
-		const stageDir = join(ticketsDir, stage);
-		let entries;
-		try {
-			entries = await readdir(stageDir);
-		} catch {
-			continue;
-		}
-		for (const entry of entries) {
-			if (!entry.endsWith('.md')) continue;
+		for (const { entry, folder, path } of await stageFiles(ticketsDir, stage, true)) {
 			const slug = parseSlug(entry);
 			if (index.has(slug)) continue;
-			const record = { stage, file: entry };
+			const record = { stage, file: entry, folder, ...releasePlacement(releases, folder) };
 			if (withPrereqs) {
-				try {
-					const content = await readFile(join(stageDir, entry), 'utf-8');
-					record.prereqs = parsePrereqs(content);
-				} catch (err) {
-					if (err.code === 'ENOENT') continue;  // raced with a remove/move
-					throw err;
-				}
+				const content = await readTicketFile(path);
+				if (content == null) continue;
+				record.prereqs = parsePrereqs(content);
 			}
 			index.set(slug, record);
 		}
@@ -113,6 +178,9 @@ export async function indexAllTickets(ticketsDir, { withPrereqs = false } = {}) 
 		index.set(slug, {
 			stage: 'complete',
 			file: null,
+			folder: null,
+			releaseRank: 0,
+			release: null,
 			pruned: true,
 			completedAt: tomb.completedAt ?? null,
 			commit: tomb.commit ?? null,
@@ -153,35 +221,88 @@ export function findTransitiveBlocker(ticket, index) {
  * Resolve every prereq of `ticket` against the cross-stage index, returning
  * one record per slug with a `status`:
  *
- *   - `satisfied` — on the board in a strictly later rank (or the same stage,
- *      where the topo sort orders it).
- *   - `behind`    — on the board but at a lower/peer rank, or in `blocked/`.
- *   - `pruned`    — not on the board but carrying a tombstone: it completed
+ *   - `satisfied`     — on the board in a strictly later rank (or the same
+ *      stage and backlog folder, where the topo sort orders it).
+ *   - `behind`        — on the board but at a lower/peer rank, in `blocked/`,
+ *      or in a different backlog folder from a same-stage dependent.
+ *   - `release-order` — deferred to a later release than the ticket itself
+ *      (a higher `releaseRank`), so it can never land first whatever its
+ *      stage.  Unsatisfied.  Carries `folder` (the prereq's release) and
+ *      `dueIn` / `dueFolder` (the ticket's release, and its folder when that
+ *      release is deferred too) for the message.
+ *   - `pruned`        — not on the board but carrying a tombstone: it completed
  *      and was later swept out of `complete/`.  Satisfied, and carries
  *      `completedAt` / `commit` so the runner can say so out loud.
- *   - `unknown`   — matches neither the board nor a tombstone.  Treated as
+ *   - `unknown`       — matches neither the board nor a tombstone.  Treated as
  *      satisfied (the historical assumption: already complete, or a stale
  *      reference), but reported, since it is the one case nothing can vouch
  *      for.
  */
 export function resolvePrereqs(ticket, index) {
+	const ticketRank = ticket.releaseRank ?? 0;
 	return ticket.prereqs.map(slug => {
 		const found = index.get(slug);
 		if (!found) return { slug, status: 'unknown' };
 		if (found.pruned) {
 			return { slug, status: 'pruned', stage: found.stage, completedAt: found.completedAt, commit: found.commit };
 		}
-		const status = isPrereqSatisfied(found.stage, ticket.stage) ? 'satisfied' : 'behind';
-		return { slug, status, stage: found.stage };
+		if ((found.releaseRank ?? 0) > ticketRank) {
+			return {
+				slug,
+				status: 'release-order',
+				stage: found.stage,
+				folder: found.folder,
+				dueIn: ticket.release ?? null,
+				dueFolder: ticketRank > 0 ? ticket.folder : null,
+			};
+		}
+		return { slug, status: boardStatus(found, ticket), stage: found.stage, folder: found.folder ?? null };
 	});
 }
 
 /**
+ * `satisfied` or `behind` for a prereq on the board.  A same-stage edge is
+ * left to the topo sort — but the sort only ever sees one stage's top level,
+ * so a prereq in a different backlog folder from its dependent has nothing
+ * ordering it and is behind.  (A top-level backlog ticket whose prereq is
+ * parked in a curated folder must not be promoted ahead of it.)
+ */
+function boardStatus(found, ticket) {
+	if (found.stage !== ticket.stage) return isPrereqSatisfied(found.stage, ticket.stage) ? 'satisfied' : 'behind';
+	return (found.folder ?? null) === (ticket.folder ?? null) ? 'satisfied' : 'behind';
+}
+
+/** Resolution statuses that defer the dependent. */
+const UNSATISFIED_STATUSES = new Set(['behind', 'release-order']);
+
+/** The first resolution that defers its dependent, or null. */
+export function firstUnsatisfied(resolutions) {
+	return resolutions.find(r => UNSATISFIED_STATUSES.has(r.status)) ?? null;
+}
+
+function releaseOrderMessage(r) {
+	return `prereq "${r.slug}" is deferred to release ${r.folder} (backlog/${r.folder}/) but this ticket is due in ${r.dueIn}`
+		+ ` — pull the prereq into ${boardLocation('backlog', r.dueFolder)} or defer this ticket to backlog/${r.folder}/`;
+}
+
+/**
+ * Why an unsatisfied resolution defers its dependent, as one clause.  The
+ * runner's deferral log, the dry-run and the board check all print this, so
+ * the same situation always reads the same way.
+ */
+export function deferralReason(r) {
+	return r.status === 'release-order'
+		? releaseOrderMessage(r)
+		: `prereq "${r.slug}" is in ${boardLocation(r.stage, r.folder)}`;
+}
+
+/**
  * One log line per prereq whose resolution is worth saying out loud — the
- * pruned ones (so a landed prereq never reads as missing work) and the unknown
+ * pruned ones (so a landed prereq never reads as missing work), the unknown
  * ones (so a genuinely unresolvable slug stays visible instead of being
- * silently assumed complete).  Board-resolved prereqs produce nothing; their
- * state is already evident from the board.
+ * silently assumed complete), and the release-order ones (so the fix — move
+ * one ticket or the other — is spelled out).  Otherwise board-resolved prereqs
+ * produce nothing; their state is already evident from the board.
  */
 export function prereqNotes(resolutions) {
 	const notes = [];
@@ -192,6 +313,8 @@ export function prereqNotes(resolutions) {
 			notes.push(`prereq "${r.slug}": completed ${when}, pruned${commit}`);
 		} else if (r.status === 'unknown') {
 			notes.push(`prereq "${r.slug}": not on the board and no tombstone — unknown, assumed complete`);
+		} else if (r.status === 'release-order') {
+			notes.push(releaseOrderMessage(r));
 		}
 	}
 	return notes;
@@ -199,18 +322,19 @@ export function prereqNotes(resolutions) {
 
 /**
  * Resolve a ticket's prereqs against the cross-stage index and return the
- * first one that's *behind* (lower rank, peer-but-different stage, or
- * parked in `blocked/`).  Returns `null` when every prereq is either
- * satisfied (same stage or strictly later), tombstoned (completed, then
- * pruned out of `complete/`), or absent entirely (assumed already complete
- * or a stale reference).
+ * first one that defers it: *behind* (lower rank, peer-but-different stage,
+ * parked in `blocked/`, or in another backlog folder) or deferred to a later
+ * release.  Returns `null` when every prereq is either satisfied (same stage
+ * and folder, or strictly later),
+ * tombstoned (completed, then pruned out of `complete/`), or absent entirely
+ * (assumed already complete or a stale reference).
  *
  * Pass a prebuilt index to avoid re-scanning when checking many tickets;
  * omit it for one-shot checks at the moment of processing.
  */
 export async function findUnsatisfiedPrereq(ticket, ticketsDir, index) {
 	const idx = index ?? await indexAllTickets(ticketsDir);
-	return resolvePrereqs(ticket, idx).find(r => r.status === 'behind') ?? null;
+	return firstUnsatisfied(resolvePrereqs(ticket, idx));
 }
 
 const SEQUENCE_PREFIX = /^(\d+(?:\.\d+)?)-(.+)\.md$/;
@@ -314,9 +438,37 @@ export function parseDifficulty(content) {
 }
 
 /**
- * Look for a ticket with the given slug across the named stage folders.
- * Returns the first match (in the order `stages` was passed) as a fully-
- * populated ticket object, or null if no match exists.
+ * Parse the optional `target:` header field — the release code a ticket
+ * claims to be due in — or null when absent or empty.  Kept verbatim (codes
+ * are case-sensitive); whether it agrees with the ticket's location is the
+ * board check's call (lib/board-check.mjs).
+ */
+export function parseTarget(content) {
+	return headerField(content, 'target') || null;
+}
+
+/** The ticket object discovery hands to strategies, validators and the agent prompt. */
+function buildTicket({ entry, folder, path }, stage, content, releases) {
+	return {
+		file: entry,
+		path,
+		stage,
+		folder,                                   // backlog sub-folder name, or null
+		...releasePlacement(releases, folder),    // releaseRank, release
+		sequence: parseSequence(entry),           // raw: number or null
+		slug: parseSlug(entry),
+		prereqs: parsePrereqs(content),
+		difficulty: parseDifficulty(content),
+		target: parseTarget(content),
+		header: headerRegion(content),
+	};
+}
+
+/**
+ * Look for a ticket with the given slug across the named stage folders
+ * (backlog sub-folders included when `backlog` is named).  Returns the first
+ * match (in the order `stages` was passed) as a fully-populated ticket
+ * object, or null if no match exists.
  *
  * Used by the chase strategy after each stage transition to locate the
  * agent's same-slug successor — by name rather than by filesystem diff,
@@ -324,75 +476,33 @@ export function parseDifficulty(content) {
  */
 export async function findTicketBySlug(ticketsDir, slug, stages) {
 	for (const stage of stages) {
-		const stageDir = join(ticketsDir, stage);
-		let entries;
-		try {
-			entries = await readdir(stageDir);
-		} catch {
-			continue;  // stage dir doesn't exist
-		}
-		for (const entry of entries) {
-			if (!entry.endsWith('.md')) continue;
-			if (parseSlug(entry) !== slug) continue;
-			const path = join(stageDir, entry);
-			let content;
-			try {
-				content = await readFile(path, 'utf-8');
-			} catch (err) {
-				if (err.code === 'ENOENT') continue;  // raced with a remove/move
-				throw err;
-			}
-			return {
-				file: entry,
-				path,
-				stage,
-				sequence: parseSequence(entry),
-				slug,
-				prereqs: parsePrereqs(content),
-				difficulty: parseDifficulty(content),
-			};
+		for (const file of await stageFiles(ticketsDir, stage, true)) {
+			if (parseSlug(file.entry) !== slug) continue;
+			const content = await readTicketFile(file.path);
+			if (content == null) continue;
+			return buildTicket(file, stage, content, await readReleases(ticketsDir));
 		}
 	}
 	return null;
 }
 
-/** Discover all .md ticket files in a stage folder, filtered by max sequence. */
-export async function discoverTickets(ticketsDir, stage, maxSequence) {
-	const stageDir = join(ticketsDir, stage);
-	try {
-		await access(stageDir, constants.R_OK);
-	} catch {
-		return [];
-	}
-
-	const entries = await readdir(stageDir);
+/**
+ * Discover all .md ticket files in a stage folder, filtered by max sequence.
+ *
+ * `includeFolders` adds the tickets in each immediate sub-folder of `backlog/`
+ * (never deeper, dot-folders skipped).  The runner leaves it off: a deferred
+ * ticket must never be promoted by `--stages backlog:N`.
+ */
+export async function discoverTickets(ticketsDir, stage, maxSequence, { includeFolders = false } = {}) {
+	const releases = await readReleases(ticketsDir);
 	const tickets = [];
 
-	for (const entry of entries) {
-		if (!entry.endsWith('.md')) continue;
-
-		const sequence = parseSequence(entry);
+	for (const file of await stageFiles(ticketsDir, stage, includeFolders)) {
 		// Unnumbered tickets are treated as sequence = +Infinity ("follows numbered").
-		const effective = sequence ?? Infinity;
-		if (effective > maxSequence) continue;
-
-		const path = join(stageDir, entry);
-		let content;
-		try {
-			content = await readFile(path, 'utf-8');
-		} catch (err) {
-			if (err.code === 'ENOENT') continue;  // raced with a remove/move during snapshotting
-			throw err;
-		}
-		tickets.push({
-			file: entry,
-			path,
-			stage,
-			sequence,            // raw: number or null
-			slug: parseSlug(entry),
-			prereqs: parsePrereqs(content),
-			difficulty: parseDifficulty(content),
-		});
+		if ((parseSequence(file.entry) ?? Infinity) > maxSequence) continue;
+		const content = await readTicketFile(file.path);
+		if (content == null) continue;  // raced with a remove/move during snapshotting
+		tickets.push(buildTicket(file, stage, content, releases));
 	}
 
 	// Within a stage: ascending sequence (low first); unnumbered (null) sorts last.

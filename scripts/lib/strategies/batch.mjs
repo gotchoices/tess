@@ -13,11 +13,11 @@
  * orchestrator surfaces any collected errors via a non-zero exit code.
  *
  * Deferred set: a slug enters `deferred` when its cross-stage prereq is
- * still behind, its dependent was deferred earlier in this run, or the
- * agent errored on it.  Subsequent tickets that list a deferred slug as
- * `prereq:` are skipped and themselves added to the set, so the gap
- * cascades through the queue just like the chase strategy's block/backlog
- * cascade.
+ * still behind, its dependent was deferred earlier in this run, the ticket
+ * is not runnable (its header contradicts the board), or the agent errored
+ * on it.  Subsequent tickets that list a deferred slug as `prereq:` are
+ * skipped and themselves added to the set, so the gap cascades through the
+ * queue just like the chase strategy's block/backlog cascade.
  */
 
 import { runOneStage } from '../run-ticket.mjs';
@@ -46,7 +46,7 @@ export async function run(ctx) {
 			deferred.add(ticket.slug);
 			errors.push({ slug: ticket.slug, exitCode: outcome.exitCode });
 		}
-		if (outcome.kind === 'deferred') {
+		if (outcome.kind === 'deferred' || outcome.kind === 'invalid') {
 			deferred.add(ticket.slug);
 		}
 

@@ -16,14 +16,20 @@
  *   - 'stopped'      : halt requested — either a .stop file was detected, or the runner
  *                      refused to continue with a working tree it could not salvage; no
  *                      work performed
- *   - 'deferred'     : a cross-stage prereq is still behind (or parked in
- *                      blocked/); the strategy adds the slug to its run-local
- *                      deferred set so dependents cascade
+ *   - 'deferred'     : a cross-stage prereq is still behind (parked in
+ *                      blocked/, or deferred to a later release); the strategy
+ *                      adds the slug to its run-local deferred set so
+ *                      dependents cascade
+ *   - 'invalid'      : the ticket is not runnable — its header contradicts the
+ *                      board (lib/board-check.mjs `ticketProblems`); `problems`
+ *                      lists why.  No agent ran and nothing was committed; the
+ *                      strategy treats it like 'deferred' (live: excludes it)
  */
 
 import { writeFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { NEXT_STAGE, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs } from './tickets.mjs';
+import { NEXT_STAGE, deferralReason, firstUnsatisfied, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs } from './tickets.mjs';
+import { readBoardContext, ticketProblems } from './board-check.mjs';
 import { runAgent, MAX_TIMEOUT_RETRIES } from './process.mjs';
 import { commitAll, commitTicket, reconcileWorkingTree } from './git.mjs';
 import { writeInProgress, clearInProgress, addResumeNote, checkStop } from './state.mjs';
@@ -68,22 +74,35 @@ export async function runOneStage(ticket, ctx, { label }) {
 		return { kind: 'skipped' };
 	}
 
+	// Runnability gate — the one place per-ticket board rules are enforced.  A ticket whose header
+	// contradicts the board gets no agent and no commit, and stays where it is so its dependents
+	// defer behind it.  Ahead of the index refresh and the prereq gate: neither matters for a ticket
+	// that will not run, and the reason it cannot run is the more useful thing to print.
+	const problems = ticketProblems(ticket, await readBoardContext(ticketsDir));
+	if (problems.length > 0) {
+		console.log(`\n  ${label} Not runnable ${ticket.stage}/${ticket.file}:`);
+		for (const problem of problems) console.log(`    - ${problem}`);
+		console.log('');
+		return { kind: 'invalid', problems };
+	}
+
 	if (opts.refreshIndex) {
 		await maybeRefreshIndex(repoRoot);
 	}
 
 	// Cross-stage prereq gate: if a prereq lives in an earlier-rank stage,
-	// a peer-but-different stage, or blocked/, defer this ticket.  Same-stage
-	// edges are handled by the per-stage topo sort and pass through here.
+	// a peer-but-different stage, blocked/, or a later release's backlog
+	// folder, defer this ticket.  Same-stage edges are handled by the per-stage
+	// topo sort and pass through here.
 	// Resolving also surfaces the prereqs the board alone cannot explain —
 	// completed-then-pruned (satisfied, via tombstone) and unknown — which both
 	// the log and the agent's prompt carry, so neither reads as missing work.
 	const prereqStatus = ticket.prereqs.length > 0
 		? resolvePrereqs(ticket, await indexAllTickets(ticketsDir))
 		: [];
-	const unsatisfied = prereqStatus.find(r => r.status === 'behind');
+	const unsatisfied = firstUnsatisfied(prereqStatus);
 	if (unsatisfied) {
-		console.log(`\n  ${label} Deferred ${ticket.file}: prereq "${unsatisfied.slug}" is in ${unsatisfied.stage}/.\n`);
+		console.log(`\n  ${label} Deferred ${ticket.file}: ${deferralReason(unsatisfied)}.\n`);
 		return { kind: 'deferred', prereq: unsatisfied.slug, prereqStage: unsatisfied.stage };
 	}
 	const notes = prereqNotes(prereqStatus);

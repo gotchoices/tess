@@ -41,7 +41,8 @@ import { mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { discoverTickets, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, findTransitiveBlocker, KNOWN_STAGES } from './lib/tickets.mjs';
+import { discoverTickets, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, firstUnsatisfied, boardLocation, findTransitiveBlocker, KNOWN_STAGES } from './lib/tickets.mjs';
+import { checkBoard, readBoardContext, ticketProblems } from './lib/board-check.mjs';
 import { topoSortAndCheck } from './lib/topo.mjs';
 import { readAndClearInProgress, readInProgress, addResumeNote } from './lib/state.mjs';
 import { ensureLogsDir, pruneOldLogs } from './lib/logging.mjs';
@@ -109,6 +110,21 @@ async function main() {
 		}
 	}
 
+	// ── Board check ──
+	// A board that contradicts its own release list — a backlog folder for an unlisted code, a
+	// folder named after the current release, a slug filed twice — is not safe to rank.  Like a
+	// prereq cycle, it stops the run before any agent does anything, dry-run included.  The
+	// prereq index built here is reused by --skip-blocked below.
+	const boardContext = await readBoardContext(ticketsDir);
+	const indexWithPrereqs = await indexAllTickets(ticketsDir, { withPrereqs: true });
+	const board = await checkBoard(ticketsDir, boardContext, indexWithPrereqs);
+	for (const warning of board.warnings) console.warn(`[runner] warning: ${warning}`);
+	if (board.errors.length > 0) {
+		console.error(`\n[runner] The ticket board is inconsistent; fix ${board.errors.length === 1 ? 'this' : 'these'} before running:`);
+		for (const error of board.errors) console.error(`  - ${error}`);
+		process.exit(1);
+	}
+
 	// ── Build the snapshot ──
 	// Discover each requested stage, then topologically sort within the stage so
 	// prereqs run before dependents.  Across stages we preserve the order declared
@@ -148,7 +164,6 @@ async function main() {
 	// blocked/ is dropped before the run starts (vs the runtime gate, which
 	// only defers tickets whose direct prereq is behind).
 	if (opts.skipBlocked) {
-		const indexWithPrereqs = await indexAllTickets(ticketsDir, { withPrereqs: true });
 		const kept = [];
 		const skipped = [];
 		for (const t of allTickets) {
@@ -173,15 +188,20 @@ async function main() {
 		console.log(`\ntess (${tessVersion})`);
 		console.log(`Pending tickets in: ${formatStageSummary(opts.stages)}`);
 		console.log(`Strategy: ${opts.strategy}\n`);
-		// Snapshot-time cross-stage prereq check, for visibility only — the
-		// actual deferral happens at runtime against the live filesystem.
-		const ticketIndex = await indexAllTickets(ticketsDir);
+		// Snapshot-time runnability and cross-stage prereq checks, for visibility
+		// only — the actual gates run in runOneStage against the live filesystem.
+		// The startup index and board context still describe this board: a
+		// dry-run changes nothing in between.
 		for (const t of allTickets) {
-			const resolutions = resolvePrereqs(t, ticketIndex);
-			const unsat = resolutions.find(r => r.status === 'behind');
-			const note = unsat ? `  ⚠ deferred: prereq "${unsat.slug}" in ${unsat.stage}/` : '';
+			const resolutions = resolvePrereqs(t, indexWithPrereqs);
+			const unsat = firstUnsatisfied(resolutions);
+			const note = unsat ? `  ⚠ deferred: prereq "${unsat.slug}" in ${boardLocation(unsat.stage, unsat.folder)}` : '';
 			console.log(`  [${t.stage.padEnd(9)}] seq ${formatSeq(t.sequence).padStart(4)}  ${t.file}${note}`);
-			for (const line of prereqNotes(resolutions)) console.log(`${' '.repeat(24)}${line}`);
+			const details = [
+				...ticketProblems(t, boardContext).map(problem => `⚠ not runnable: ${problem}`),
+				...prereqNotes(resolutions),
+			];
+			for (const line of details) console.log(`${' '.repeat(24)}${line}`);
 		}
 		const limitNote = totalFound > allTickets.length ? ` (limited to ${allTickets.length} of ${totalFound})` : '';
 		console.log(`\n${allTickets.length} ticket(s) would be processed${limitNote}.`);
