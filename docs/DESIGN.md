@@ -54,7 +54,7 @@ The pipeline stages, adapted from the original optimystic system:
 | `implement` | Build, test, validate | `review/` ticket |
 | `review` | Code quality, test coverage, docs | `complete/` ticket |
 | `complete` | Archived summary | — |
-| `blocked` | Parked — unresolved questions | Returns to any stage |
+| `blocked` | Parked — spec proposals and external dependencies | Returns to any stage |
 
 `backlog` is excluded from the runner's default stage set. Include it explicitly via `--stages backlog:<max>` to promote tickets when ready to work them.
 

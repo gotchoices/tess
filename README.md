@@ -454,7 +454,7 @@ backlog/ ─→ plan/ ─┐
 - **fix** — Reproduce a bug, research cause, output implementation ticket(s)
 - **plan** — Design a feature, resolve questions, output implementation ticket(s)
 - **implement** — Build it, ensure tests pass, output review ticket
-- **review** — Inspect code quality and hygene, verify tests, update docs, output complete ticket
+- **review** — Inspect code quality and hygiene, verify tests, update docs, output complete ticket
 - **complete** — Archived summary of finished work
 - **blocked** — The human's inbox: proposed text where the specification or architecture is silent or contradictory, plus dependencies outside this repo. Not for "a sibling ticket isn't done" — that's `prereq:`.
 
