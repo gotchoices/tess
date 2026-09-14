@@ -31,14 +31,14 @@ Stages (overview — full rules for your active stage under "Active stage detail
 - **fix** — reproduce + research a bug; output implement/ ticket(s).
 - **plan** — design a feature; output plan/ or implement/ ticket(s); park out-of-scope work in backlog/.
 - **implement** — build it; ensure build + tests pass; output a review/ handoff honest about gaps (reviewer treats your work as a starting point, not a finish line).
-- **review** — adversarial pass over implement output: minor findings → fix inline; major → spawn new fix/plan/backlog ticket(s); conditional/speculative → record as a tripwire, not a ticket. Output complete/ with a `## Review findings` section.
-- **blocked** — human's inbox: a decision only a human should make, or a dependency outside this repo. Never "a sibling ticket isn't done" — that's `prereq:`.
+- **review** — adversarial pass over implement output: minor findings → fix inline; major → ticket(s) past the filing bar, else a tripwire; conditional/speculative → record as a tripwire, not a ticket. Output complete/ with a `## Review findings` section.
+- **blocked** — human's inbox: proposed text where the specification or architecture is silent or contradictory, or a dependency outside this repo. Never "a sibling ticket isn't done" — that's `prereq:`.
 - **complete** — archived summary of finished work, including review findings.
 
 ## Active stage details
 
 <!-- stage:backlog -->
-**Backlog** — specification tickets (like *plan*) that aren't ready to be worked yet. Use when splitting or scoping work: items the team will get to eventually but shouldn't enter the active pipeline. Prefer `backlog/` over `blocked/` when the reason is "not now" rather than "unresolved question." Not in the runner's default processing set — the human (or an explicit `--stages backlog:<max>` invocation) promotes these into `plan/` when ready.
+**Backlog** — specification tickets (like *plan*) that aren't ready to be worked yet. Use when splitting or scoping work: items the team will get to eventually but shouldn't enter the active pipeline. Prefer `backlog/` over `blocked/` when the reason is "not now" rather than "the spec can't settle it" — and "not now" at the top level still means this release (see *Backlog prefixes*). Not in the runner's default processing set — the human (or an explicit `--stages backlog:<max>` invocation) promotes these into `plan/` when ready.
 <!-- /stage -->
 
 <!-- stage:fix -->
@@ -48,7 +48,7 @@ Stages (overview — full rules for your active stage under "Active stage detail
 <!-- stage:plan -->
 **Plan** — specs for features and enhancements (not already designed/planned). After research, output is one or more plan and implement/ tickets. When you discover adjacent work out of scope for the current pass, park it in `backlog/` (prefixed `feat-`/`debt-`; see *Backlog prefixes*) rather than growing the current ticket. Reference key files and documentation. TODO tasks at the bottom of the ticket file(s). Don't switch to your agent's "planning mode" for these tickets — too meta. In the spirit of TDD, your plan may include bullets describing key tests that might come in later phases, and expected outputs.
 
-**Resolve the design before you emit an implement ticket.** Hand off to `implement/` only once no major question or open option remains: settle it with more research, or pick the best option and document the tradeoff in the ticket. If a genuine question of consequence has no defensible default, route to `blocked/` for human sign-off — never emit an under-specified implement ticket and leave the call to the implementer.
+**Resolve the design before you emit an implement ticket.** Hand off to `implement/` only once no major question or open option remains: settle it with more research, or pick the best option and document the tradeoff in the ticket. If the specification or architecture is silent or contradictory on a question of consequence, route to `blocked/` with proposed text — never emit an under-specified implement ticket and leave the call to the implementer.
 
 **Enumerate the adversarial surface.** Every implement ticket you produce should carry an `## Edge cases & interactions` section naming the boundary states, concurrent/forked access, partial-failure paths, and cross-subsystem interactions the implementer must cover and the reviewer will check. A case you name here is a test written up front; a case you omit tends to return as a separate fix ticket.
 
@@ -56,17 +56,17 @@ Stages (overview — full rules for your active stage under "Active stage detail
 <!-- /stage -->
 
 <!-- stage:implement -->
-**Implement** — these tickets are ready for implementation (fix, build, update, ...whatever the ticket specifies). If more than one agent would be useful without stepping on toes, spawn sub-agents. Ensure build and tests pass when done. Output is a distilled summary of the ticket, emphasis on use cases for testing, validation and usage, into the review/ folder. Write the handoff honestly — the reviewer is instructed to treat your work as a starting point and your tests as a floor, so flag known gaps rather than papering over them.
+**Implement** — these tickets are ready for implementation (fix, build, update, ...whatever the ticket specifies). If more than one agent would be useful without stepping on toes, spawn sub-agents. Ensure build and tests pass when done. Output is a distilled summary of the ticket, emphasis on use cases for testing, validation and usage, into the review/ folder. Write the handoff honestly — the reviewer is instructed to treat your work as a starting point and your tests as a floor, so flag known gaps rather than papering over them. Comments say what the code cannot — a why, a constraint, a non-obvious consequence; a run of statements that needs narrating becomes a named subroutine instead.
 <!-- /stage -->
 
 <!-- stage:review -->
-**Review** — adversarial pass over the completed implementation. The ticket will read as finished — find what it overlooked. **Read the implement-stage diff first**, with fresh eyes, before considering the handoff summary (find it via `git log --grep="ticket(implement): <slug>" -1 --format=%H` then `git show <hash>`). Scrutinize from every aspect angle (SPP, DRY, modular, scalable, maintainable, performant, resource cleanup, error handling, type safety). Watch source hygene: source file size, comment clarity and conciseness, short purposeful functions with naming and composition over comment blocks.  The implementer's tests are a *starting point* — cover happy path, edge cases, error paths, regressions, and interactions. Treat docs as out-of-date until you read every file the change touches — and the ones it *should* have touched — and confirm they reflect the new reality. Run lint + tests; they must pass. Disposition of findings: **minor** — fix in this pass; **major** — climb *Architecture first* (in *Before you file a ticket*) before filing: prefer the invariant that retires the whole class over a ticket for the instance; then file new ticket(s) (prefix backlog tickets per *Backlog prefixes*); **conditional/speculative** ("fine now; only matters if X happens later") — record as a tripwire, not a ticket (see *Tripwires*); **considered-and-declined** — a finding whose site carries an accepted-tradeoff `NOTE:` is already decided; leave it alone unless its stated revisit condition has tripped (see *Accepted tradeoffs*). The output `complete/` ticket must include a `## Review findings` section listing what was checked, what was found, and what was done. Empty categories are fine — but say so *explicitly and with a reason*, not silently or "Looks good".
+**Review** — adversarial pass over the completed implementation. The ticket will read as finished — find what it overlooked. **Read the implement-stage diff first**, with fresh eyes, before considering the handoff summary (find it via `git log --grep="ticket(implement): <slug>" -1 --format=%H` then `git show <hash>`). Scrutinize from every aspect angle (SPP, DRY, modular, scalable, maintainable, performant, resource cleanup, error handling, type safety). Watch source hygiene: file size, and comments that narrate statements instead of saying what the code cannot (a why, a constraint, a non-obvious consequence) — extract the narrated run into a named subroutine. The implementer's tests are a *starting point* — cover happy path, edge cases, error paths, regressions, and interactions. Treat docs as out-of-date until you read every file the change touches — and the ones it *should* have touched — and confirm they reflect the new reality. Run lint + tests; they must pass. Disposition of findings: **minor** — fix in this pass; **major** — climb *Architecture first* (in *Before you file a ticket*) before filing: prefer the invariant that retires the whole class over a ticket for the instance. Filing bar: a ticket only when the finding serves a current-release anchor or names a class-level invariant (rungs 1–3), else a `NOTE:` tripwire at the site. Tradeoff: a real latent defect (*Conditional, or just not-yet-reached?*) whose only anchor is deferred to a later release goes into that release's `backlog/<CODE>/` rather than a comment; **conditional/speculative** ("fine now; only matters if X happens later") — record as a tripwire, not a ticket (see *Tripwires*); **considered-and-declined** — a finding whose site carries an accepted-tradeoff `NOTE:` is already decided; leave it alone unless its stated revisit condition has tripped (see *Accepted tradeoffs*). The output `complete/` ticket must include a `## Review findings` section listing what was checked, what was found, and what was done. Empty categories are fine — but say so *explicitly and with a reason*, not silently or "Looks good".
 <!-- /stage -->
 
 <!-- stage:blocked -->
-**Blocked** is the human's inbox — use it for the two things the runner genuinely cannot resolve on its own, and nothing else: (a) **A decision only a human should make** — a design/product question or a go/no-go with no defensible default. This includes design questions you surface *during review or planning* that don't block any in-flight ticket: a decision that needs a human still goes here, not into `backlog/`. (b) **A dependency outside this repo** that `prereq:` cannot track — an external service or upstream library, a stub primitive that doesn't exist yet, or a premise mismatch with code beyond this repo.
+**Blocked** is the human's inbox — use it for the two things the runner genuinely cannot resolve on its own, and nothing else: (a) **The specification or architecture is silent or contradictory** on a product, design or go/no-go question — including one you surface *during review or planning* that blocks no in-flight ticket: it still goes here, not into `backlog/`. (b) **A dependency outside this repo** that `prereq:` cannot track — an external service or upstream library, a stub primitive that doesn't exist yet, or a premise mismatch with code beyond this repo.
 
-Lead the file with one line: which category, and the exact thing that unblocks it. Write it for a human with no prior context (see *Write for a reader without your context*) — a decision is only useful if the decider can act without reconstructing your session: state the question plainly, what happens if we do nothing, the options with a recommended default, and how reversible the call is.
+Use the form under *Before you file a ticket*, written for a human with no prior context (see *Write for a reader without your context*): the decider must be able to accept or edit the proposal without reconstructing your session.
 
 **Do not block on a sibling tess ticket.** If your only obstacle is that another ticket in this pipeline isn't done, that is *not* blocked — add it to `prereq:` and design as if it has already landed. The runner defers your dependent and re-picks it the moment the prereq chain clears, then cascades that deferral to anything depending on you; you never mirror this by hand. Also not blocked: uncertainty more research would resolve (do the research), or "we'll get to it later" (that's `backlog/`).
 <!-- /stage -->
@@ -108,7 +108,7 @@ There is no perfect code — some findings get weighed by a human and **declined
 - `feat-` — a new capability or enhancement
 - `debt-` — tests, guards, refactors, hardening
 
-Form: `bug-<slug>.md` (or `<seq>-bug-<slug>.md` if you number it — the sequence stays leading). The prefix is part of the slug and **travels with the ticket** for its whole life; `prereq:` references include it, and there's no need to strip it on promotion (`fix/bug-foo` is fine). Decisions don't get a prefix — they go to `blocked/`. Tickets you create directly into a working stage (`fix/`, `plan/`, …) don't need a prefix; the folder already says what they are. Sub-folders inside `backlog/` are the human's to curate — don't create or reorganize them.
+Form: `bug-<slug>.md` (or `<seq>-bug-<slug>.md` if you number it — the sequence stays leading). The prefix is part of the slug and **travels with the ticket** for its whole life; `prereq:` references include it, and there's no need to strip it on promotion (`fix/bug-foo` is fine). Decisions don't get a prefix — they go to `blocked/`. Tickets you create directly into a working stage (`fix/`, `plan/`, …) don't need a prefix; the folder already says what they are. With `tickets/releases.md`, each sub-folder of `backlog/` is a release deferral folder named after a later code in that list; the top level, like every other stage, is the current release. File into `backlog/<CODE>/` only when the ticket's anchor is explicitly deferred to that release or a human said so; never create a folder for an unlisted code, or move a ticket between releases on your own. Without `releases.md`, sub-folders are the human's to curate — don't create or reorganize them.
 
 ## Write for a reader without your context
 
@@ -161,7 +161,9 @@ Gated on filing. Everything resolved inline — skip this.
 
 **Root cause, not symptom.** Name the one code site — or one unsettled decision — that must change. Two findings resolving at the same site are ONE ticket with two arms, even when the symptoms look unrelated. Can't name the site? Investigation isn't done.
 
-**Architecture first — a point ticket is the last resort.** The goal is a codebase that gets *harder to break*, not a queue that gets longer. Before filing a bug instance, climb this ladder and file at the **highest rung that applies**:
+**Name an anchor.** Every ticket names at least one part of the specification it serves — tess's `architecture:` (a repo-relative document path, optionally `#section`) or a field the project declares in `tickets/rules/` — or the runner won't work it.
+
+**Architecture first — a point ticket is the last resort.** The goal is a codebase that gets *harder to break*, not a queue that gets longer. Before filing a bug instance, climb this ladder and file at the **highest rung that applies** (in review, only past the filing bar):
 
 1. **Types/representation** — could a type or representation change make the bad state unrepresentable? File a `debt-` ticket for that change, citing this instance as evidence.
 2. **Property/generalized test** — would one general test or generator (e.g. "serialize-then-deserialize round-trips every value type") catch this whole class, now and after future edits? File a `debt-` ticket for the test, citing instances.
@@ -182,7 +184,7 @@ grep -rl "<path or symbol>" tickets/backlog tickets/fix tickets/plan tickets/imp
 
 Hit → append your arm to that ticket's body, say so in your findings. File fresh only when nothing open touches the site.
 
-**"Should we do this at all" → `blocked/`**, not `backlog/`. Backlog = shape settled, timing not. A ticket asking a human to choose is never promotable.
+**A blocked ticket is a proposal, not a question.** What the spec can't settle — "should we do this at all" included — goes to `blocked/`, not `backlog/` (shape settled, timing not). Lead with one line: the blocked category and the exact thing that unblocks it. For a silent or contradictory specification or architecture, carry the proposed text — capability wording for a feature question, a principle or mechanism for an architecture question — as the recommended default for the human to accept or edit, with the alternatives you rejected and why, what happens if we do nothing, and how reversible the call is.
 
 **No unmeasured magnitudes.** Complexity class, slowdown factor, blast radius — say how you measured. Didn't measure → write the weaker claim.
 
@@ -199,8 +201,10 @@ Ticket file template:
 ----
 description: <ONE plain-language sentence (two at most), jargon-free, understandable with no prior context — what the ticket is about and why. NOT a technical abstract; the detail goes in the body.>
 prereq: <slugs of other tickets that must land first — comma-separated, no sequence prefix, no .md>
+architecture: <anchor: repo-relative architecture document path, optionally #section — or a field declared in tickets/rules/>
 files: <list key files touched/relevant — saves the next agent significant discovery time>
 difficulty: <optional; easy|medium|hard — how much horsepower the work needs. Default medium. Drives model/effort selection (e.g. hard → a stronger model); omit unless the work is unusually simple or hard.>
+target: <optional; a later release code from tickets/releases.md — normally omit: a ticket's folder already says its release>
 repro: <bug tickets only; verified|static|none — ran it and saw it / inferred from code / neither.>
 severity: <backlog bugs; corruption|wrong-result|edge-case|cosmetic — worst plausible user-visible effect.>
 likelihood: <backlog bugs; normal-use|unusual|contrived — how a user would actually hit it.>
@@ -217,6 +221,6 @@ tradeoffs: <backlog tickets; one honest sentence on why a maintainer might decli
 - **Opened and closed** — `----` … `----`, or YAML-style `---` … `---`. If the *first* line is a fence, the header starts after it.
 - **No fence at all**: the header runs to the first fence line anywhere in the file, or to end-of-file.
 
-A fence is a line of three or more dashes and nothing else. Two consequences worth knowing: a `---` horizontal rule in the prose of an unfenced ticket **ends the header**, and any body line starting `prereq:` or `difficulty:` inside the header region is read as a field. Keep prose that begins with a field name below the fence.
+A fence is a line of three or more dashes and nothing else. Two consequences worth knowing: a `---` horizontal rule in the prose of an unfenced ticket **ends the header**, and any line inside the header region that starts with a header field name is read as a field. Keep prose that begins with a field name below the fence.
 
 **Leave a field off rather than leaving it empty** when it has no value — `prereq:` with nothing after it is fine and parses as "no prereqs", but the field name has to be alone on its line.

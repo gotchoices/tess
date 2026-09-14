@@ -22,7 +22,7 @@ tickets/
 ├── implement/     # Ready for implementation
 ├── review/        # Code review and validation
 ├── complete/      # Archived completed work
-├── blocked/       # Parked — unresolved questions
+├── blocked/       # Parked — spec proposals and external dependencies
 ├── releases.md    # Optional ordered release list (see Releases)
 ├── AGENTS.md      # Points to tess agent rules
 ├── CLAUDE.md      # Points to tess agent rules
@@ -456,7 +456,7 @@ backlog/ ─→ plan/ ─┐
 - **implement** — Build it, ensure tests pass, output review ticket
 - **review** — Inspect code quality and hygene, verify tests, update docs, output complete ticket
 - **complete** — Archived summary of finished work
-- **blocked** — The human's inbox: decisions only a human should make, plus dependencies outside this repo. Not for "a sibling ticket isn't done" — that's `prereq:`.
+- **blocked** — The human's inbox: proposed text where the specification or architecture is silent or contradictory, plus dependencies outside this repo. Not for "a sibling ticket isn't done" — that's `prereq:`.
 
 ## Ticket Format
 
@@ -478,7 +478,7 @@ tradeoffs: <backlog tickets: one sentence on why a maintainer might decline or d
 
 **Header fences.** The header is the field block above the body. A **fence** is a line of three or more dashes and nothing else, and the parser accepts every shape found in practice: a closing fence only (as above), an opening *and* closing pair (`----` … `----` or YAML-style `---` … `---`), or no fence at all. If the first line is a fence the header starts after it; the header then ends at the next fence, or at end-of-file if there is none.
 
-Two consequences: in an unfenced ticket a `---` horizontal rule in the prose ends the header, and any line inside the header region beginning `prereq:` or `difficulty:` is read as a field regardless of intent. An empty field (`prereq:` with nothing after it) is valid and parses as absent.
+Two consequences: in an unfenced ticket a `---` horizontal rule in the prose ends the header, and any line inside the header region beginning with a header field name is read as a field regardless of intent. An empty field (`prereq:` with nothing after it) is valid and parses as absent.
 
 **Filename convention:** `<slug>.md` with an optional `<sequence>-` prefix where lower sequence runs sooner (integer or decimal, e.g. `3-my-feature.md` or `3.5-my-feature.md`). The sequence number is not part of the ticket's identity — reference tickets by slug only in `prereq:`.
 
