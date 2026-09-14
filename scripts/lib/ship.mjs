@@ -45,22 +45,20 @@ function targetLinesNaming(content, code) {
 
 /**
  * Work out a ship from the board, reading only.  Returns `{ ticketsDir,
- * shipped, next, moves, removeFolder, strips, leftovers, errors }`:
+ * shipped, next, moves, removeFolder, strips, errors }`:
  *
  *   - `shipped`, `next` — the first and second listed codes, or null;
  *   - `moves` — `{ from, to }` for each ticket directly inside `backlog/<next>/`,
  *     in filename order;
- *   - `removeFolder` — `backlog/<next>` when that folder exists and is empty
- *     once its tickets move, otherwise null;
+ *   - `removeFolder` — `backlog/<next>` when that folder exists, otherwise null;
  *   - `strips` — `{ path, line }` for each header line `target: <shipped>`
  *     outside `complete/`, `line` 1-based, in path order;
- *   - `leftovers` — everything else in `backlog/<next>/`, which stays put;
  *   - `errors` — every reason not to ship.
  *
  * Paths are relative to `ticketsDir`, with forward slashes.
  */
 export async function planShip(ticketsDir) {
-	const plan = { ticketsDir, shipped: null, next: null, moves: [], removeFolder: null, strips: [], leftovers: [], errors: [] };
+	const plan = { ticketsDir, shipped: null, next: null, moves: [], removeFolder: null, strips: [], errors: [] };
 	const releases = await readReleases(ticketsDir);
 	plan.errors.push(...releases.errors);
 	if (!releases.present) {
@@ -87,10 +85,15 @@ export async function planShip(ticketsDir) {
 }
 
 /**
- * Plan moving `folder`'s tickets up to `backlog/`.  A ticket collides with the
- * top level when its filename is already taken there, or a top-level ticket has
- * its slug under another sequence prefix.  Both compare ignoring case: on a
- * case-insensitive filesystem a rename onto `Notes.md` replaces `notes.md`.
+ * Plan moving `folder`'s tickets up to `backlog/`, then removing the folder.  A
+ * ticket collides with the top level when its filename is already taken there,
+ * or a top-level ticket has its slug under another sequence prefix.  Both
+ * compare ignoring case: on a case-insensitive filesystem a rename onto
+ * `Notes.md` replaces `notes.md`.
+ *
+ * Any other entry in the folder is an error too.  Left in place, it would keep
+ * a folder named after the release that has just become current, which the
+ * runner's startup board check rejects; a person decides where it goes.
  */
 async function planMoves(plan, topTickets, folder) {
 	const backlogDir = join(plan.ticketsDir, 'backlog');
@@ -105,11 +108,14 @@ async function planMoves(plan, topTickets, folder) {
 	}
 
 	const tickets = new Set(folder.files);
-	plan.leftovers = (await readdir(join(backlogDir, folder.name), { withFileTypes: true }))
+	const others = (await readdir(join(backlogDir, folder.name), { withFileTypes: true }))
 		.filter(entry => !tickets.has(entry.name))
 		.map(entry => `backlog/${folder.name}/${entry.name}${entry.isDirectory() ? '/' : ''}`)
 		.sort(byName);
-	if (plan.leftovers.length === 0) plan.removeFolder = `backlog/${folder.name}`;
+	for (const other of others) {
+		plan.errors.push(`${other} is not a ticket, so backlog/${folder.name}/ could not be removed — move or delete it before shipping`);
+	}
+	plan.removeFolder = `backlog/${folder.name}`;
 }
 
 /** Plan removing every header line `target: <shipped>` outside `complete/`. */
@@ -127,14 +133,22 @@ async function planStrips(plan) {
 }
 
 /**
+ * The clean-tree check a committing ship runs first, in `abort` mode: the
+ * commit stages everything, so residue would land under `tess: ship release
+ * <CODE>`.  With `dryRun` it only reports what a real ship would find.
+ */
+export function reconcileForShip(repoRoot, { dryRun = false } = {}) {
+	return reconcileWorkingTree(repoRoot, { mode: 'abort', dryRun, label: 'release ship', refusal: 'a ship commits the whole tree' });
+}
+
+/**
  * Carry out a plan from `planShip`, which must have no errors.  Returns
  * `{ applied, committed }`; `applied: false` means a dirty working tree refused
  * the ship before anything changed, and the refusal has been printed.
  *
- * Unless `noCommit`, the tree must be clean first — the commit stages
- * everything, so residue would land under `tess: ship release <CODE>` — and
- * the result is committed.  `noCommit` skips both; tracked tickets still move
- * with `git mv`, so their renames are staged.
+ * Unless `noCommit`, the tree must pass `reconcileForShip` first, and the
+ * result is committed.  `noCommit` skips both; tracked tickets still move with
+ * `git mv`, so their renames are staged.
  *
  * Strips come first, at the paths the plan names, so a stripped ticket that
  * also moves is moved with its line already gone.  The list comes last.
@@ -143,10 +157,7 @@ export async function applyShip(plan, { repoRoot, noCommit = false }) {
 	if (plan.errors.length > 0) throw new Error(`refusing to apply a ship plan with errors: ${plan.errors.join('; ')}`);
 	const { ticketsDir, shipped } = plan;
 
-	if (!noCommit) {
-		const reconciled = reconcileWorkingTree(repoRoot, { mode: 'abort', label: 'release ship' });
-		if (reconciled.action === 'abort') return { applied: false, committed: false };
-	}
+	if (!noCommit && reconcileForShip(repoRoot).action === 'abort') return { applied: false, committed: false };
 
 	const releases = await readReleases(ticketsDir);
 	if (currentRelease(releases) !== shipped) {
@@ -207,7 +218,9 @@ async function applyMoves({ ticketsDir, next, moves, removeFolder }) {
  */
 function trackedFiles(ticketsDir, dir) {
 	try {
-		const out = execFileSync('git', ['ls-files', '-z', '--', dir], { cwd: ticketsDir, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+		// LC_ALL=C: the fallback below matches git's English message, which a translated git would not print.
+		const env = { ...process.env, LC_ALL: 'C' };
+		const out = execFileSync('git', ['ls-files', '-z', '--', dir], { cwd: ticketsDir, encoding: 'utf-8', env, stdio: ['ignore', 'pipe', 'pipe'] });
 		return new Set(out.split('\0').filter(Boolean));
 	} catch (err) {
 		if (/not a git repository/i.test(String(err.stderr ?? ''))) return new Set();

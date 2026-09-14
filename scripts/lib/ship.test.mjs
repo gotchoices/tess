@@ -9,7 +9,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -109,7 +109,6 @@ test('ship moves the next release up, strips the shipped target:, drops the firs
 	]);
 	assert.equal(plan.removeFolder, 'backlog/GA');
 	assert.deepEqual(plan.strips, [{ path: 'backlog/GA/stale.md', line: 4 }, { path: 'plan/session.md', line: 4 }]);
-	assert.deepEqual(plan.leftovers, []);
 	assert.deepEqual(result, { applied: true, committed: true });
 
 	const tree = snapshot(repo.ticketsDir);
@@ -236,10 +235,14 @@ test('a dirty working tree refuses the ship before anything changes; --no-commit
 	const tree = snapshot(repo.repoRoot);
 	const before = commitCount(repo);
 
+	const dryRun = release(repo.repoRoot, 'ship', '--dry-run');
 	const refused = await ship(repo);
 
+	assert.equal(dryRun.status, 0, dryRun.stderr);
+	assert.match(dryRun.stdout, /a real run would refuse to start \(a ship commits the whole tree\)/, '--dry-run reports the tree a real ship would refuse');
 	assert.deepEqual(refused.result, { applied: false, committed: false });
 	assert.match(refused.lines.join('\n'), /\?\? tickets\/backlog\/GA\/new\.md/);
+	assert.doesNotMatch(refused.lines.join('\n'), /--dirty-tree/, 'release.mjs has no --dirty-tree flag to name');
 	assert.deepEqual(snapshot(repo.repoRoot), tree);
 
 	const applied = await ship(repo, { noCommit: true });
@@ -288,16 +291,16 @@ test('CRLF files keep CRLF: the list loses its first entry and a ticket its one 
 	assert.equal(readFileSync(join(ticketsDir, 'plan', 'session.md'), 'utf-8'), crlf(ticket('session.md')[1]));
 });
 
-test('moving more tickets than the deletion guard allows still commits, because git mv stages renames', async () => {
-	const many = Array.from({ length: 5 }, (_, i) => ticket(`t${i}.md`));
+test('moving more tickets than one git mv batch and the deletion guard allow still commits, because git mv stages renames', async () => {
+	const many = Array.from({ length: 101 }, (_, i) => ticket(`t${i}.md`));
 	const plain = await makeRepo({ 'backlog/GA': many }, { releases: RELEASES });
 	const moved = await makeRepo({ 'backlog/GA': many }, { releases: RELEASES });
 
 	const prior = process.env.TESS_MAX_DELETIONS;
-	process.env.TESS_MAX_DELETIONS = '2';
+	process.env.TESS_MAX_DELETIONS = '100';  // the default, pinned against the caller's environment
 	let control, shipped;
 	try {
-		// The same moves made with a plain rename read as five deletions, which the guard refuses.
+		// The same moves made with a plain rename read as 101 deletions, which the guard refuses.
 		for (const [name] of many) renameSync(join(plain.ticketsDir, 'backlog', 'GA', name), join(plain.ticketsDir, 'backlog', name));
 		control = await captured(() => commitAll(plain.repoRoot, 'plain renames'));
 		shipped = await ship(moved);
@@ -307,30 +310,70 @@ test('moving more tickets than the deletion guard allows still commits, because 
 	}
 
 	assert.equal(control.value, false);
-	assert.match(control.lines.join('\n'), /5 deletions exceed the safety threshold \(2\)/);
+	assert.match(control.lines.join('\n'), /101 deletions exceed the safety threshold \(100\)/);
 	assert.deepEqual(shipped.result, { applied: true, committed: true });
 	assert.equal(moved.git('status', '--porcelain'), '');
+	assert.equal(readdirSync(join(moved.ticketsDir, 'backlog')).length, 101, 'every ticket is up, and the folder is gone');
 });
 
-test('entries in the next release folder that are not tickets stay behind with the folder, and are listed', async () => {
+test('an entry in the next release folder that is not a ticket stops the ship, since the folder could not be removed', async () => {
 	const repo = await makeRepo({
-		'backlog/GA': [ticket('a.md'), ['notes.txt', 'notes\n']],
+		'backlog/GA': [ticket('a.md'), ['notes.txt', 'notes\n'], ['.gitkeep', '']],
 		'backlog/GA/old': [ticket('b.md')],
 	}, { releases: RELEASES });
+	const tree = snapshot(repo.repoRoot);
 
 	const plan = await planShip(repo.ticketsDir);
 	const run = release(repo.repoRoot, 'ship');
 
-	assert.deepEqual(plan.leftovers, ['backlog/GA/notes.txt', 'backlog/GA/old/']);
-	assert.equal(plan.removeFolder, null);
-	assert.equal(run.status, 0, run.stderr);
-	assert.match(run.stdout, /^ {2}backlog\/GA\/notes\.txt$/m);
-	assert.match(run.stdout, /^ {2}backlog\/GA\/old\/$/m);
-	const tree = snapshot(repo.ticketsDir);
-	assert.equal(tree['backlog/a.md'], ticket('a.md')[1]);
-	assert.equal(tree['backlog/GA/notes.txt'], 'notes\n');
-	assert.equal(tree['backlog/GA/old/b.md'], ticket('b.md')[1]);
-	assert.equal(repo.git('status', '--porcelain'), '');
+	const refusal = entry => `${entry} is not a ticket, so backlog/GA/ could not be removed — move or delete it before shipping`;
+	assert.deepEqual(plan.errors, [refusal('backlog/GA/.gitkeep'), refusal('backlog/GA/notes.txt'), refusal('backlog/GA/old/')]);
+	assert.equal(run.status, 1, run.stdout);
+	assert.match(run.stderr, /backlog\/GA\/old\/ is not a ticket/);
+	assert.deepEqual(snapshot(repo.repoRoot), tree);
+});
+
+test('a plan gone stale before it is applied is refused: the list moved on, a strip line moved, or a move destination appeared', async () => {
+	// No repository, so every move is a plain rename; nothing is committed.
+	const board = () => makeBoard({ 'backlog/GA': [ticket('a.md')], plan: [ticket('session.md', 'target: BETA')] }, { releases: RELEASES });
+	const options = ticketsDir => ({ repoRoot: dirname(ticketsDir), noCommit: true });
+	const read = (ticketsDir, ...path) => readFileSync(join(ticketsDir, ...path), 'utf-8');
+
+	const listMoved = await board();
+	const listPlan = await planShip(listMoved);
+	writeFileSync(join(listMoved, 'releases.md'), AFTER_BETA);
+	await assert.rejects(applyShip(listPlan, options(listMoved)), /first entry is no longer BETA; plan again/);
+	assert.equal(read(listMoved, 'plan', 'session.md'), ticket('session.md', 'target: BETA')[1]);
+
+	const lineMoved = await board();
+	const linePlan = await planShip(lineMoved);
+	const edited = ticket('session.md', 'difficulty: easy', 'target: BETA')[1];
+	writeFileSync(join(lineMoved, 'plan', 'session.md'), edited);
+	await assert.rejects(applyShip(linePlan, options(lineMoved)), /plan\/session\.md:4 no longer reads target: BETA/);
+	assert.equal(read(lineMoved, 'plan', 'session.md'), edited);
+
+	const destinationTaken = await board();
+	const takenPlan = await planShip(destinationTaken);
+	writeFileSync(join(destinationTaken, 'backlog', 'a.md'), 'someone else\n');
+	await assert.rejects(applyShip(takenPlan, options(destinationTaken)), /backlog\/a\.md appeared since the ship was planned/);
+	assert.equal(read(destinationTaken, 'backlog', 'a.md'), 'someone else\n');
+	assert.equal(read(destinationTaken, 'releases.md'), RELEASES, 'the list is rewritten last, so a stopped ship still names BETA');
+});
+
+test('a ship whose commit fails exits 1 and says to commit by hand rather than ship again', async () => {
+	const repo = await makeRepo(shipBoard(), { releases: RELEASES });
+	const hooks = join(repo.repoRoot, '.git', 'hooks');
+	mkdirSync(hooks, { recursive: true });
+	writeFileSync(join(hooks, 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+	const before = commitCount(repo);
+
+	const run = release(repo.repoRoot, 'ship');
+
+	assert.equal(run.status, 1, run.stdout);
+	assert.match(run.stderr, /the commit failed \(see above\) — inspect `git status` and commit it by hand/);
+	assert.match(run.stderr, /Do not run ship again to finish it: the list now starts at GA, so that would ship GA too\./);
+	assert.equal(commitCount(repo), before);
+	assert.equal(readFileSync(join(repo.ticketsDir, 'releases.md'), 'utf-8'), AFTER_BETA);
 });
 
 // ── release.mjs arguments ─────────────────────────────────────────────────

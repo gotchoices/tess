@@ -327,11 +327,11 @@ Shipping makes the next release current. Run from the project root, `ship`:
 - removes the first entry from `releases.md`, leaving the preamble and every other entry byte-for-byte as they were;
 - commits the result as `tess: ship release <SHIPPED>`.
 
-It changes nothing and exits 1 when `releases.md` is absent, lists no releases, or has errors; when `backlog/<SHIPPED>/` exists; or when a ticket in `backlog/<NEXT>/` would collide with one at the top level — the same filename, or the same slug under any sequence prefix. Collisions compare ignoring case, because on a case-insensitive filesystem one file would overwrite the other. It also refuses a dirty working tree, since the commit captures the whole tree; `--no-commit` skips both that check and the commit.
+It changes nothing and exits 1 when `releases.md` is absent, lists no releases, or has errors; when `backlog/<SHIPPED>/` exists; or when a ticket in `backlog/<NEXT>/` would collide with one at the top level — the same filename, or the same slug under any sequence prefix. Collisions compare ignoring case, because on a case-insensitive filesystem one file would overwrite the other. It also refuses a dirty working tree, since the commit captures the whole tree (`--dry-run` reports one); `--no-commit` skips both that check and the commit.
 
-Anything in `backlog/<NEXT>/` that is not a ticket — a non-`.md` file, a directory — is not moved, so the folder stays and `ship` lists what is left in it. The startup board check rejects a folder named after the current release, so move or delete those entries before the next run.
+Anything in `backlog/<NEXT>/` that is not a ticket — a non-`.md` file, a dot-file such as `.gitkeep`, a directory — also stops the ship, and `ship` names each one. Moving only the tickets would leave the folder behind, named after the release that is now current, which the startup board check rejects; move or delete those entries, then ship.
 
-`releases.md` is rewritten last. A ship interrupted part-way leaves the list still naming the shipped release as current, and planning again finds only the work left: tickets already moved are no longer in the folder, and stripped lines are gone. The interruption leaves the tree dirty, so finish with `ship --no-commit` and commit the result.
+`releases.md` is rewritten last. A ship interrupted part-way leaves the list still naming the shipped release as current, and planning again finds only the work left: tickets already moved are no longer in the folder, and stripped lines are gone. The interruption leaves the tree dirty, so finish with `ship --no-commit` and commit the result. A ship whose commit failed is different: the list already starts at the next release, so commit the result by hand — running `ship` again would ship that release too.
 
 Tess rewrites nothing outside `tickets/`. A tool that tags other files with release codes does its own strip; `ship` prints the shipped code, and the commit subject names it.
 
@@ -601,6 +601,8 @@ Every case except "the tree was already clean" prints the paths and what was don
 If a mid-run salvage cannot be committed (it would capture a suspicious mass deletion, or git itself failed), the runner stops before the next ticket and exits non-zero rather than working on a tree it does not understand.
 
 `scripts/garden.mjs` runs the same check at the top of its pass, before it invokes the gardener and before its own `git add -A` commit — its commit is unscoped too, so leftovers sitting there would otherwise land under `tess: garden backlog (...)`. It has no `--dirty-tree` flag of its own: it is human-invoked and single-shot, so it always salvages and the operator sees the notice.
+
+`scripts/release.mjs ship` runs the check too, but always refuses a dirty tree instead of salvaging it: a ship has no interrupted ticket to attribute leftovers to, and its commit would file them under `tess: ship release <CODE>`. `ship --no-commit` skips the check with the commit.
 
 ## Pre-existing Test Failure Triage
 

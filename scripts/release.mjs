@@ -14,7 +14,7 @@
 
 import { join } from 'node:path';
 
-import { applyShip, planShip, shipCommitMessage } from './lib/ship.mjs';
+import { applyShip, planShip, reconcileForShip, shipCommitMessage } from './lib/ship.mjs';
 
 const COMMANDS = ['ship'];
 const USAGE = 'Usage: node tess/scripts/release.mjs ship [--dry-run] [--no-commit]';
@@ -79,11 +79,6 @@ function printPlan(plan) {
 		for (const { from, to } of plan.moves) console.log(`  ${from} → ${to}`);
 	}
 	if (plan.removeFolder) console.log(`\nRemove the emptied ${plan.removeFolder}/`);
-	if (plan.leftovers.length > 0) {
-		console.log(`\nbacklog/${plan.next}/ also holds entries that are not tickets, so it stays:`);
-		for (const leftover of plan.leftovers) console.log(`  ${leftover}`);
-		console.log(`The runner rejects a folder named after the current release — move or delete these before its next run.`);
-	}
 	if (plan.strips.length > 0) {
 		console.log(`\nRemove target: ${plan.shipped} from ${ticketCount(strippedCount(plan))}:`);
 		for (const { path, line } of plan.strips) console.log(`  ${path}:${line}`);
@@ -105,6 +100,7 @@ async function main() {
 	printPlan(plan);
 	if (plan.errors.length > 0) process.exit(1);
 	if (opts.dryRun) {
+		if (!opts.noCommit) reconcileForShip(repoRoot, { dryRun: true });
 		console.log('\nDry run — nothing changed.');
 		return;
 	}
@@ -124,6 +120,7 @@ async function main() {
 
 	if (!opts.noCommit && !result.committed) {
 		console.error('\nThe ship was applied, but the commit failed (see above) — inspect `git status` and commit it by hand.');
+		if (plan.next) console.error(`Do not run ship again to finish it: the list now starts at ${plan.next}, so that would ship ${plan.next} too.`);
 		process.exit(1);
 	}
 }

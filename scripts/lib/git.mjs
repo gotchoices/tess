@@ -144,12 +144,13 @@ function salvageMessage(owner) {
  * honest message is what keeps every unscoped `git add -A` in the runner from silently
  * mis-attributing it to the next ticket that happens to finish.
  *
- *   owner  — { stage, slug } the residue most plausibly belongs to, or null
- *   mode   — 'salvage' (default) | 'abort' | 'ignore'
+ *   owner    — { stage, slug } the residue most plausibly belongs to, or null
+ *   mode     — 'salvage' (default) | 'abort' | 'ignore'
+ *   refusal  — why `abort` refuses, shown in the notice; defaults to the runner's flag
  *
  * Returns `{ action: 'clean' | 'salvaged' | 'ignored' | 'abort', entries }`.
  */
-export function reconcileWorkingTree(cwd, { owner = null, mode = 'salvage', noCommit = false, dryRun = false, label = 'the next ticket' } = {}) {
+export function reconcileWorkingTree(cwd, { owner = null, mode = 'salvage', noCommit = false, dryRun = false, label = 'the next ticket', refusal = '--dirty-tree abort' } = {}) {
 	// NOTE: this probe is deliberately NOT wrapped — a `git status` that throws (git missing, the
 	// cwd not a repo, an `index.lock` held by a concurrent git command) fails the run at its first
 	// step rather than letting it proceed over a tree whose state is unknown.  If lock contention
@@ -164,7 +165,7 @@ export function reconcileWorkingTree(cwd, { owner = null, mode = 'salvage', noCo
 	// real run would have done and leaves the tree exactly as it found it.
 	if (dryRun) {
 		const would = mode === 'abort'
-			? 'a real run would refuse to start (--dirty-tree abort)'
+			? `a real run would refuse to start (${refusal})`
 			: mode === 'ignore'
 				? 'a real run would leave it in place (--dirty-tree ignore)'
 				: `a real run would salvage it as: ${salvageMessage(owner)}`;
@@ -175,7 +176,7 @@ export function reconcileWorkingTree(cwd, { owner = null, mode = 'salvage', noCo
 	// `abort` is a refusal to run, not a commit, so it outranks `--no-commit`: an operator who
 	// asked the runner not to start on a dirty tree means it whether or not commits are enabled.
 	if (mode === 'abort') {
-		console.error(`[runner]   Refusing to start with a dirty tree (--dirty-tree abort).  Commit or park it, then re-run:`);
+		console.error(`[runner]   Refusing to start with a dirty tree (${refusal}).  Commit or park it, then re-run:`);
 		console.error(`[runner]     git commit -a -m "<what this work actually was>"`);
 		console.error(`[runner]     git stash push -u -m "tess: pre-run working tree"`);
 		return { action: 'abort', entries: probe.entries };
