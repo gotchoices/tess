@@ -89,7 +89,7 @@ test('garden.mjs reconciles before its agent and its end-of-run commit', () => {
 test('every unscoped tree sweep in the runner goes through commitAll', () => {
 	// A scoped `git add -- <path>` cannot pick up anything foreign and is fine on its own; a bare
 	// `git add -A` outside commitAll is the exact shape this whole invariant exists to contain.
-	const files = ['./git.mjs', './run-ticket.mjs', './pre-existing-error.mjs', './prune-completed.mjs', '../run.mjs', '../garden.mjs'];
+	const files = ['./git.mjs', './run-ticket.mjs', './pre-existing-error.mjs', './prune-completed.mjs', './ship.mjs', '../run.mjs', '../garden.mjs', '../release.mjs'];
 	const offenders = [];
 	for (const f of files) {
 		for (const line of read(f).split('\n')) {

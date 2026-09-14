@@ -315,7 +315,25 @@ A ticket with no anchor is not runnable in the same way — see **Anchor** under
 
 ### Shipping a release
 
-Shipping has no command yet. It means dropping the current entry from `releases.md` so the next one becomes current, moving that release's folder tickets up into `backlog/`, and removing the `target:` lines that named the shipped release; until a command exists, make those edits by hand in one commit.
+```bash
+node tess/scripts/release.mjs ship --dry-run   # print what shipping would do; change nothing
+node tess/scripts/release.mjs ship             # ship and commit
+```
+
+Shipping makes the next release current. Run from the project root, `ship`:
+
+- moves each ticket directly inside `backlog/<NEXT>/` up to `backlog/`, keeping its filename, and removes the emptied folder. Tracked tickets move with `git mv`, so the commit records renames; moved any other way, a large folder reads as that many deletions and trips the mass-deletion guard every tess commit goes through;
+- removes each `target: <SHIPPED>` header line from tickets in every stage except `complete/`, which is an archive. Only a line inside the header counts; body text is never touched. `target: <NEXT>` lines stay, because they now name the current release;
+- removes the first entry from `releases.md`, leaving the preamble and every other entry byte-for-byte as they were;
+- commits the result as `tess: ship release <SHIPPED>`.
+
+It changes nothing and exits 1 when `releases.md` is absent, lists no releases, or has errors; when `backlog/<SHIPPED>/` exists; or when a ticket in `backlog/<NEXT>/` would collide with one at the top level — the same filename, or the same slug under any sequence prefix. Collisions compare ignoring case, because on a case-insensitive filesystem one file would overwrite the other. It also refuses a dirty working tree, since the commit captures the whole tree; `--no-commit` skips both that check and the commit.
+
+Anything in `backlog/<NEXT>/` that is not a ticket — a non-`.md` file, a directory — is not moved, so the folder stays and `ship` lists what is left in it. The startup board check rejects a folder named after the current release, so move or delete those entries before the next run.
+
+`releases.md` is rewritten last. A ship interrupted part-way leaves the list still naming the shipped release as current, and planning again finds only the work left: tickets already moved are no longer in the folder, and stripped lines are gone. The interruption leaves the tree dirty, so finish with `ship --no-commit` and commit the result.
+
+Tess rewrites nothing outside `tickets/`. A tool that tags other files with release codes does its own strip; `ship` prints the shipped code, and the commit subject names it.
 
 ## Backlog Gardening
 

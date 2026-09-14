@@ -91,6 +91,8 @@ Every unscoped `git add -A` in the runner — the per-ticket commit, the migrati
 
 Two things differ from `run.mjs`. The mode is hard-coded to `salvage` — garden is human-invoked and single-shot, so the operator is at the keyboard and sees the notice either way, and a `--dirty-tree` flag of its own would be a knob nobody needs. Ownership still comes from the same `tickets/.in-progress` marker, read non-destructively: garden never writes one, but the runner may have left one behind, and salvaging that residue under "no ticket in progress" would state something untrue.
 
+`scripts/release.mjs ship` (rules in `scripts/lib/ship.mjs`) commits through `commitAll` too, so it reconciles first — in `abort` mode. A ship is a deliberate human act with no interrupted ticket to attribute residue to: salvaging would commit someone's work in progress under a message nobody chose, and sweeping it into `tess: ship release <CODE>` would mis-attribute it outright, so a dirty tree is refused with its paths listed. `--no-commit` skips the check along with the commit. Its moves use `git mv` for tracked tickets because the deletion guard reads `git status`: a staged rename shows as `R`, while a plain rename shows as a deletion plus an untracked file, and a release folder of more than a hundred tickets would trip the guard.
+
 ---
 
 ## Traversal Strategies

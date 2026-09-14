@@ -8,6 +8,7 @@ import {
 	discoverTickets,
 	findTicketBySlug,
 	findUnsatisfiedPrereq,
+	headerFieldLines,
 	indexAllTickets,
 	parseDifficulty,
 	parseListField,
@@ -325,6 +326,16 @@ prereq: this-is-prose-not-a-field
 `;
 
 	assert.deepEqual(parsePrereqs(content), ['session-store']);
+});
+
+test('headerFieldLines gives every matching header line with its 1-based line number, and nothing from the body', () => {
+	const content = '---\ndescription: x\ntarget: BETA\nTARGET:  GA \n---\ntarget: V2\n';
+
+	assert.deepEqual(headerFieldLines(content, 'target'), [{ line: 3, value: 'BETA' }, { line: 4, value: 'GA' }]);
+	assert.deepEqual(headerFieldLines('description: x\r\nprereq:\r\nfiles: a.ts\r\n----\r\n', 'prereq|files'), [
+		{ line: 2, value: '' },
+		{ line: 3, value: 'a.ts' },
+	]);
 });
 
 test('an empty field in a three-dash header does not swallow the next line', () => {

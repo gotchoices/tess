@@ -108,7 +108,7 @@ export async function readBacklogLayout(ticketsDir) {
  * first, then — for `backlog` with `includeFolders` — each sub-folder's files,
  * folders in name order.
  */
-async function stageFiles(ticketsDir, stage, includeFolders) {
+export async function stageFiles(ticketsDir, stage, includeFolders) {
 	const stageDir = join(ticketsDir, stage);
 	if (stage === 'backlog' && includeFolders) {
 		const { top, folders } = await readBacklogLayout(ticketsDir);
@@ -122,7 +122,7 @@ async function stageFiles(ticketsDir, stage, includeFolders) {
 }
 
 /** A ticket file's text, or null when it was removed or moved between listing and reading. */
-async function readTicketFile(path) {
+export async function readTicketFile(path) {
 	try {
 		return await readFile(path, 'utf-8');
 	} catch (err) {
@@ -365,6 +365,17 @@ export function parseSlug(filename) {
  * An empty field yields `''`, which every caller treats as absent.
  */
 export function headerField(content, pattern) {
+	return headerFieldLines(content, pattern)[0]?.value ?? null;
+}
+
+/**
+ * Every header line of a single-line field, in file order, as `{ line, value }`:
+ * `line` is 1-based in `content`, so a caller can remove exactly that line
+ * (lib/ship.mjs does), and `value` is trimmed.  `pattern` is as for
+ * `headerField`.  Only lines inside `headerBounds`' span count; a body line
+ * below the header fence never does.
+ */
+export function headerFieldLines(content, pattern) {
 	// `[ \t]` — a literal space and a literal tab — deliberately, not `[^\S\r\n]`.
 	// This pattern is assembled in a template literal, where a regex class escape
 	// silently degrades: `\S` becomes a bare `S`, so `[^\S\r\n]` compiles as
@@ -372,8 +383,14 @@ export function headerField(content, pattern) {
 	// leading characters up to its first `s` (`difficulty: easy` → `sy`). A tab
 	// written as `\t` survives, because a literal tab in a character class means
 	// the same thing. Keep regex-class escapes out of this string.
-	const match = headerRegion(content).match(new RegExp(`^(?:${pattern}):[ \t]*(.*)$`, 'mi'));
-	return match ? match[1].trim() : null;
+	const field = new RegExp(`^(?:${pattern}):[ \t]*(.*)$`, 'mi');
+	const { lines, start, end } = headerBounds(content);
+	const found = [];
+	for (let i = start; i < end; i++) {
+		const match = lines[i].match(field);
+		if (match) found.push({ line: i + 1, value: match[1].trim() });
+	}
+	return found;
 }
 
 /** A line consisting only of three-or-more dashes: `---`, `----`, and longer. */
@@ -453,7 +470,7 @@ const unquote = item => item.trim().replace(/^(["'])(.*)\1$/, '$2').trim();
  */
 export function parseListField(content, name) {
 	const lines = headerRegion(content).split('\n');
-	// `[ \t]` written literally, for the reason given in `headerField`.
+	// `[ \t]` written literally, for the reason given in `headerFieldLines`.
 	const field = new RegExp(`^${name}:[ \t]*(.*)$`, 'i');
 	const at = lines.findIndex(line => field.test(line));
 	if (at === -1) return [];
