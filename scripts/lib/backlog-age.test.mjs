@@ -148,6 +148,31 @@ test('an uncommitted ticket has no arrival', async () => {
 	assert.deepEqual(topLevelArrivals(repo), new Map([['committed', T1]]));
 });
 
+test('a tickets directory below the repository top level is read with paths relative to it', async () => {
+	const repo = await makeRepo();
+	await commitAt(repo, T1, async () => {
+		await put(repo, 'project/tickets/backlog/foo.md', ticket('foo'));
+		await put(repo, 'tickets/backlog/outside.md', ticket('outside'));
+	});
+	await commitAt(repo, T2, () => move(repo, 'project/tickets/backlog/foo.md', 'project/tickets/backlog/3-foo.md'));
+
+	assert.deepEqual(topLevelArrivals(join(repo, 'project')), new Map([['foo', T1]]));
+});
+
+test('a ticket added on a merged branch arrives at its own commit, not at the merge', async () => {
+	const repo = await makeRepo();
+	await commitAt(repo, T1, () => put(repo, 'tickets/backlog/foo.md', ticket('foo')));
+	const mainBranch = git(repo, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+	git(repo, ['checkout', '-q', '-b', 'side']);
+	await commitAt(repo, T2, () => put(repo, 'tickets/backlog/bar.md', ticket('bar')));
+	git(repo, ['checkout', '-q', mainBranch]);
+	await commitAt(repo, T2 + DAY, () => put(repo, 'tickets/backlog/baz.md', ticket('baz')));
+	const date = `${T3} +0000`;
+	git(repo, ['merge', '-q', '--no-ff', '--no-edit', 'side'], { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date });
+
+	assert.deepEqual(topLevelArrivals(repo), new Map([['foo', T1], ['bar', T2], ['baz', T2 + DAY]]));
+});
+
 test('outside a git repository the map is empty and one warning is given', async () => {
 	const dir = await tempDir();
 	await put(dir, 'tickets/backlog/foo.md', ticket('foo'));

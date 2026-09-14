@@ -357,7 +357,7 @@ What it does (rules in `agent-rules/garden.md`):
 5. **Execute feedback** — only with explicit human feedback:
    - **Decline** — the ticket is deleted **and** recorded as an accepted-tradeoff `NOTE:` comment at the code site, so future reviewers don't re-discover and re-file the finding.
    - **Promote** — the ticket moves to `plan/` (or `fix/`).
-   - **Defer** — the ticket moves into `backlog/<CODE>/`. The code must be listed in `releases.md`; a request naming any other code is reported as unresolvable and nothing moves.
+   - **Defer** — the ticket moves into `backlog/<CODE>/`. The code must be a later release listed in `releases.md`, not the current one; a request naming any other code is reported as unresolvable and nothing moves.
    - **Pull forward** — a folder ticket moves up to `backlog/`.
 
    Without feedback the gardener never declines, promotes, defers or pulls forward — those calls stay human.

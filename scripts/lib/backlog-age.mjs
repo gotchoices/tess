@@ -108,6 +108,11 @@ export function topLevelArrivals(repoRoot, ticketsRel = 'tickets', { warn = cons
 		// NOTE: one process for the whole backlog, its output held in memory.  SiteCAD's history (930 commits
 		// touching tickets/backlog, 2026-09) printed 175 KB in 0.3 s; if a board's log ever nears the 64 MB
 		// maxBuffer, stream it instead.
+		// NOTE: a merge prints no changes of its own, so both branches' commits replay in date order and a
+		// merged branch's tickets arrive at their own commits.  When both sides changed the same ticket (one
+		// re-sequenced it, the other deleted it), the replay can misread its age; if that is ever seen, walk
+		// `--first-parent --diff-merges=first-parent`, which dates a merged branch's arrivals at the merge
+		// (on SiteCAD, 2026-09-14: 16 of 222 arrivals moved to their merge date, nothing else changed).
 		log = execFileSync('git', [
 			'-c', 'core.quotePath=false',
 			'log', '--reverse', '-M', '--relative', '--name-status', `--format=${COMMIT_MARKER}%ct`,
