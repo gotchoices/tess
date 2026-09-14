@@ -154,7 +154,7 @@ The runner picks the next ticket to work using a strategy. All three strategies 
 
 After **every** stage transition, live re-discovers the entire ticket board from disk and re-applies the priority policy, then runs the current highest-priority ticket. The policy is the same one `batch` uses — cross-stage order from `--stages` (default `review,implement,fix,plan`: drive in-flight work toward done before opening new work), and within each stage prereqs before dependents then lower sequence first — but it is re-evaluated each iteration instead of once.
 
-Because it reads disk every iteration, a ticket created mid-run is picked up the same run: a `review` that files a `fix` sees that fix jump to the front (fix is highest-priority) and resolved next; a `plan` that splits into several `implement` tickets sees them ranked in immediately. A ticket whose prereq is still *behind but advancing* is skipped only for the current pass and becomes selectable the moment its prereq moves forward — so an entire prereq chain can drain in one run.
+Because it reads disk every iteration, a ticket created mid-run is picked up the same run: a `review` that files a `fix` sees that fix jump to the front (fix is highest-priority) and resolved next; a `plan` that splits into several `implement` tickets sees them ranked in immediately. A ticket whose prereq is still *behind but advancing* is skipped only for the current pass and becomes selectable the moment its prereq moves forward — so an entire prereq chain can drain in one run. Whatever the reason a ticket is skipped in a pass, a dependent in the same stage is skipped with it, so it never runs ahead of work that has not landed.
 
 A slug that errors, times out or is not runnable (see [Releases](#releases)) is excluded for the rest of the run (next run resumes an interrupted one via its resume note), and its dependents stay gated behind it — including a dependent in the same stage, which the stage-rank gate alone would let through. A per-slug transition cap (12) and a global run cap backstop an agent that regresses or re-spawns a ticket in a loop. `--max <n>` caps the number of transitions (not a snapshot length).
 
@@ -271,7 +271,7 @@ Exit criteria.
 The file is a line grammar, not a general markdown document:
 
 - Every line starting `## ` outside a fenced code block starts an entry, and its heading text is the release **code**. A code is an uppercase letter followed by 1–7 uppercase letters or digits (`BETA`, `GA`, `V2`) — no hyphens.
-- The first non-blank line after a heading may be `due: YYYY-MM-DD`, which must be a real calendar date. Every other line is exit-criteria text.
+- The first non-blank line after a heading may be `due: YYYY-MM-DD` (field name in any case, like a ticket header field), which must be a real calendar date. Every other line is exit-criteria text.
 - The first entry is the **current** release; the entries below it are later releases, in order.
 
 **No `releases.md` → the release model is off.** Sub-folders of `backlog/` are plain human-curated folders and nothing about them is validated; a `target:` header makes a ticket not runnable. **`releases.md` present → the model is on**, even when it lists no releases. An empty list means everything is current, so every backlog sub-folder is then an error.

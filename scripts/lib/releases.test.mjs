@@ -48,16 +48,17 @@ test('each entry keeps its exact source slice, so dropping one leaves the rest b
 	assert.equal(shipped, '# Releases\r\n\r\nPreamble prose.\r\n\r\n## GA\r\n\r\nExit criteria for GA.\r\n');
 });
 
-test('due: is read only from the first non-blank line after a heading, and must be a real date', () => {
+test('due: is read only from the first non-blank line after a heading, in any case, and must be a real date', () => {
 	const releases = parseReleases([
 		'## BETA', '', 'due: 2028-02-29',  // leap day, after a blank line
 		'## GA', 'due: 2026-02-30',
 		'## RC', 'due: next week',
 		'## V2', 'Some prose first.', 'due: 2026-13-01',  // not the first line: exit-criteria text
+		'## V3', 'Due: 2027-01-01',
 		'',
 	].join('\n'));
 
-	assert.deepEqual(releases.entries.map(e => e.due), ['2028-02-29', null, null, null]);
+	assert.deepEqual(releases.entries.map(e => e.due), ['2028-02-29', null, null, null, '2027-01-01']);
 	assert.deepEqual(releases.errors, [
 		'tickets/releases.md:5: due: 2026-02-30 is not a real calendar date',
 		'tickets/releases.md:7: due: "next week" is not a date — write due: YYYY-MM-DD',

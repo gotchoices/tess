@@ -40,6 +40,19 @@ test('a same-stage dependent of an excluded ticket is held for the run, down the
 	assert.equal(pick?.slug, 'd');
 });
 
+test('a same-stage dependent of a ticket still waiting on an earlier stage is not picked ahead of it', async () => {
+	// implement/p waits on fix/q, so this pass skips it.  implement/d needs p and passes the rank
+	// gate (same stage), so without the hold d would be implemented, and reviewed, before p.
+	const ticketsDir = await makeBoard({
+		implement: [['1-p.md', withHeader('prereq: q')], ['2-d.md', withHeader('prereq: p')]],
+		fix: ['q.md'],
+	});
+
+	const pick = await pickWith(ticketsDir, ['implement', 'fix'], []);
+
+	assert.equal(pick?.slug, 'q');
+});
+
 test('an earlier-stage dependent of an excluded ticket is left to the rank gate', async () => {
 	// review/a errored after its implementation landed; implement/b, which needed that, may run.
 	const ticketsDir = await makeBoard({ review: ['a.md'], implement: [['b.md', withHeader('prereq: a')]] });

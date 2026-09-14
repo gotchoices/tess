@@ -4,6 +4,10 @@
  * Encapsulates the on-disk shape of a ticket: stage folder, optional backlog
  * sub-folder, optional sequence prefix, slug, and the header fields.  All
  * filesystem-touching reads for the snapshot live here.
+ *
+ * NOTE: 592 lines (`wc -l`, 2026-09-14; 405 before release folders) mixing discovery, prereq
+ * resolution and header parsing; if it grows further, move header parsing (`headerBounds`,
+ * `headerField*`, `parseListField`, the `parse*` fields) into its own module.
  */
 
 import { readdir, readFile } from 'node:fs/promises';
@@ -76,6 +80,8 @@ async function readDirents(dir) {
 }
 
 const isTicketFile = d => !d.isDirectory() && d.name.endsWith('.md');
+// NOTE: a symlinked backlog sub-folder is neither indexed nor validated (`Dirent.isDirectory()` is false
+// for a link); if a project ever symlinks release folders, stat links here.
 const isSubfolder = d => d.isDirectory() && !d.name.startsWith('.');
 /** Code-unit order: identical on every platform and filesystem, and case-sensitive like release codes. */
 export const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);

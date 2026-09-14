@@ -19,8 +19,8 @@
  *      the stage, concatenate preserving cross-stage priority → the live queue.
  *   2. Build one cross-stage index and pick the first queue ticket that is
  *      runnable: not excluded (agent-errored / timed-out / not runnable this
- *      run) nor held behind a same-stage prereq that is, under the per-slug
- *      transition cap, not transitively blocked (when --skip-blocked), and with
+ *      run), not behind a same-stage prereq this pass passed over, under the
+ *      per-slug transition cap, not transitively blocked (when --skip-blocked), and with
  *      every prereq satisfied (strictly-later rank, not deferred to a later
  *      release). A ticket whose prereq is merely *behind but still in the
  *      pipeline* is skipped THIS pass only — it becomes selectable once that
@@ -100,28 +100,30 @@ async function buildQueue(ticketsDir, stages) {
  * The highest-priority runnable ticket in the live queue, or null when nothing
  * is runnable.
  *
- * Holding is the same-stage arm of the deferral cascade. A slug excluded this
- * run stays in its stage, so a dependent in a *later* stage is already gated
- * by rank — but a dependent in the *same* stage passes the rank gate (in-stage
- * order is the topo sort's job) and would run ahead of work that has not
- * landed. So a same-stage dependent of an excluded or held slug is held too;
- * the queue is topo-sorted within each stage, so one forward pass carries the
- * hold down a chain. A dependent in an *earlier* stage is left to the rank
- * gate: the stages its prereq has already passed through have landed.
+ * Holding is the same-stage arm of the deferral cascade. A slug passed over in
+ * this pass — excluded for the run, or failing any gate below — stays in its
+ * stage, so a dependent in a *later* stage is already gated by rank; but a
+ * dependent in the *same* stage passes the rank gate (in-stage order is the
+ * topo sort's job) and would run ahead of work that has not landed. So a
+ * same-stage dependent of a passed-over slug is passed over too; the queue is
+ * topo-sorted within each stage, so one forward pass carries the hold down a
+ * chain. A dependent in an *earlier* stage is left to the rank gate: the stages
+ * its prereq has already passed through have landed.
  */
 export async function pickNext(queue, { ticketsDir, index, blockIndex = null, excluded, transitions }) {
-	const held = new Set(excluded);
+	const passedOver = new Set(excluded);
+	const isRunnable = async t => {
+		if (!NEXT_STAGE[t.stage]) return false;                                        // terminal stage — nothing to advance
+		if (passedOver.has(t.slug)) return false;                                      // excluded this run
+		if ((transitions.get(t.slug) ?? 0) >= MAX_TRANSITIONS_PER_SLUG) return false;  // regression loop
+		if (t.prereqs.some(p => passedOver.has(p) && index.get(p)?.stage === t.stage)) return false;  // same-stage prereq not running this pass
+		if (blockIndex && findTransitiveBlocker(t, blockIndex)) return false;          // --skip-blocked: prereq chain hits blocked/
+		if (await findUnsatisfiedPrereq(t, ticketsDir, index)) return false;           // prereq behind but in-pipeline → retry later
+		return true;
+	};
 	for (const t of queue) {
-		if (!NEXT_STAGE[t.stage]) continue;                                   // terminal stage — nothing to advance
-		if (held.has(t.slug)) continue;                                       // excluded this run, or held behind a slug that is
-		if ((transitions.get(t.slug) ?? 0) >= MAX_TRANSITIONS_PER_SLUG) continue;  // regression loop
-		if (t.prereqs.some(p => held.has(p) && index.get(p)?.stage === t.stage)) {
-			held.add(t.slug);                                                 // same-stage prereq cannot land this run
-			continue;
-		}
-		if (blockIndex && findTransitiveBlocker(t, blockIndex)) continue;     // --skip-blocked: prereq chain hits blocked/
-		if (await findUnsatisfiedPrereq(t, ticketsDir, index)) continue;      // prereq behind but in-pipeline → retry later
-		return t;
+		if (await isRunnable(t)) return t;
+		passedOver.add(t.slug);
 	}
 	return null;
 }

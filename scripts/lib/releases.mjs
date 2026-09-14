@@ -12,7 +12,8 @@
  *   - a line starting `## ` outside a fenced code block starts an entry, and
  *     its trimmed heading text is the code;
  *   - a line starting with three backticks toggles the fence;
- *   - the first non-blank line after a heading may be `due: YYYY-MM-DD`;
+ *   - the first non-blank line after a heading may be `due: YYYY-MM-DD` (field
+ *     name in any case);
  *   - every other line is preamble (before the first entry) or exit-criteria
  *     text belonging to the entry above it.
  *
@@ -32,7 +33,8 @@ const DISPLAY_PATH = `tickets/${RELEASES_FILE}`;
 
 /** An uppercase letter, then 1–7 uppercase letters or digits: the shape of a top-level feature code. */
 const CODE_RE = /^[A-Z][A-Z0-9]{1,7}$/;
-const DUE_RE = /^due:[ \t]*(.*)$/;
+/** Case-insensitive like a ticket header field, so `Due:` is a due date, not silently exit-criteria text. */
+const DUE_RE = /^due:[ \t]*(.*)$/i;
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const BOM = '﻿';
 
