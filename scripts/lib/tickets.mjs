@@ -78,7 +78,7 @@ async function readDirents(dir) {
 const isTicketFile = d => !d.isDirectory() && d.name.endsWith('.md');
 const isSubfolder = d => d.isDirectory() && !d.name.startsWith('.');
 /** Code-unit order: identical on every platform and filesystem, and case-sensitive like release codes. */
-const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+export const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
  * The layout of `backlog/`: its top-level ticket files, and each immediate
@@ -405,11 +405,69 @@ const FENCE_RE = /^-{3,}[^\S\r\n]*$/;
  * field.
  */
 function headerRegion(content) {
+	const { lines, start, end } = headerBounds(content);
+	return lines.slice(start, end).join('\n');
+}
+
+/**
+ * The line span `headerRegion` cuts out, as `{ lines, opened, start, end,
+ * closed }`: `opened` when line 0 is a fence, header lines `[start, end)`, and
+ * `closed` when a fence ends the header rather than end-of-document.  Exported
+ * so a file with the same header shape (lib/project-rules.mjs) uses the same
+ * fence rules instead of a second parser.
+ */
+export function headerBounds(content) {
 	const lines = content.split(/\r?\n/);
-	const start = lines.length > 0 && FENCE_RE.test(lines[0]) ? 1 : 0;
+	const opened = FENCE_RE.test(lines[0]);
+	const start = opened ? 1 : 0;
 	let end = start;
 	while (end < lines.length && !FENCE_RE.test(lines[end])) end++;
-	return lines.slice(start, end).join('\n');
+	return { lines, opened, start, end, closed: end < lines.length };
+}
+
+/** An indented `- item` line of a list-valued header field; group 1 is the item, when there is one. */
+const LIST_ITEM_RE = /^[ \t]+-(?:[ \t]+(.*))?$/;
+
+/** A list item without its surrounding whitespace and quotes. */
+const unquote = item => item.trim().replace(/^(["'])(.*)\1$/, '$2').trim();
+
+/**
+ * Parse a list-valued header field into its items — `[]` when the field is
+ * absent or holds nothing.  `name` is a plain field name (letters, digits,
+ * hyphens) and matches case-insensitively, like every header field.  Three
+ * spellings:
+ *
+ *   features: SIT-BRA, SIT-CRT
+ *   features: [SIT-BRA, SIT-CRT]
+ *   features:
+ *     - SIT-BRA
+ *     - SIT-CRT
+ *
+ * The list form runs until the first line that is not an indented `- item`.
+ * Items are trimmed, and surrounding quotes and empty items are dropped, so
+ * `features: []` is as absent as no field at all.  `content` may be a whole
+ * ticket or a header region already cut out of one (`ticket.header`): a
+ * region holds no fence, so its region is itself.
+ */
+export function parseListField(content, name) {
+	const lines = headerRegion(content).split('\n');
+	// `[ \t]` written literally, for the reason given in `headerField`.
+	const field = new RegExp(`^${name}:[ \t]*(.*)$`, 'i');
+	const at = lines.findIndex(line => field.test(line));
+	if (at === -1) return [];
+
+	const value = lines[at].match(field)[1].trim();
+	const items = [];
+	if (value !== '') {
+		items.push(...value.replace(/^\[(.*)\]$/, '$1').split(','));
+	} else {
+		for (const line of lines.slice(at + 1)) {
+			const item = line.match(LIST_ITEM_RE);
+			if (!item) break;
+			items.push(item[1] ?? '');
+		}
+	}
+	return items.map(unquote).filter(Boolean);
 }
 
 /** Parse the `prereq:` header field into an array of slug strings.  Tolerates legacy `dependencies:`. */

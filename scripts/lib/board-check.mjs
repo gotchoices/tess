@@ -4,9 +4,10 @@
  *
  * Two enforcement sites, kept apart on purpose:
  *   - `checkBoard` runs once, at runner startup, over the whole board.  Its
- *     errors describe a board that contradicts its own release list, which is
- *     not safe to rank, so the runner exits before any agent runs; its warnings
- *     are printed and the run goes on.
+ *     errors describe a board that contradicts its own release list or carries
+ *     a malformed project rules addendum, which is not safe to rank, so the
+ *     runner exits before any agent runs; its warnings are printed and the run
+ *     goes on.
  *   - `ticketProblems` runs in `runOneStage` for the one ticket about to be
  *     worked.  Any problem makes that ticket `invalid`: no agent, no commit.
  *
@@ -14,14 +15,20 @@
  * context rather than each caller re-reading files.
  */
 
+import { anchorFieldsOf, readProjectRules } from './project-rules.mjs';
 import { RELEASES_FILE, currentRelease, rankOf, readReleases } from './releases.mjs';
-import { boardLocation, deferralReason, parseSlug, readBacklogLayout, resolvePrereqs } from './tickets.mjs';
+import { boardLocation, deferralReason, parseListField, parseSlug, readBacklogLayout, resolvePrereqs } from './tickets.mjs';
 
 const RELEASES_PATH = `tickets/${RELEASES_FILE}`;
 
-/** Everything the board rules read: `{ releases }`. */
+/**
+ * Everything the board rules read: `{ releases, rules, anchorFields }`.
+ * `rules` is `readProjectRules`' `{ rules, errors }`; `anchorFields` is every
+ * header field that counts as an anchor.
+ */
 export async function readBoardContext(ticketsDir) {
-	return { releases: await readReleases(ticketsDir) };
+	const [releases, rules] = await Promise.all([readReleases(ticketsDir), readProjectRules(ticketsDir)]);
+	return { releases, rules, anchorFields: anchorFieldsOf(rules.rules) };
 }
 
 const ticketCount = n => `${n} ticket${n === 1 ? '' : 's'}`;
@@ -32,9 +39,9 @@ const ticketCount = n => `${n} ticket${n === 1 ? '' : 's'}`;
  * Returns `{ errors, warnings }`.
  */
 export async function checkBoard(ticketsDir, context, indexWithPrereqs) {
-	const { releases } = context;
+	const { releases, rules } = context;
 	const layout = await readBacklogLayout(ticketsDir);
-	const errors = [...releases.errors];
+	const errors = [...releases.errors, ...rules.errors];
 	const warnings = [];
 
 	if (releases.present) {
@@ -110,7 +117,7 @@ function releaseOrderWarnings(index) {
  * when it is runnable.
  */
 export function ticketProblems(ticket, context) {
-	return targetProblems(ticket, context.releases);
+	return [...targetProblems(ticket, context.releases), ...anchorProblems(ticket, context.anchorFields)];
 }
 
 /**
@@ -128,4 +135,16 @@ function targetProblems({ target, folder, stage }, releases) {
 	}
 	if (target === currentRelease(releases)) return [];
 	return [`target: ${target} is a later release, but ${stage}/ holds current work — move it to backlog/${target}/ or drop the field`];
+}
+
+/**
+ * A ticket names at least one anchor: a non-empty `architecture:` or a field a
+ * project addendum declares.  Presence only — whether an `architecture:` path
+ * or its `#section` exists is left to the project's link checking, since
+ * resolving section slugs would mean re-implementing heading-slug rules.
+ */
+function anchorProblems({ header }, anchorFields) {
+	if (anchorFields.some(field => parseListField(header, field).length > 0)) return [];
+	const named = anchorFields.map(field => `${field}:`);
+	return [`no anchor — add ${named.length === 1 ? named[0] : `one of ${named.join(', ')}`} to the header`];
 }

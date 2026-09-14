@@ -16,9 +16,13 @@ after(async () => {
 	for (const dir of tempDirs) await rm(dir, { recursive: true, force: true });
 });
 
-/** Ticket text whose header holds `description: x` plus `lines`, e.g. `withHeader('prereq: a, b', 'target: GA')`. */
+/**
+ * Ticket text whose header holds `description: x`, an `architecture:` anchor
+ * (so the ticket is runnable unless a test says otherwise) and `lines`, e.g.
+ * `withHeader('prereq: a, b', 'target: GA')`.
+ */
 export function withHeader(...lines) {
-	return ['description: x', ...lines, '----', 'body', ''].join('\n');
+	return ['description: x', 'architecture: docs/example.md', ...lines, '----', 'body', ''].join('\n');
 }
 
 /**

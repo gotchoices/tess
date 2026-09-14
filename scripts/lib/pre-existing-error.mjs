@@ -36,6 +36,7 @@ import { execSync } from 'node:child_process';
 import { runAgent } from './process.mjs';
 import { commitAll } from './git.mjs';
 import { indexAllTickets } from './tickets.mjs';
+import { anchorFieldsOf, readProjectRules } from './project-rules.mjs';
 
 const REPORT_FILE = '.pre-existing-error.md';
 const LEDGER_FILE = '.pre-existing-known.md';
@@ -189,7 +190,9 @@ function commitKnownFailurePrune(count, repoRoot) {
 	}
 }
 
-function buildTriagePrompt(report) {
+/** The triage agent's prompt; `anchorFields` (lib/project-rules.mjs `anchorFieldsOf`) are the fields a filed ticket may anchor with. */
+export function buildTriagePrompt(report, anchorFields) {
+	const anchors = anchorFields.map(field => `\`${field}:\``).join(', ');
 	return [
 		'# Triage: pre-existing test failure',
 		'',
@@ -222,13 +225,15 @@ function buildTriagePrompt(report) {
 		'     preferred over any other outcome.',
 		'  5. If root-cause fix larger than single scoped pass should attempt, file',
 		'     PRIORITIZED ticket in `tickets/fix/` (filename `<slug>.md`, no sequence',
-		'     prefix) using standard tess header (description/prereq/files/difficulty),',
-		'     then body capturing failing test, error output, root-cause hypothesis,',
-		'     suspect files. Include "Design constraints" subsection + flag any',
-		'     cross-cutting obligations fix triggers (determinism edition bump,',
-		'     byte-format vector, golden fixture, migration). Filing into `fix/` — top-',
-		'     priority stage — means normal pipeline resolves it next, ahead of feature',
-		'     work.',
+		'     prefix) using standard tess header (description/prereq/files/difficulty)',
+		`     plus at least one anchor field (${anchors}) — runner`,
+		'     will not work ticket without one; for test-infrastructure failure,',
+		'     `architecture:` naming project\'s testing document is usual. Then body',
+		'     capturing failing test, error output, root-cause hypothesis, suspect',
+		'     files. Include "Design constraints" subsection + flag any cross-cutting',
+		'     obligations fix triggers (determinism edition bump, byte-format vector,',
+		'     golden fixture, migration). Filing into `fix/` — top-priority stage —',
+		'     means normal pipeline resolves it next, ahead of feature work.',
 		'  6. Only if failure genuinely cannot be fixed in this repo (originates in',
 		'     upstream dependency), file to `tickets/blocked/` instead, naming external',
 		'     cause.',
@@ -295,7 +300,7 @@ export async function handlePreExistingError(ctx) {
 	console.log(`\n  ⚠  Pre-existing test failure reported — dispatching triage agent.`);
 	console.log(`     Log: ${logFile}`);
 
-	const prompt = buildTriagePrompt(report);
+	const prompt = buildTriagePrompt(report, anchorFieldsOf((await readProjectRules(ticketsDir)).rules));
 	try {
 		const result = await runAgent(opts.agent, prompt, repoRoot, logFile, {
 			stage: 'triage',

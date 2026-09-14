@@ -40,3 +40,12 @@ test('a prereq deferred to a later release defers the ticket', async () => {
 
 	assert.deepEqual(outcome, { kind: 'deferred', prereq: 'session-store', prereqStage: 'backlog' });
 });
+
+test('a ticket with no anchor is not runnable', async () => {
+	const ticketsDir = await makeBoard({ implement: [['bare.md', 'description: x\n----\nbody\n']] });
+	const [ticket] = await discoverTickets(ticketsDir, 'implement', Infinity);
+
+	const outcome = await runOneStage(ticket, contextFor(ticketsDir), { label: '[test]' });
+
+	assert.deepEqual(outcome, { kind: 'invalid', problems: ['no anchor — add architecture: to the header'] });
+});

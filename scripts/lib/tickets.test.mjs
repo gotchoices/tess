@@ -10,6 +10,7 @@ import {
 	findUnsatisfiedPrereq,
 	indexAllTickets,
 	parseDifficulty,
+	parseListField,
 	parsePrereqs,
 	parseTarget,
 	prereqNotes,
@@ -358,4 +359,43 @@ body
 
 test('a tab after the colon is skipped like a space', () => {
 	assert.equal(parseDifficulty('---\ndifficulty:\thard\n---\n'), 'hard');
+});
+
+// ── List-valued header fields ─────────────────────────────────────────────
+
+test('parseListField reads the comma, bracket and indented-list forms, dropping quotes', () => {
+	const listForm = ['---', 'description: x', 'features:', '  - SIT-BRA', '\t- "SIT-CRT"', 'files:', '  - packages/a.ts', '---', ''].join('\n');
+
+	assert.deepEqual(parseListField('features: SIT-BRA, SIT-CRT\n----\n', 'features'), ['SIT-BRA', 'SIT-CRT']);
+	assert.deepEqual(parseListField('features: [ "SIT-BRA", \'SIT-CRT\' ]\n----\n', 'features'), ['SIT-BRA', 'SIT-CRT']);
+	assert.deepEqual(parseListField(listForm, 'features'), ['SIT-BRA', 'SIT-CRT']);  // stops at `files:`
+});
+
+test('parseListField yields nothing for an absent field, an empty one, or one holding only empty items', () => {
+	for (const content of [
+		'description: x\n----\n',
+		'features:\nfiles: a.ts\n----\n',
+		'features: []\n----\n',
+		'features: [ ]\n----\n',
+		'features: , ""\n----\n',
+		'features:\n  -\n  - ""\n----\n',
+	]) {
+		assert.deepEqual(parseListField(content, 'features'), [], JSON.stringify(content));
+	}
+});
+
+test('the list form ends at the first line that is not an indented item, and at the end of the header', () => {
+	assert.deepEqual(parseListField('features:\n  - A\n\n  - B\n----\n', 'features'), ['A']);  // a blank line ends it
+	assert.deepEqual(parseListField('features:\n- A\n----\n', 'features'), []);  // an unindented dash is not an item
+	assert.deepEqual(parseListField('features:\n---\n  - A\n', 'features'), []);  // an unfenced header ends at a rule
+});
+
+test('parseListField matches the name case-insensitively, reads only the header, and accepts a cut-out header region', async () => {
+	const content = '---\ndescription: x\nFeatures: A\n---\n\nfeatures: B is body prose\n';
+	const ticketsDir = await makeBoard({ implement: [['x.md', content]] });
+	const [ticket] = await discoverTickets(ticketsDir, 'implement', Infinity);
+
+	assert.deepEqual(parseListField(content, 'features'), ['A']);
+	assert.deepEqual(parseListField(ticket.header, 'features'), ['A']);
+	assert.deepEqual(parseListField(content, 'aspects'), []);
 });

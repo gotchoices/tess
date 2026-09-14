@@ -11,11 +11,14 @@
  * every stage so a human reads one coherent document; at prompt-build time we
  * keep only the active stage's block, reducing cognitive load and leaving
  * room for per-stage rules to grow without bloating cross-stage context.
+ * The project's rules addenda (`tickets/rules/*.md`) follow the core rules,
+ * filtered the same way.
  */
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { NEXT_STAGE, formatSeq } from './tickets.mjs';
+import { RULES_DIR, readProjectRules } from './project-rules.mjs';
 import { detectSearch } from './detect-search.mjs';
 
 /**
@@ -29,9 +32,10 @@ import { detectSearch } from './detect-search.mjs';
  */
 export async function buildPrompt(ticket, tessRoot, repoRoot, prereqNotes = []) {
 	const rulesFile = join(tessRoot, 'agent-rules', 'tickets.md');
-	const [content, rules, searchServer] = await Promise.all([
+	const [content, rules, projectRules, searchServer] = await Promise.all([
 		readFile(ticket.path, 'utf-8'),
 		readFile(rulesFile, 'utf-8'),
+		readProjectRules(join(repoRoot, 'tickets')),
 		detectSearch(repoRoot),
 	]);
 
@@ -42,6 +46,9 @@ export async function buildPrompt(ticket, tessRoot, repoRoot, prereqNotes = []) 
 		'## Ticket workflow rules:',
 		'',
 		filterStageBlocks(rules, ticket.stage),
+		// NOTE: every addendum rides in every ticket prompt, uncapped.  If addenda grow large, cap
+		// their size or require stage blocks, so each stage pays only for the text it uses.
+		...projectRuleSections(projectRules.rules, ticket.stage),
 		'',
 		`## Contents of \`${ticket.path}\`:`,
 		'',
@@ -71,6 +78,20 @@ export async function buildPrompt(ticket, tessRoot, repoRoot, prereqNotes = []) 
 	);
 
 	return sections.join('\n');
+}
+
+/**
+ * Prompt lines for the project's rules addenda (lib/project-rules.mjs): per
+ * addendum, a blank line, a `## Project rules (tickets/rules/<name>)` heading,
+ * a blank line and its body with stage blocks filtered by `filterStageBlocks`
+ * (`keepStage` null strips them all, as for the gardener).  An addendum with
+ * nothing left to say — a declaration-only file — adds no heading.
+ */
+export function projectRuleSections(rules, keepStage) {
+	return rules.flatMap(({ name, body }) => {
+		const text = filterStageBlocks(body, keepStage).trim();
+		return text === '' ? [] : ['', `## Project rules (tickets/${RULES_DIR}/${name})`, '', text];
+	});
 }
 
 // Strip every `<!-- stage:NAME -->...<!-- /stage -->` block except the one

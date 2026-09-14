@@ -28,7 +28,8 @@ import { ensureLogsDir, logPath } from './lib/logging.mjs';
 import { runAgent } from './lib/process.mjs';
 import { commitAll, getTessVersion, reconcileWorkingTree } from './lib/git.mjs';
 import { readInProgress } from './lib/state.mjs';
-import { filterStageBlocks, searchDirective } from './lib/prompt.mjs';
+import { filterStageBlocks, projectRuleSections, searchDirective } from './lib/prompt.mjs';
+import { readProjectRules } from './lib/project-rules.mjs';
 import { detectSearch } from './lib/detect-search.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -147,9 +148,10 @@ async function buildInventory(tickets) {
 }
 
 async function buildGardenPrompt({ inventory, feedback, repoRoot }) {
-	const [gardenRules, sharedRules, searchServer] = await Promise.all([
+	const [gardenRules, sharedRules, projectRules, searchServer] = await Promise.all([
 		readFile(join(TESS_ROOT, 'agent-rules', 'garden.md'), 'utf-8'),
 		readFile(join(TESS_ROOT, 'agent-rules', 'tickets.md'), 'utf-8'),
+		readProjectRules(join(repoRoot, 'tickets')),
 		detectSearch(repoRoot),
 	]);
 
@@ -163,6 +165,7 @@ async function buildGardenPrompt({ inventory, feedback, repoRoot }) {
 		'## Shared workflow conventions (stage-specific blocks removed):',
 		'',
 		filterStageBlocks(sharedRules, null),
+		...projectRuleSections(projectRules.rules, null),
 		'',
 		'## Backlog inventory (headers only — read the full files you act on):',
 		'',
