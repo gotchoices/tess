@@ -12,6 +12,14 @@
  * prose as fields.)  The one header field tess reads is `anchor-fields:`; any
  * other field is left to other tools.
  *
+ * Anchors are opt-in.  A board requires every worked ticket to name one only
+ * once some addendum lists at least one field under `anchor-fields:` — that
+ * is how rubric's init turns the rule on, and `anchor-fields: architecture`
+ * is how a project with no other spec turns it on with tess's own field
+ * alone.  A project with no addenda, or none that lists a field, never sees
+ * an anchor problem: `architecture:` is then just a header field agents may
+ * fill.
+ *
  * A body may carry the same `<!-- stage:NAME -->` blocks as
  * agent-rules/tickets.md; the prompt builders filter them
  * (lib/prompt.mjs `projectRuleSections`).
@@ -24,7 +32,7 @@ import { byName, headerBounds, parseListField } from './tickets.mjs';
 /** Addenda folder, relative to the tickets directory. */
 export const RULES_DIR = 'rules';
 
-/** The anchor field tess owns; projects declare the rest. */
+/** The anchor field tess owns; projects declare the rest, or list this one alone to opt in. */
 export const TESS_ANCHOR_FIELD = 'architecture';
 
 /** How errors name the folder — the runner always works on `<repo>/tickets`. */
@@ -55,8 +63,6 @@ export function parseProjectRule(name, text) {
 	for (const field of parseListField(lines.slice(start, end).join('\n'), 'anchor-fields')) {
 		if (!FIELD_NAME_RE.test(field)) {
 			errors.push(`${path}: anchor-fields: "${field}" is not a field name — use a lowercase letter followed by lowercase letters, digits or hyphens`);
-		} else if (field === TESS_ANCHOR_FIELD) {
-			errors.push(`${path}: anchor-fields: ${TESS_ANCHOR_FIELD} is tess's own anchor field — remove it from the list`);
 		} else {
 			anchorFields.push(field);
 		}
@@ -99,4 +105,9 @@ export async function readProjectRules(ticketsDir) {
 /** Every header field that counts as an anchor: `architecture`, then each declared field in file order, de-duplicated. */
 export function anchorFieldsOf(rules) {
 	return [...new Set([TESS_ANCHOR_FIELD, ...rules.flatMap(r => r.anchorFields)])];
+}
+
+/** True once any addendum lists at least one field under `anchor-fields:` — the board then requires an anchor on every worked ticket. */
+export function anchorsRequiredBy(rules) {
+	return rules.some(r => r.anchorFields.length > 0);
 }

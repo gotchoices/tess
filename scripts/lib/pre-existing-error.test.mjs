@@ -14,3 +14,10 @@ test('the triage prompt requires a filed fix/ ticket to carry one of the anchor 
 	assert.match(prompt, /plus at least one anchor field \(`architecture:`, `features:`, `aspects:`\)/);
 	assert.match(prompt, /## Report\n\nfailing test report$/);
 });
+
+test('with no anchor fields the triage prompt asks for none and offers architecture: as optional', () => {
+	const prompt = buildTriagePrompt('failing test report', []);
+
+	assert.doesNotMatch(prompt, /at least one anchor field/);
+	assert.match(prompt, /`architecture:` line naming the project's testing document is\n\s+welcome but not required/);
+});

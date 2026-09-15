@@ -108,6 +108,18 @@ test('entries carry triage and anchor columns; age and decline proposals apply t
 	]);
 });
 
+test('a board with no addendum declaring anchor fields has no anchor column', async () => {
+	const { tickets, context } = await backlog({ backlog: [['a.md', withHeader('tradeoffs: t')]] }, { releases: '## BETA\n' });
+	const inventory = buildInventory(tickets, { ...context, arrivals: new Map(), nowSeconds: NOW, declineAfterDays: 60 });
+
+	assert.deepEqual(inventoryText(inventory.groups).slice(0, 4), [
+		'### Current release (BETA) — backlog/ · 1 ticket',
+		'',
+		'- a.md — x\n  [tradeoffs: present | age: new]',
+		'',
+	]);
+});
+
 // ── summaries ────────────────────────────────────────────────────────────
 
 test('the release summary says whether the model is off, empty, or which release is current', () => {

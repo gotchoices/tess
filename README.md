@@ -311,7 +311,7 @@ A ticket's location already says its release, so the `target:` header is normall
 - a ticket in `backlog/<CODE>/` whose `target:` names a different release;
 - a ticket anywhere else whose `target:` names a later release than the current one.
 
-A ticket with no anchor is not runnable in the same way — see **Anchor** under [Ticket Format](#ticket-format).
+On a board that requires anchors, a ticket with none is not runnable in the same way — see **Anchor** under [Ticket Format](#ticket-format).
 
 ### Shipping a release
 
@@ -463,7 +463,7 @@ backlog/ ─→ plan/ ─┐
 ```markdown
 description: <brief description>
 prereq: <slugs of other tickets that must land first — comma-separated, no prefix, no .md>
-architecture: <anchor: repo-relative architecture document path, optionally #section — or a field declared in tickets/rules/>
+architecture: <anchor: repo-relative architecture document path, optionally #section — or a field declared in tickets/rules/; required only when a project rules section declares anchor fields>
 files: <optional list of relevant files>
 difficulty: <optional: easy | medium | hard — defaults to medium>
 target: <optional: a release code from tickets/releases.md — normally omitted; the ticket's location already says its release>
@@ -488,7 +488,7 @@ Two consequences: in an unfenced ticket a `---` horizontal rule in the prose end
 
 **Target (`target:`, optional):** the release a ticket is due in. Normally omitted — a ticket's location already says it (see [Releases](#releases)). When present it must agree with that location, or the runner treats the ticket as not runnable.
 
-**Anchor (`architecture:`, or a field the project declares):** every ticket names at least one part of the specification it serves. Tess owns `architecture:` — repo-relative paths to architecture documents, each optionally with a `#section` slug, conventionally under `docs/` (`architecture: docs/terrain.md#brush-pre-warm`); a project adds fields such as `features:` through [Project Rules](#project-rules). An anchor field may hold one value, a comma list, `[a, b]`, or indented `- item` lines under an empty field; an empty field or `[]` does not count. A ticket the runner is about to work with no anchor is **not runnable**: it logs `Not runnable <stage>/<file>:` with `no anchor — …`, runs no agent and commits nothing (see [`target:` and not-runnable tickets](#target-and-not-runnable-tickets)). Tickets in `blocked/` and `complete/` are never worked, so never checked. Tess checks only that an anchor is present, not that its path or section exists: resolving a section would mean reimplementing a markdown renderer's heading-slug rules, and a project's own link checker catches dangling paths better.
+**Anchor (`architecture:`, or a field the project declares; opt-in):** a ticket names at least one part of the specification it serves. Tess owns `architecture:` — repo-relative paths to architecture documents, each optionally with a `#section` slug, conventionally under `docs/` (`architecture: docs/terrain.md#brush-pre-warm`); a project adds fields such as `features:` through [Project Rules](#project-rules). An anchor field may hold one value, a comma list, `[a, b]`, or indented `- item` lines under an empty field; an empty field or `[]` does not count. **Anchors are required only once an addendum in `tickets/rules/` lists at least one field under `anchor-fields:`** — rubric's init writes such a file, and a project with no other specification opts in with `anchor-fields: architecture`. On such a board, a ticket the runner is about to work with no anchor is **not runnable**: it logs `Not runnable <stage>/<file>:` with `no anchor — …`, runs no agent and commits nothing (see [`target:` and not-runnable tickets](#target-and-not-runnable-tickets)); the gardener's inventory marks `anchor: MISSING` and the triage prompt asks for one. On any other board `architecture:` is an ordinary optional field, nothing is marked missing, and no ticket is refused for lacking it. Tickets in `blocked/` and `complete/` are never worked, so never checked. Tess checks only that an anchor is present, not that its path or section exists: resolving a section would mean reimplementing a markdown renderer's heading-slug rules, and a project's own link checker catches dangling paths better.
 
 ## Project Rules
 
@@ -502,12 +502,12 @@ Rule text appended to every ticket prompt.
 ```
 
 - **Declaration header.** A file declares something only when its first line is a fence (`---` or longer). The header then runs to the next fence, by the same rules as a ticket header, and the body is everything after it. A file whose first line is not a fence is all body and declares nothing, so leading prose is never read as fields.
-- **`anchor-fields:`** is the one header field tess reads: ticket header fields that count as an anchor besides `architecture:`, written as a comma list, `[a, b]`, or indented `- item` lines. Each name is a lowercase letter followed by lowercase letters, digits or hyphens. A field listed by two addenda counts once. Tess ignores every other header field, so other tools can keep their settings in the same header.
+- **`anchor-fields:`** is the one header field tess reads: ticket header fields that count as an anchor, written as a comma list, `[a, b]`, or indented `- item` lines. Each name is a lowercase letter followed by lowercase letters, digits or hyphens. `architecture:` always counts and may be listed — `anchor-fields: architecture` is the smallest declaration. Listing at least one field is what makes anchors **required** on the board; a field listed by two addenda counts once. Tess ignores every other header field, so other tools can keep their settings in the same header.
 - **Stage blocks.** A body may use the `<!-- stage:NAME -->` … `<!-- /stage -->` blocks of `agent-rules/tickets.md`, filtered the same way: a ticket's prompt keeps the block for its stage and drops the others. As in `tickets.md`, a body that has blocks but none for the ticket's stage is kept whole, markers included — so when a rule must stay out of some prompts, give every stage the runner works a block (an empty one is fine).
 - **Where addenda appear.** In a ticket prompt, each addendum follows the core workflow rules under a `## Project rules (tickets/rules/<name>)` heading. The gardener's prompt carries them after the shared conventions with every stage block stripped. An addendum with no text left after filtering — a declaration-only file — adds no heading. The pre-existing-failure triage prompt names the accepted anchor fields for any `fix/` ticket it files. Every prompt carries every addendum, so keep them to a few lines.
-- **Errors.** An opening fence with no closing fence (`unterminated header`), a malformed field name, `architecture` listed again, or a `tickets/rules` file where the folder should be is a [startup board error](#startup-board-check): the runner prints it and exits 1 before any agent runs, `--dry-run` included. The board check does not run again between tickets, so a ticket that an addendum broken mid-run leaves without an anchor lists those errors under its `Not runnable` line.
+- **Errors.** An opening fence with no closing fence (`unterminated header`), a malformed field name, or a `tickets/rules` file where the folder should be is a [startup board error](#startup-board-check): the runner prints it and exits 1 before any agent runs, `--dry-run` included. The board check does not run again between tickets, so a ticket that an addendum broken mid-run leaves without an anchor lists those errors under its `Not runnable` line.
 
-Without a `tickets/rules/` folder, prompts are unchanged and `architecture:` is the only anchor field.
+Without a `tickets/rules/` folder — or with addenda that list no anchor field — prompts are unchanged and anchors are not required.
 
 ## Model & Effort Selection
 

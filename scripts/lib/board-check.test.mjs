@@ -155,12 +155,25 @@ test('a ticket with no target:, or one agreeing with its location, has no proble
 // ── Anchors ───────────────────────────────────────────────────────────────
 
 const RUBRIC_RULES = ['rubric.md', '---\nanchor-fields: features, aspects\n---\nFeature codes and aspect names.\n'];
+const ARCHITECTURE_ONLY_RULES = ['anchors.md', '---\nanchor-fields: architecture\n---\n'];
 
-test('a ticket with no anchor is a problem naming the anchor fields the board accepts, after any target: problem', async () => {
+test('a board with no addendum declaring anchor fields never has an anchor problem', async () => {
+	const bare = ['bare.md', 'description: x\n----\nbody\n'];
+	const both = ['both.md', 'description: x\ntarget: GA\n----\nbody\n'];
+	const prose = ['prose.md', 'Rules with no header declare nothing.\n'];
+
+	assert.deepEqual(await problemsFor({ implement: [bare, both] }), {
+		bare: [],
+		both: ['has target: GA but tickets/releases.md does not exist'],
+	});
+	assert.deepEqual(await problemsFor({ implement: [bare], rules: [prose] }), { bare: [] });
+});
+
+test('once an addendum lists anchor fields, a ticket with none is a problem naming the fields the board accepts, after any target: problem', async () => {
 	const bare = ['bare.md', 'description: x\n----\nbody\n'];
 	const both = ['both.md', 'description: x\ntarget: GA\n----\nbody\n'];
 
-	assert.deepEqual(await problemsFor({ implement: [bare, both] }), {
+	assert.deepEqual(await problemsFor({ implement: [bare, both], rules: [ARCHITECTURE_ONLY_RULES] }), {
 		bare: ['no anchor — add architecture: to the header'],
 		both: ['has target: GA but tickets/releases.md does not exist', 'no anchor — add architecture: to the header'],
 	});
@@ -172,7 +185,7 @@ test('a ticket with no anchor is a problem naming the anchor fields the board ac
 test('a field counts as an anchor only once an addendum declares it', async () => {
 	const featuresOnly = ['features-only.md', '---\ndescription: x\nfeatures: SIT-BRA\n---\nbody\n'];
 
-	assert.deepEqual(await problemsFor({ implement: [featuresOnly] }), { 'features-only': ['no anchor — add architecture: to the header'] });
+	assert.deepEqual(await problemsFor({ implement: [featuresOnly], rules: [ARCHITECTURE_ONLY_RULES] }), { 'features-only': ['no anchor — add architecture: to the header'] });
 	assert.deepEqual(await problemsFor({ implement: [featuresOnly], rules: [RUBRIC_RULES] }), { 'features-only': [] });
 });
 
@@ -193,19 +206,21 @@ test('architecture: alone, or a declared field in list form, is an anchor; empty
 
 test('project rules errors are board errors, after the release-list errors', async () => {
 	const ticketsDir = await makeBoard(
-		{ rules: [['bad.md', '---\nanchor-fields: architecture\n---\n'], ['open.md', '---\nanchor-fields: features\n']] },
+		{ rules: [['bad.md', '---\nanchor-fields: Features\n---\n'], ['open.md', '---\nanchor-fields: features\n']] },
 		{ releases: '## beta\n' },
 	);
 
 	assert.deepEqual((await check(ticketsDir)).errors, [
 		'tickets/releases.md:1: "beta" is not a release code — use an uppercase letter followed by 1–7 uppercase letters or digits',
-		"tickets/rules/bad.md: anchor-fields: architecture is tess's own anchor field — remove it from the list",
+		'tickets/rules/bad.md: anchor-fields: "Features" is not a field name — use a lowercase letter followed by lowercase letters, digits or hyphens',
 		'tickets/rules/open.md: unterminated header — line 1 is a fence with no closing fence, so the file appends and declares nothing',
 	]);
 });
 
 test('an unanchored ticket lists the project rules errors that may explain it; an anchored ticket is not held up by them', async () => {
-	// The shape of an addendum broken mid-run, which the startup board check never sees.
+	// The shape of an addendum broken mid-run, which the startup board check never sees.  A second,
+	// intact addendum keeps anchors required; were the broken one the only addendum, the board would
+	// simply stop requiring anchors until the next startup check reports it.
 	const brokenRubric = ['rubric.md', '---\nanchor-fields: features, aspects\n'];
 
 	assert.deepEqual(await problemsFor({
@@ -213,7 +228,7 @@ test('an unanchored ticket lists the project rules errors that may explain it; a
 			['features-only.md', '---\ndescription: x\nfeatures: SIT-BRA\n---\n'],
 			['anchored.md', withHeader('features: SIT-BRA')],
 		],
-		rules: [brokenRubric],
+		rules: [ARCHITECTURE_ONLY_RULES, brokenRubric],
 	}), {
 		'features-only': [
 			'no anchor — add architecture: to the header',

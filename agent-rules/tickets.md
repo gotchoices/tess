@@ -161,7 +161,7 @@ Gated on filing. Everything resolved inline — skip this.
 
 **Root cause, not symptom.** Name the one code site — or one unsettled decision — that must change. Two findings resolving at the same site are ONE ticket with two arms, even when the symptoms look unrelated. Can't name the site? Investigation isn't done.
 
-**Name an anchor.** Every ticket names at least one part of the specification it serves — tess's `architecture:` (a repo-relative document path, optionally `#section`) or a field the project declares in `tickets/rules/` — or the runner won't work it.
+**Name an anchor.** A ticket names the part of the specification it serves — tess's `architecture:` (a repo-relative document path, optionally `#section`) or a field the project declares in `tickets/rules/`. When a `## Project rules` section of this prompt declares anchor fields, an anchor is required and the runner won't work a ticket without one; otherwise `architecture:` is optional — fill it when a document clearly owns the work, leave it off when none does.
 
 **Architecture first — a point ticket is the last resort.** The goal is a codebase that gets *harder to break*, not a queue that gets longer. Before filing a bug instance, climb this ladder and file at the **highest rung that applies** (in review, only past the filing bar):
 
@@ -201,7 +201,7 @@ Ticket file template:
 ----
 description: <ONE plain-language sentence (two at most), jargon-free, understandable with no prior context — what the ticket is about and why. NOT a technical abstract; the detail goes in the body.>
 prereq: <slugs of other tickets that must land first — comma-separated, no sequence prefix, no .md>
-architecture: <anchor: repo-relative architecture document path, optionally #section — or a field declared in tickets/rules/>
+architecture: <anchor: repo-relative architecture document path, optionally #section — or a field declared in tickets/rules/; required only when a project rules section declares anchor fields>
 files: <list key files touched/relevant — saves the next agent significant discovery time>
 difficulty: <optional; easy|medium|hard — how much horsepower the work needs. Default medium. Drives model/effort selection (e.g. hard → a stronger model); omit unless the work is unusually simple or hard.>
 target: <optional; a release code from tickets/releases.md that agrees with the ticket's folder — normally omit: the folder already says its release>

@@ -15,20 +15,22 @@
  * context rather than each caller re-reading files.
  */
 
-import { anchorFieldsOf, readProjectRules } from './project-rules.mjs';
+import { anchorFieldsOf, anchorsRequiredBy, readProjectRules } from './project-rules.mjs';
 import { RELEASES_FILE, currentRelease, rankOf, readReleases } from './releases.mjs';
 import { boardLocation, deferralReason, parseListField, parseSlug, readBacklogLayout, resolvePrereqs } from './tickets.mjs';
 
 const RELEASES_PATH = `tickets/${RELEASES_FILE}`;
 
 /**
- * Everything the board rules read: `{ releases, rules, anchorFields }`.
- * `rules` is `readProjectRules`' `{ rules, errors }`; `anchorFields` is every
- * header field that counts as an anchor.
+ * Everything the board rules read: `{ releases, rules, anchorFields,
+ * anchorsRequired }`.  `rules` is `readProjectRules`' `{ rules, errors }`;
+ * `anchorFields` is every header field that counts as an anchor;
+ * `anchorsRequired` says whether a worked ticket must name one (see
+ * lib/project-rules.mjs `anchorsRequiredBy`).
  */
 export async function readBoardContext(ticketsDir) {
 	const [releases, rules] = await Promise.all([readReleases(ticketsDir), readProjectRules(ticketsDir)]);
-	return { releases, rules, anchorFields: anchorFieldsOf(rules.rules) };
+	return { releases, rules, anchorFields: anchorFieldsOf(rules.rules), anchorsRequired: anchorsRequiredBy(rules.rules) };
 }
 
 const ticketCount = n => `${n} ticket${n === 1 ? '' : 's'}`;
@@ -143,17 +145,19 @@ export function hasAnchor(header, anchorFields) {
 }
 
 /**
- * A ticket names at least one anchor: a non-empty `architecture:` or a field a
- * project addendum declares.  Presence only — whether an `architecture:` path
- * or its `#section` exists is left to the project's link checking, since
- * resolving section slugs would mean re-implementing heading-slug rules.
+ * On a board that requires anchors, a ticket names at least one: a non-empty
+ * `architecture:` or a field a project addendum declares.  Presence only —
+ * whether an `architecture:` path or its `#section` exists is left to the
+ * project's link checking, since resolving section slugs would mean
+ * re-implementing heading-slug rules.  A board with no addendum declaring
+ * anchor fields never has this problem.
  *
  * A malformed addendum can be why a field the ticket uses does not count.  The
  * startup board check stops the run on such errors, but an addendum broken
  * mid-run is seen only here, so its errors are listed with the problem.
  */
-function anchorProblems({ header }, { anchorFields, rules }) {
-	if (hasAnchor(header, anchorFields)) return [];
+function anchorProblems({ header }, { anchorFields, anchorsRequired, rules }) {
+	if (!anchorsRequired || hasAnchor(header, anchorFields)) return [];
 	const named = anchorFields.map(field => `${field}:`);
 	return [
 		`no anchor — add ${named.length === 1 ? named[0] : `one of ${named.join(', ')}`} to the header`,

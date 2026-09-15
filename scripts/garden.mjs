@@ -197,6 +197,7 @@ async function main() {
 	const inventory = buildInventory(tickets, {
 		releases: context.releases,
 		anchorFields: context.anchorFields,
+		anchorsRequired: context.anchorsRequired,
 		arrivals: topLevelArrivals(repoRoot, 'tickets', { warn: message => console.warn(`[garden] warning: ${message}`) }),
 		nowSeconds: Math.floor(Date.now() / 1000),
 		declineAfterDays: opts.declineAfterDays,

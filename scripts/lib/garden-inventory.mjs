@@ -70,17 +70,19 @@ export function inventoryGroups(tickets, releases) {
 
 /**
  * One ticket's entry: its path under `backlog/`, its description, and a
- * bracket of header facts.  Age applies to top-level tickets only: `ageDays`
- * is a number of days, or null when no commit has put the ticket there.
+ * bracket of header facts.  The anchor fact appears only on a board that
+ * requires anchors; elsewhere there is nothing to be missing.  Age applies to
+ * top-level tickets only: `ageDays` is a number of days, or null when no
+ * commit has put the ticket there.
  */
-export function inventoryLine(ticket, { anchorFields, ageDays = null, declineAfterDays }) {
+export function inventoryLine(ticket, { anchorFields, anchorsRequired, ageDays = null, declineAfterDays }) {
 	const value = name => headerField(ticket.header, name) || null;
 	const facts = [];
 	if (ticket.slug.startsWith('bug-')) {
 		facts.push(`severity: ${value('severity') ?? 'MISSING'}`, `likelihood: ${value('likelihood') ?? 'MISSING'}`);
 	}
 	facts.push(`tradeoffs: ${value('tradeoffs') ? 'present' : 'MISSING'}`);
-	facts.push(`anchor: ${hasAnchor(ticket.header, anchorFields) ? 'present' : 'MISSING'}`);
+	if (anchorsRequired) facts.push(`anchor: ${hasAnchor(ticket.header, anchorFields) ? 'present' : 'MISSING'}`);
 	if (ticket.folder == null) {
 		facts.push(`age: ${ageDays == null ? 'new' : `${ageDays}d`}`);
 		if (proposesDecline(ageDays, declineAfterDays)) facts.push('PROPOSE-DECLINE');
@@ -95,7 +97,7 @@ export function inventoryLine(ticket, { anchorFields, ageDays = null, declineAft
  * folders, proposed } }`.  `arrivals` is lib/backlog-age.mjs
  * `topLevelArrivals`' map; `nowSeconds` is the moment ages are measured to.
  */
-export function buildInventory(tickets, { releases, anchorFields, arrivals, nowSeconds, declineAfterDays }) {
+export function buildInventory(tickets, { releases, anchorFields, anchorsRequired, arrivals, nowSeconds, declineAfterDays }) {
 	let proposed = 0;
 	const groups = inventoryGroups(tickets, releases).map(({ heading, tickets: members }) => ({
 		heading,
@@ -103,7 +105,7 @@ export function buildInventory(tickets, { releases, anchorFields, arrivals, nowS
 			const arrival = ticket.folder == null ? arrivals.get(ticket.slug) : undefined;
 			const ageDays = arrival == null ? null : ageInDays(arrival, nowSeconds);
 			if (proposesDecline(ageDays, declineAfterDays)) proposed++;
-			return inventoryLine(ticket, { anchorFields, ageDays, declineAfterDays });
+			return inventoryLine(ticket, { anchorFields, anchorsRequired, ageDays, declineAfterDays });
 		}),
 	}));
 	const top = groups[0].entries.length;

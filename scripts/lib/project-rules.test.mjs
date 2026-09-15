@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { anchorFieldsOf, parseProjectRule, readProjectRules } from './project-rules.mjs';
+import { anchorFieldsOf, anchorsRequiredBy, parseProjectRule, readProjectRules } from './project-rules.mjs';
 import { makeBoard } from './test-board.mjs';
 
 const BAD_NAME = 'is not a field name — use a lowercase letter followed by lowercase letters, digits or hyphens';
@@ -31,14 +31,13 @@ test('a file whose first line is not a fence is all body and declares nothing', 
 	assert.deepEqual(parseProjectRule('plain.md', text), { rule: { name: 'plain.md', body: text, anchorFields: [] }, errors: [] });
 });
 
-test('an invalid field name, or architecture declared again, is an error naming the file; the valid names still count', () => {
+test('an invalid field name is an error naming the file; the valid names still count, tess\'s own architecture among them', () => {
 	const { rule, errors } = parseProjectRule('bad.md', '---\nanchor-fields: Features, feat_x, aspects, architecture\n---\nBody\n');
 
-	assert.deepEqual(rule.anchorFields, ['aspects']);
+	assert.deepEqual(rule.anchorFields, ['aspects', 'architecture']);
 	assert.deepEqual(errors, [
 		`tickets/rules/bad.md: anchor-fields: "Features" ${BAD_NAME}`,
 		`tickets/rules/bad.md: anchor-fields: "feat_x" ${BAD_NAME}`,
-		"tickets/rules/bad.md: anchor-fields: architecture is tess's own anchor field — remove it from the list",
 	]);
 });
 
@@ -88,4 +87,12 @@ test('anchorFieldsOf puts architecture first, then the declared fields in file o
 
 	assert.deepEqual(anchorFieldsOf(rules), ['architecture', 'features', 'aspects', 'risks']);
 	assert.deepEqual(anchorFieldsOf([]), ['architecture']);
+});
+
+test('anchors are required only once an addendum lists a field — architecture alone is enough to opt in', () => {
+	const none = { name: 'prose.md', body: 'Rules only.', anchorFields: [] };
+	assert.equal(anchorsRequiredBy([]), false);
+	assert.equal(anchorsRequiredBy([none]), false);
+	assert.equal(anchorsRequiredBy([none, { name: 'a.md', body: '', anchorFields: ['architecture'] }]), true);
+	assert.equal(anchorsRequiredBy([{ name: 'r.md', body: '', anchorFields: ['features'] }]), true);
 });
