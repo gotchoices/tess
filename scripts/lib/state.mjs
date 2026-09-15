@@ -12,6 +12,7 @@
 import { readFile, writeFile, unlink, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { constants } from 'node:fs';
+import { headerBounds } from './tickets.mjs';
 
 const STOP_FILE = '.stop';
 const IN_PROGRESS_FILE = '.in-progress';
@@ -92,7 +93,8 @@ export async function clearInProgress(ticketsDir) {
 	await unlink(inProgressPath(ticketsDir)).catch(() => {});
 }
 
-function buildResumeNote(priorRun) {
+/** The resume note as an array of lines (no trailing blank line — see `addResumeNote`). */
+function buildResumeNoteLines(priorRun) {
 	return [
 		RESUME_MARKER_START,
 		'RESUME: A prior agent run on this ticket did not complete.',
@@ -101,11 +103,23 @@ function buildResumeNote(priorRun) {
 		'Read the log to see what was done. Resume where it left off.',
 		'If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.',
 		RESUME_MARKER_END,
-		'',
-	].join('\n');
+	];
 }
 
-/** Prepend a resume note to a ticket file. Idempotent — replaces any existing note. */
+/**
+ * Insert a resume note into a ticket file, just after its header. Idempotent —
+ * the plain-text search below finds an existing note wherever it sits
+ * (including above the header, from before this fix) and removes it first.
+ *
+ * Reuses `headerBounds` rather than re-deriving the fence rules: a note
+ * prepended above the header reads as part of the header to
+ * `board-check.mjs`'s anchor check and `tickets.mjs`'s `prereq:`/`difficulty:`
+ * parsing, hiding the real fields. Insertion point is `closed ? end + 1 :
+ * end` — right after the closing fence when the header has one, or at the
+ * very end of the document when it doesn't (an unfenced header has no fence
+ * to end it, so `headerBounds` reads the whole document as header and `end`
+ * is already the line count).
+ */
 export async function addResumeNote(ticketPath, priorRun) {
 	let content = await readFile(ticketPath, 'utf-8');
 	const startIdx = content.indexOf(RESUME_MARKER_START);
@@ -113,6 +127,8 @@ export async function addResumeNote(ticketPath, priorRun) {
 	if (startIdx !== -1 && endIdx !== -1) {
 		content = content.slice(0, startIdx) + content.slice(endIdx + RESUME_MARKER_END.length).replace(/^\n/, '');
 	}
-	const note = buildResumeNote(priorRun);
-	await writeFile(ticketPath, note + content, 'utf-8');
+	const { lines, end, closed } = headerBounds(content);
+	const at = closed ? end + 1 : end;
+	const updated = [...lines.slice(0, at), ...buildResumeNoteLines(priorRun), ...lines.slice(at)].join('\n');
+	await writeFile(ticketPath, updated, 'utf-8');
 }
