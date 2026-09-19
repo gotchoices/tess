@@ -21,13 +21,14 @@ import { resolveModelEffort } from '../model-selection.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOK_SCRIPT = join(__dirname, '..', 'budget-hook.mjs');
 
-// `claude -p` does NOT auto-spawn stdio servers from a project-scoped
-// .mcp.json — outside `claude doctor` it treats the file as untrusted, even
-// with --dangerously-skip-permissions.  Without --mcp-config the agent can
-// see only built-in tools, so any deferred-tool selector for `mcp__<name>__*`
-// (e.g. tess's own `code-search`) returns nothing and the agent silently
-// falls back to grep/Read.  Pass the file through when it exists so project
-// MCP servers are actually loaded.
+// Load the project's .mcp.json explicitly rather than relying on the CLI's
+// project-scope auto-discovery.  Older CLI versions skipped project servers
+// under `claude -p` as untrusted; current ones (2.1.x) load them, but the
+// approval rules (trust dialog, `enabledMcpjsonServers` in a gitignored
+// settings.local.json) have shifted across versions.  A cycle that loses them
+// fails silently: `mcp__<name>__*` selectors (e.g. tess's own `code-search`)
+// return nothing and the agent falls back to grep/Read.  Passing the file is
+// idempotent — the CLI does not start a server twice.
 async function projectMcpConfig(cwd) {
 	const path = join(cwd, '.mcp.json');
 	try { await access(path, constants.R_OK); return path; }
