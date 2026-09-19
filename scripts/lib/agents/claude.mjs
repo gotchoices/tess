@@ -15,7 +15,8 @@
 import { writeFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { hostname } from 'node:os';
 import { resolveModelEffort } from '../model-selection.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -187,6 +188,10 @@ export async function claude(instructionFile, _prompt, { stage, tokenBudget, cwd
 		const mcpConfig = await projectMcpConfig(cwd);
 		if (mcpConfig) args.push('--mcp-config', mcpConfig);
 	}
+	// Display name so concurrent runs (several checkouts on one account) can be
+	// told apart: `tess:<prefix>:<ticket>.<stage>.<timestamp>`.
+	const runLabel = basename(instructionFile).replace(/\.prompt\.md$/, '');
+	args.push('--name', `tess:${process.env.TESS_SESSION_NAME_PREFIX || hostname()}:${runLabel}`);
 	args.push('--append-system-prompt-file', instructionFile);
 	if (Number.isFinite(tokenBudget)) {
 		const settingsFile = instructionFile.replace(/\.prompt\.md$/, '.settings.json');

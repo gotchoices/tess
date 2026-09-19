@@ -549,6 +549,14 @@ Models are named by **tier alias** (`sonnet` / `opus` / `fable`) rather than a p
 
 > **Note:** effort vocabularies are model-specific — a value valid for one model may be rejected by another. If a model in a given tier rejects an effort value, set a supported one for that stage in the config.
 
+### Session names
+
+The `claude` adapter gives every session a display name (`claude --name`) of the form `tess:<prefix>:<ticket>.<stage>.<timestamp>`, so runs from several checkouts on one account can be told apart. `<prefix>` is the machine or container hostname unless the `TESS_SESSION_NAME_PREFIX` environment variable is set:
+
+```bash
+TESS_SESSION_NAME_PREFIX=sitecad-a node tess/scripts/run.mjs
+```
+
 ## Stopping the Runner
 
 Create a `tickets/.stop` file to gracefully halt the runner between tickets:
