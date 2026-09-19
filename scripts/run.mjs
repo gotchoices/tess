@@ -41,7 +41,7 @@ import { mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { discoverTickets, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, firstUnsatisfied, boardLocation, findTransitiveBlocker, KNOWN_STAGES } from './lib/tickets.mjs';
+import { discoverTickets, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, firstUnsatisfied, boardLocation, findTransitiveBlocker, inShard, KNOWN_STAGES } from './lib/tickets.mjs';
 import { checkBoard, readBoardContext, ticketProblems } from './lib/board-check.mjs';
 import { topoSortAndCheck } from './lib/topo.mjs';
 import { readAndClearInProgress, readInProgress, addResumeNote } from './lib/state.mjs';
@@ -179,6 +179,13 @@ async function main() {
 		}
 		allTickets.length = 0;
 		allTickets.push(...kept);
+	}
+
+	// --shard: keep only this runner's share of the board (live re-applies it per pick).
+	if (opts.shard) {
+		const mine = allTickets.filter(t => inShard(t.slug, opts.shard));
+		allTickets.length = 0;
+		allTickets.push(...mine);
 	}
 
 	const totalFound = allTickets.length;

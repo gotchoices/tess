@@ -68,6 +68,10 @@ export function printHelp() {
 		'                       chain reaches a slug parked in blocked/.  The runtime',
 		'                       cross-stage prereq gate still applies to other misses',
 		'                       (e.g. prereq still in plan/ when ticket is in implement/).',
+		'  --shard <k>/<n>      Only run tickets whose slug hashes to shard k of n (0-based).',
+		'                       Lets n runners on separate clones share the same stages',
+		'                       without picking the same ticket; a ticket stays in its',
+		'                       shard as it moves through stages.  (default: all tickets)',
 		'  --refresh-index      Run the local code indexer incrementally before each',
 		'                       ticket (no-op if tickets/.index/ does not exist).',
 		`  --prune-completed-days <n>  Remove completed tickets whose landing commit is`,
@@ -99,6 +103,7 @@ export function parseArgs(argv) {
 		dryRun: false,
 		noCommit: false,
 		skipBlocked: false,
+		shardRaw: null,
 		refreshIndex: false,
 		dirtyTree: DIRTY_TREE_MODES[0],
 		maxTickets: Infinity,
@@ -131,6 +136,9 @@ export function parseArgs(argv) {
 				break;
 			case '--skip-blocked':
 				opts.skipBlocked = true;
+				break;
+			case '--shard':
+				opts.shardRaw = argv[++i];
 				break;
 			case '--refresh-index':
 				opts.refreshIndex = true;
@@ -176,6 +184,16 @@ export function parseArgs(argv) {
 		process.exit(1);
 	}
 
+	let shard = null;
+	if (opts.shardRaw !== null) {
+		const m = /^(\d+)\/(\d+)$/.exec(opts.shardRaw);
+		shard = m && { index: Number(m[1]), count: Number(m[2]) };
+		if (!shard || shard.count < 1 || shard.index >= shard.count) {
+			console.error(`--shard must be k/n with 0 <= k < n, e.g. 0/2.`);
+			process.exit(1);
+		}
+	}
+
 	if (Number.isFinite(opts.tokenBudget) && opts.tokenBudget <= 0) {
 		console.error(`--token-budget must be a positive integer.`);
 		process.exit(1);
@@ -186,7 +204,7 @@ export function parseArgs(argv) {
 		process.exit(1);
 	}
 
-	return { ...opts, stages };
+	return { ...opts, stages, shard };
 }
 
 export function formatStageSummary(stages) {

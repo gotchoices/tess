@@ -197,6 +197,22 @@ export async function indexAllTickets(ticketsDir, { withPrereqs = false } = {}) 
 }
 
 /**
+ * `--shard k/n` membership: a stable hash of the slug, so two runners on
+ * separate clones given `0/2` and `1/2` split every stage between them without
+ * ever picking the same ticket, and a ticket keeps its runner as it moves
+ * through stages.
+ */
+export function inShard(slug, shard) {
+	if (!shard) return true;
+	let h = 0x811c9dc5;  // FNV-1a
+	for (let i = 0; i < slug.length; i++) {
+		h ^= slug.charCodeAt(i);
+		h = Math.imul(h, 0x01000193) >>> 0;
+	}
+	return h % shard.count === shard.index;
+}
+
+/**
  * Walk a ticket's prereq chain across the cross-stage index and return the
  * first slug that's parked in `blocked/`, or `null` if no path leads there.
  *

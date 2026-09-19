@@ -50,6 +50,7 @@ import {
 	indexAllTickets,
 	findUnsatisfiedPrereq,
 	findTransitiveBlocker,
+	inShard,
 	NEXT_STAGE,
 } from '../tickets.mjs';
 import { topoSortAndCheck } from '../topo.mjs';
@@ -110,11 +111,12 @@ async function buildQueue(ticketsDir, stages) {
  * chain. A dependent in an *earlier* stage is left to the rank gate: the stages
  * its prereq has already passed through have landed.
  */
-export async function pickNext(queue, { ticketsDir, index, blockIndex = null, excluded, transitions }) {
+export async function pickNext(queue, { ticketsDir, index, blockIndex = null, shard = null, excluded, transitions }) {
 	const passedOver = new Set(excluded);
 	const isRunnable = async t => {
 		if (!NEXT_STAGE[t.stage]) return false;                                        // terminal stage — nothing to advance
 		if (passedOver.has(t.slug)) return false;                                      // excluded this run
+		if (!inShard(t.slug, shard)) return false;                                     // --shard: another runner's ticket
 		if ((transitions.get(t.slug) ?? 0) >= MAX_TRANSITIONS_PER_SLUG) return false;  // regression loop
 		if (t.prereqs.some(p => passedOver.has(p) && index.get(p)?.stage === t.stage)) return false;  // same-stage prereq not running this pass
 		if (blockIndex && findTransitiveBlocker(t, blockIndex)) return false;          // --skip-blocked: prereq chain hits blocked/
@@ -156,7 +158,7 @@ export async function run(ctx) {
 			: null;
 
 		// Pick the highest-priority runnable ticket given the live board.
-		const pick = await pickNext(queue, { ticketsDir, index, blockIndex, excluded, transitions });
+		const pick = await pickNext(queue, { ticketsDir, index, blockIndex, shard: opts.shard, excluded, transitions });
 		if (!pick) break;  // board drained, or every remaining ticket is gated/blocked
 
 		const label = `[live ${runs + 1}]`;
