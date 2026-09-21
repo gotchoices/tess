@@ -2,7 +2,7 @@
  * Command-line argument parsing and help output.
  */
 
-import { KNOWN_STAGES, PENDING_STAGES } from './tickets.mjs';
+import { KNOWN_STAGES, PENDING_STAGES, stripSlugDecoration } from './tickets.mjs';
 import { KNOWN_STRATEGIES, DEFAULT_STRATEGY } from './strategies/index.mjs';
 import { DEFAULT_PRUNE_AGE_DAYS } from './prune-completed.mjs';
 import { DIRTY_TREE_MODES } from './git.mjs';
@@ -72,6 +72,15 @@ export function printHelp() {
 		'                       Lets n runners on separate clones share the same stages',
 		'                       without picking the same ticket; a ticket stays in its',
 		'                       shard as it moves through stages.  (default: all tickets)',
+			'  --only <slugs>       Comma-separated ticket slugs (no sequence prefix, no .md).',
+			'                       Restricts selection to exactly these tickets, overriding',
+			'                       the runner\'s own priority/sequence ranking within --stages',
+			'                       entirely.  A named ticket still must sit in one of the',
+			'                       requested --stages to be found — pair with --stages if it',
+			'                       is not in the default set.  Composes with --shard (a ticket',
+			'                       must pass both to run).  For hand-assigning specific tickets',
+			'                       to a runner, e.g. splitting work between two clones without',
+			'                       relying on shard hashing.        (default: no restriction)',
 		'  --refresh-index      Run the local code indexer incrementally before each',
 		'                       ticket (no-op if tickets/.index/ does not exist).',
 		`  --prune-completed-days <n>  Remove completed tickets whose landing commit is`,
@@ -104,6 +113,7 @@ export function parseArgs(argv) {
 		noCommit: false,
 		skipBlocked: false,
 		shardRaw: null,
+		onlyRaw: null,
 		refreshIndex: false,
 		dirtyTree: DIRTY_TREE_MODES[0],
 		maxTickets: Infinity,
@@ -139,6 +149,9 @@ export function parseArgs(argv) {
 				break;
 			case '--shard':
 				opts.shardRaw = argv[++i];
+				break;
+			case '--only':
+				opts.onlyRaw = argv[++i];
 				break;
 			case '--refresh-index':
 				opts.refreshIndex = true;
@@ -194,6 +207,16 @@ export function parseArgs(argv) {
 		}
 	}
 
+	let only = null;
+	if (opts.onlyRaw !== null) {
+		const slugs = opts.onlyRaw.split(',').map(s => s.trim()).filter(Boolean).map(stripSlugDecoration);
+		if (slugs.length === 0) {
+			console.error(`--only requires at least one slug.`);
+			process.exit(1);
+		}
+		only = new Set(slugs);
+	}
+
 	if (Number.isFinite(opts.tokenBudget) && opts.tokenBudget <= 0) {
 		console.error(`--token-budget must be a positive integer.`);
 		process.exit(1);
@@ -204,7 +227,7 @@ export function parseArgs(argv) {
 		process.exit(1);
 	}
 
-	return { ...opts, stages, shard };
+	return { ...opts, stages, shard, only };
 }
 
 export function formatStageSummary(stages) {

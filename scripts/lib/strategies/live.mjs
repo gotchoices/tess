@@ -19,7 +19,8 @@
  *      the stage, concatenate preserving cross-stage priority → the live queue.
  *   2. Build one cross-stage index and pick the first queue ticket that is
  *      runnable: not excluded (agent-errored / timed-out / not runnable this
- *      run), not behind a same-stage prereq this pass passed over, under the
+ *      run), named by --only when given, in this runner's --shard when given,
+ *      not behind a same-stage prereq this pass passed over, under the
  *      per-slug transition cap, not transitively blocked (when --skip-blocked), and with
  *      every prereq satisfied (strictly-later rank, not deferred to a later
  *      release). A ticket whose prereq is merely *behind but still in the
@@ -51,6 +52,7 @@ import {
 	findUnsatisfiedPrereq,
 	findTransitiveBlocker,
 	inShard,
+	inOnly,
 	NEXT_STAGE,
 } from '../tickets.mjs';
 import { topoSortAndCheck } from '../topo.mjs';
@@ -111,11 +113,12 @@ async function buildQueue(ticketsDir, stages) {
  * chain. A dependent in an *earlier* stage is left to the rank gate: the stages
  * its prereq has already passed through have landed.
  */
-export async function pickNext(queue, { ticketsDir, index, blockIndex = null, shard = null, excluded, transitions }) {
+export async function pickNext(queue, { ticketsDir, index, blockIndex = null, shard = null, only = null, excluded, transitions }) {
 	const passedOver = new Set(excluded);
 	const isRunnable = async t => {
 		if (!NEXT_STAGE[t.stage]) return false;                                        // terminal stage — nothing to advance
 		if (passedOver.has(t.slug)) return false;                                      // excluded this run
+		if (!inOnly(t.slug, only)) return false;                                       // --only: not one of the named tickets
 		if (!inShard(t.slug, shard)) return false;                                     // --shard: another runner's ticket
 		if ((transitions.get(t.slug) ?? 0) >= MAX_TRANSITIONS_PER_SLUG) return false;  // regression loop
 		if (t.prereqs.some(p => passedOver.has(p) && index.get(p)?.stage === t.stage)) return false;  // same-stage prereq not running this pass
@@ -158,7 +161,7 @@ export async function run(ctx) {
 			: null;
 
 		// Pick the highest-priority runnable ticket given the live board.
-		const pick = await pickNext(queue, { ticketsDir, index, blockIndex, shard: opts.shard, excluded, transitions });
+		const pick = await pickNext(queue, { ticketsDir, index, blockIndex, shard: opts.shard, only: opts.only, excluded, transitions });
 		if (!pick) break;  // board drained, or every remaining ticket is gated/blocked
 
 		const label = `[live ${runs + 1}]`;

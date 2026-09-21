@@ -41,7 +41,7 @@ import { mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { discoverTickets, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, firstUnsatisfied, boardLocation, findTransitiveBlocker, inShard, KNOWN_STAGES } from './lib/tickets.mjs';
+import { discoverTickets, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, firstUnsatisfied, boardLocation, findTransitiveBlocker, inShard, inOnly, KNOWN_STAGES } from './lib/tickets.mjs';
 import { checkBoard, readBoardContext, ticketProblems } from './lib/board-check.mjs';
 import { topoSortAndCheck } from './lib/topo.mjs';
 import { readAndClearInProgress, readInProgress, addResumeNote } from './lib/state.mjs';
@@ -179,6 +179,21 @@ async function main() {
 		}
 		allTickets.length = 0;
 		allTickets.push(...kept);
+	}
+
+	// --only: keep just the explicitly named tickets (live re-applies it per pick).
+	// A name that never matches is very likely a typo or the wrong --stages, not
+	// silent — say so rather than let the runner quietly no-op.
+	if (opts.only) {
+		const mine = allTickets.filter(t => inOnly(t.slug, opts.only));
+		const found = new Set(mine.map(t => t.slug));
+		for (const slug of opts.only) {
+			if (!found.has(slug)) {
+				console.warn(`[runner] warning: --only named "${slug}" but it is not in ${formatStageSummary(opts.stages)} right now.`);
+			}
+		}
+		allTickets.length = 0;
+		allTickets.push(...mine);
 	}
 
 	// --shard: keep only this runner's share of the board (live re-applies it per pick).

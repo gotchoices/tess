@@ -18,12 +18,13 @@ async function liveQueue(ticketsDir, stages) {
 	return queue;
 }
 
-async function pickWith(ticketsDir, stages, excluded) {
+async function pickWith(ticketsDir, stages, excluded, only = null) {
 	return pickNext(await liveQueue(ticketsDir, stages), {
 		ticketsDir,
 		index: await indexAllTickets(ticketsDir),
 		excluded: new Set(excluded),
 		transitions: new Map(),
+		only,
 	});
 }
 
@@ -58,6 +59,16 @@ test('an earlier-stage dependent of an excluded ticket is left to the rank gate'
 	const ticketsDir = await makeBoard({ review: ['a.md'], implement: [['b.md', withHeader('prereq: a')]] });
 
 	const pick = await pickWith(ticketsDir, ['review', 'implement'], ['a']);
+
+	assert.equal(pick?.slug, 'b');
+});
+
+test('--only skips a higher-priority ticket that was not named', async () => {
+	// implement/a would normally win the rank gate over plan/b, but --only names
+	// just b: an operator hand-assigning specific tickets to a runner.
+	const ticketsDir = await makeBoard({ implement: ['a.md'], plan: ['b.md'] });
+
+	const pick = await pickWith(ticketsDir, ['implement', 'plan'], [], new Set(['b']));
 
 	assert.equal(pick?.slug, 'b');
 });

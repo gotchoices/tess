@@ -213,6 +213,16 @@ export function inShard(slug, shard) {
 }
 
 /**
+ * `--only slug1,slug2,...` membership: true when no restriction is set, or the
+ * slug is one of the explicitly named ones. Same shape as `inShard`, but the
+ * partition is hand-named instead of hashed — for an operator assigning
+ * specific tickets to a runner rather than splitting the board automatically.
+ */
+export function inOnly(slug, only) {
+	return !only || only.has(slug);
+}
+
+/**
  * Walk a ticket's prereq chain across the cross-stage index and return the
  * first slug that's parked in `blocked/`, or `null` if no path leads there.
  *
@@ -511,6 +521,15 @@ export function parseListField(content, name) {
 	return items.map(unquote).filter(Boolean);
 }
 
+/**
+ * Strip a lingering `N-` or `N.N-` sequence prefix and `.md` suffix from a
+ * slug reference, so a `prereq:` value or a hand-typed `--only` argument
+ * copy-pasted as a filename still resolves to the bare slug.
+ */
+export function stripSlugDecoration(ref) {
+	return ref.replace(/^\d+(?:\.\d+)?-/, '').replace(/\.md$/, '');
+}
+
 /** Parse the `prereq:` header field into an array of slug strings.  Tolerates legacy `dependencies:`. */
 export function parsePrereqs(content) {
 	const value = headerField(content, 'prereq|dependencies');
@@ -519,8 +538,7 @@ export function parsePrereqs(content) {
 		.split(',')
 		.map(s => s.trim())
 		.filter(Boolean)
-		// Defensive: strip any lingering `N-` or `N.N-` prefix and `.md` suffix.
-		.map(ref => ref.replace(/^\d+(?:\.\d+)?-/, '').replace(/\.md$/, ''));
+		.map(stripSlugDecoration);
 }
 
 /**
