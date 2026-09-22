@@ -111,7 +111,7 @@ The original behavior: drain every selected stage in `--stages` order, advancing
 
 Pick one root ticket and follow it through `plan → implement → review → complete` (or `fix → implement → review → complete`) in a single run, then move to the next root. Best for focused work on a single feature, or for keeping the in-flight set small.
 
-**Successor lookup is by slug, not by filesystem diff.** After each stage transition, chase looks for the same slug in `NEXT_STAGE`, then in `blocked/` and `backlog/`. The diff approach was rejected because tess is intentionally tolerant of other agents (humans, sibling pipelines, parallel runners) modifying `tickets/` concurrently; attributing every new file to the agent we just ran would be wrong.
+**Successor lookup is by slug, not by filesystem diff.** After each stage transition, chase looks for the same slug in any forward-ranked stage (so a ticket that skipped one — `fix/ → review/`, or an `implement/` ticket whose header says `review: skip` landing in `complete/`), then in `blocked/` and `backlog/`. The diff approach was rejected because tess is intentionally tolerant of other agents (humans, sibling pipelines, parallel runners) modifying `tickets/` concurrently; attributing every new file to the agent we just ran would be wrong.
 
 **Block / backlog cascade.** When a chain ends because the agent landed the slug in `blocked/` or `backlog/`, that slug is added to a per-run `deferred` set. Subsequent root tickets that list a deferred slug as `prereq:` are skipped — and the skipped root is itself added to `deferred`, so the cascade is transitive. This is the chase-equivalent of "don't bother with the work whose prerequisite just bounced."
 

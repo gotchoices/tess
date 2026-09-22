@@ -312,6 +312,7 @@ A ticket's location already says its release, so the `target:` header is normall
 - `target:` naming a code the list does not have;
 - a ticket in `backlog/<CODE>/` whose `target:` names a different release;
 - a ticket anywhere else whose `target:` names a later release than the current one.
+- a `review:` header whose value is not `skip` (see [Ticket Format](#ticket-format)).
 
 On a board that requires anchors, a ticket with none is not runnable in the same way — see **Anchor** under [Ticket Format](#ticket-format).
 
@@ -455,7 +456,7 @@ backlog/ ─→ plan/ ─┐
 - **backlog** — Parked specifications that aren't ready to work yet (promoted to `plan/` when ready)
 - **fix** — Reproduce a bug, research cause, output implementation ticket(s)
 - **plan** — Design a feature, resolve questions, output implementation ticket(s)
-- **implement** — Build it, ensure tests pass, output review ticket
+- **implement** — Build it, ensure tests pass, output review ticket (or, with `review: skip` in the header, a complete ticket)
 - **review** — Inspect code quality and hygiene, verify tests, update docs, output complete ticket
 - **complete** — Archived summary of finished work
 - **blocked** — The human's inbox: proposed text where the specification or architecture is silent or contradictory, plus dependencies outside this repo. Not for "a sibling ticket isn't done" — that's `prereq:`.
@@ -469,6 +470,7 @@ architecture: <anchor: repo-relative architecture document path, optionally #sec
 files: <optional list of relevant files>
 difficulty: <optional: easy | medium | hard — defaults to medium>
 target: <optional: a release code from tickets/releases.md — normally omitted; the ticket's location already says its release>
+review: <optional: implement tickets only — `skip` advances implement/ straight to complete/, with no review pass>
 severity: <backlog bugs: corruption | wrong-result | edge-case | cosmetic>
 likelihood: <backlog bugs: normal-use | unusual | contrived>
 tradeoffs: <backlog tickets: one sentence on why a maintainer might decline or defer this>
@@ -489,6 +491,8 @@ Two consequences: in an unfenced ticket a `---` horizontal rule in the prose end
 **Difficulty (`easy` | `medium` | `hard`, default `medium`):** a portable, agent-agnostic estimate of how much horsepower a ticket needs. The runner maps it — together with the pipeline stage and per-agent config — to a concrete model and reasoning-effort. See [Model & Effort Selection](#model--effort-selection). Reserve `hard` for genuinely demanding work (it selects the strongest, most expensive model) and `easy` for mechanical changes.
 
 **Target (`target:`, optional):** the release a ticket is due in. Normally omitted — a ticket's location already says it (see [Releases](#releases)). When present it must agree with that location, or the runner treats the ticket as not runnable.
+
+**Review (`review:`, optional, `implement/` only):** `review: skip` takes the review stage out of *this* ticket's path — the runner advances it `implement/ → complete/` and no review agent ever sees it. It is for work mechanical enough that a review cycle costs more than it buys: applying one documented shared primitive in one file, a rename, a mechanical migration across many near-identical tickets. Omit it wherever there is judgment to second-guess. The skip is the runner's own stage-graph decision, not a request to the agent: it drives the prompt's `# Next stage:`, appears in the run banner as `implement → complete (review skipped — review: skip)`, and lands in the commit message as `ticket(implement): <slug> — review skipped (review: skip)`, so the history says which tickets went unreviewed and why. Any other value — including `review: none` or `review: false` — is **not runnable**: the runner refuses the ticket rather than guess, so a typo can never read as a skip. The field is inert outside `implement/`, except that a `review: skip` ticket found sitting in `review/` is never worked there; the runner warns and leaves it in place.
 
 **Anchor (`architecture:`, or a field the project declares; opt-in):** a ticket names at least one part of the specification it serves. Tess owns `architecture:` — repo-relative paths to architecture documents, each optionally with a `#section` slug, conventionally under `docs/` (`architecture: docs/terrain.md#brush-pre-warm`); a project adds fields such as `features:` through [Project Rules](#project-rules). An anchor field may hold one value, a comma list, `[a, b]`, or indented `- item` lines under an empty field; an empty field or `[]` does not count. **Anchors are required only once an addendum in `tickets/rules/` lists at least one field under `anchor-fields:`** — rubric's init writes such a file, and a project with no other specification opts in with `anchor-fields: architecture`. On such a board, a ticket the runner is about to work with no anchor is **not runnable**: it logs `Not runnable <stage>/<file>:` with `no anchor — …`, runs no agent and commits nothing (see [`target:` and not-runnable tickets](#target-and-not-runnable-tickets)); the gardener's inventory marks `anchor: MISSING` and the triage prompt asks for one. On any other board `architecture:` is an ordinary optional field, nothing is marked missing, and no ticket is refused for lacking it. Tickets in `blocked/` and `complete/` are never worked, so never checked. Tess checks only that an anchor is present, not that its path or section exists: resolving a section would mean reimplementing a markdown renderer's heading-slug rules, and a project's own link checker catches dangling paths better.
 

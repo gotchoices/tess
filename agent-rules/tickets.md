@@ -10,6 +10,8 @@ Tickets flow forward through stages:
 
 Each stage's job: advance ticket to next stage. Tickets only move sideways into `blocked/` (and back out once unblocked); never flow backward. `review/` is **after** `implement/` — a review ticket exists because code already written, now needs a code-review pass.
 
+One ticket may edit that graph for itself: an `implement/` ticket whose header says `review: skip` advances straight to `complete/`. The runner enforces this — it tells you the next stage, names the skip in the run output and in its commit message, and never sends the ticket to `review/`. You never decide this from the ticket's prose; if your prompt says `# Next stage: complete`, write the `complete/` ticket.
+
 **Cross-stage gating automatic.** If a `prereq:` slug sits anywhere earlier in the pipeline (including `blocked/` or `backlog/`), runner defers the dependent this run and re-picks once the chain clears. Runner also cascades: errored, deferred, or blocked-prereq slugs transitively defer their downstream. Never mirror this by hand. `prereq:` is a hint to the runner, not an instruction to you.
 
 tickets/ folder at project root contains `backlog`, `fix`, `plan`, `implement`, `review`, `blocked`, `complete` subfolders. Each ticket = markdown file inside one of these folders.
@@ -209,6 +211,7 @@ architecture: <anchor: repo-relative architecture document path, optionally #sec
 files: <list key files touched/relevant — saves the next agent significant discovery time>
 difficulty: <optional; easy|medium|hard — how much horsepower the work needs. Default medium. Drives model/effort selection (e.g. hard → a stronger model); omit unless the work is unusually simple or hard.>
 target: <optional; a release code from tickets/releases.md that agrees with the ticket's folder — normally omit: the folder already says its release>
+review: <optional; implement tickets only. `review: skip` advances the ticket implement/ → complete/ with no review pass — for mechanical work applying a documented primitive, where a review cycle costs more than it is worth. Omit for anything with judgment in it. Any other value makes the ticket not runnable.>
 repro: <bug tickets only; verified|static|none — ran it and saw it / inferred from code / neither.>
 severity: <backlog bugs; corruption|wrong-result|edge-case|cosmetic — worst plausible user-visible effect.>
 likelihood: <backlog bugs; normal-use|unusual|contrived — how a user would actually hit it.>
