@@ -3,7 +3,7 @@
  * clean-working-tree invariant the runner enforces before it starts any ticket.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { migrate, needsMigration, FORMAT_VERSION } from '../migrate.mjs';
 import { bypassesReview } from './tickets.mjs';
 
@@ -98,7 +98,10 @@ export function commitAll(cwd, message, { context = message } = {}) {
 		}
 
 		execSync('git add -A', { cwd, encoding: 'utf-8' });
-		execSync(`git commit -m "${message}"`, { cwd, encoding: 'utf-8' });
+		// execFileSync, not execSync: the message carries the ticket slug, which comes from a
+		// filename an agent wrote.  Interpolating that into a shell string let a slug containing
+		// a quote, `$(…)` or a backtick corrupt the commit — or run.
+		execFileSync('git', ['commit', '-m', message], { cwd, encoding: 'utf-8' });
 		return true;
 	} catch (err) {
 		console.error(`[runner] Git commit failed: ${err.message}`);

@@ -10,7 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -69,6 +69,18 @@ test('a ticket that skipped its review stage says so in its commit message, afte
 	assert.equal(subject(dir), 'ticket(implement): tooltips-header — review skipped (review: skip)');
 	// The review rules find an implementation by this prefix; the suffix must not break that.
 	assert.equal(execSync('git log --grep="ticket(implement): tooltips-header" -1 --format=%h', { cwd: dir, encoding: 'utf-8' }).trim().length > 0, true);
+});
+
+test('a slug carrying shell metacharacters is committed literally, not executed', t => {
+	// Slugs come from filenames an agent wrote, so the commit message is not trusted input.
+	const { dir } = makeRepo(t);
+	writeFileSync(join(dir, 'seed.txt'), 'implemented\n');
+	const hostile = 'pwn$(touch ' + join(dir, 'PWNED') + ')`id`"x';
+
+	assert.equal(commitTicket({ stage: 'implement', slug: hostile, review: null }, dir), true);
+
+	assert.equal(subject(dir), `ticket(implement): ${hostile}`);
+	assert.equal(existsSync(join(dir, 'PWNED')), false);
 });
 
 test('an ordinary ticket commit is unchanged, and an unrecognised review: value does not read as a skip', t => {
