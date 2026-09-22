@@ -61,17 +61,6 @@ export function nextStageFor(ticket) {
 	return bypassesReview(ticket) ? 'complete' : (NEXT_STAGE[ticket.stage] ?? null);
 }
 
-/**
- * True when a ticket's own header removes the stage it is sitting in from its
- * path: today, a `review: skip` ticket filed in `review/`.  Nothing should
- * ever put one there (an implement ticket that skips review goes straight to
- * `complete/`), but a hand-filed or agent-misfiled one must not be worked by a
- * `--stages review` runner in contradiction of its header.  Selection drops
- * it; run.mjs says so out loud, so it is parked rather than silently gone.
- */
-export function declinesCurrentStage(ticket) {
-	return ticket.stage === 'review' && ticket.review === REVIEW_SKIP;
-}
 
 /**
  * The stage transition as the run banner, the log header and the deferral

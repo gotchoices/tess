@@ -41,7 +41,7 @@ import { mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { discoverTickets, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, firstUnsatisfied, boardLocation, findTransitiveBlocker, inShard, inOnly, declinesCurrentStage, KNOWN_STAGES } from './lib/tickets.mjs';
+import { discoverTickets, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, firstUnsatisfied, boardLocation, findTransitiveBlocker, inShard, inOnly, KNOWN_STAGES } from './lib/tickets.mjs';
 import { checkBoard, readBoardContext, ticketProblems } from './lib/board-check.mjs';
 import { topoSortAndCheck } from './lib/topo.mjs';
 import { readAndClearInProgress, readInProgress, addResumeNote } from './lib/state.mjs';
@@ -158,19 +158,6 @@ async function main() {
 	}
 	allTickets.length = 0;
 	allTickets.push(...ordered);
-
-	// A `review: skip` ticket filed in `review/` contradicts its own header: it declared that it
-	// has no review stage.  Drop it from the snapshot rather than work it there — but name it, on
-	// every run, since nothing else will move it and a silently ignored ticket is a ticket lost.
-	const misfiled = allTickets.filter(declinesCurrentStage);
-	if (misfiled.length > 0) {
-		for (const t of misfiled) {
-			console.warn(`[runner] warning: review/${t.file} declares \`review: skip\` — not worked in review/; move it to complete/ or drop the field.`);
-		}
-		const rest = allTickets.filter(t => !declinesCurrentStage(t));
-		allTickets.length = 0;
-		allTickets.push(...rest);
-	}
 
 	// --skip-blocked: pre-filter the snapshot by walking each ticket's prereq
 	// chain across the cross-stage index.  Anything reaching a slug parked in

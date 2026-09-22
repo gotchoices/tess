@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { pickNext } from './strategies/live.mjs';
-import { discoverTickets, inShard, indexAllTickets } from './tickets.mjs';
+import { discoverTickets, inShard, indexAllTickets, nextStageFor } from './tickets.mjs';
 import { topoSortAndCheck } from './topo.mjs';
 import { makeBoard, withHeader } from './test-board.mjs';
 
@@ -82,18 +82,15 @@ test('a ticket whose prereq is deferred to a later release is never picked', asy
 	assert.equal(await pickWith(ticketsDir, ['implement'], []), null);
 });
 
-test('a `review: skip` ticket misfiled into review/ is not selected by a --stages review runner', async () => {
-	// Nothing should put one there — implement/ advances such a ticket straight to complete/ — but
-	// a hand-filed copy must not be reviewed in contradiction of its own header.  run.mjs drops it
-	// from the snapshot with a warning; this is the live arm of the same rule.
-	const ticketsDir = await makeBoard({
-		review: [['1-skipper.md', withHeader('review: skip')], '2-ordinary.md'],
-	});
+test('a `review: skip` ticket misfiled into review/ is reviewed like any other', async () => {
+	// Nothing should put one there — implement/ advances such a ticket straight to complete/.  If
+	// something does, the field is inert outside implement/: reviewing it costs one cycle, where
+	// refusing it would strand the ticket with nothing able to move it on.
+	const ticketsDir = await makeBoard({ review: [['skipper.md', withHeader('review: skip')]] });
 
-	assert.equal((await pickWith(ticketsDir, ['review'], [])).slug, 'ordinary');
-
-	const onlySkipper = await makeBoard({ review: [['skipper.md', withHeader('review: skip')]] });
-	assert.equal(await pickWith(onlySkipper, ['review'], []), null);
+	const pick = await pickWith(ticketsDir, ['review'], []);
+	assert.equal(pick.slug, 'skipper');
+	assert.equal(nextStageFor(pick), 'complete');
 });
 
 test('a `review: skip` ticket in implement/ is selected there like any other', async () => {

@@ -54,7 +54,6 @@ import {
 	findTransitiveBlocker,
 	inShard,
 	inOnly,
-	declinesCurrentStage,
 	nextStageFor,
 } from '../tickets.mjs';
 import { topoSortAndCheck } from '../topo.mjs';
@@ -119,7 +118,6 @@ export async function pickNext(queue, { ticketsDir, index, blockIndex = null, sh
 	const passedOver = new Set(excluded);
 	const isRunnable = async t => {
 		if (!nextStageFor(t)) return false;                                            // terminal stage — nothing to advance
-		if (declinesCurrentStage(t)) return false;                                     // `review: skip` filed in review/ — not ours to work
 		if (passedOver.has(t.slug)) return false;                                      // excluded this run
 		if (!inOnly(t.slug, only)) return false;                                       // --only: not one of the named tickets
 		if (!inShard(t.slug, shard)) return false;                                     // --shard: another runner's ticket

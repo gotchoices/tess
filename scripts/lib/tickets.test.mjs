@@ -11,7 +11,6 @@ import {
 	headerFieldLines,
 	indexAllTickets,
 	bypassesReview,
-	declinesCurrentStage,
 	nextStageFor,
 	parseDifficulty,
 	parseListField,
@@ -465,6 +464,4 @@ test('review: skip is inert outside implement/, and a terminal stage still advan
 	assert.equal(nextStageFor(plan), 'implement');       // the field names one edge: implement → review
 	assert.equal(nextStageFor(review), 'complete');      // not re-read as "skip the complete stage"
 	assert.equal(nextStageFor(complete), null);
-	assert.equal(declinesCurrentStage(review), true);    // …but it is not ours to work in review/
-	assert.equal(declinesCurrentStage(plan), false);
 });
