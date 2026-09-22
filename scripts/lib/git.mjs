@@ -5,6 +5,7 @@
 
 import { execSync } from 'node:child_process';
 import { migrate, needsMigration, FORMAT_VERSION } from '../migrate.mjs';
+import { bypassesReview } from './tickets.mjs';
 
 /** Short sha of the tess submodule's HEAD, for the run banner. */
 export function getTessVersion(tessRoot) {
@@ -207,9 +208,15 @@ export function reconcileWorkingTree(cwd, { owner = null, mode = 'salvage', noCo
 	return { action: 'salvaged', entries: probe.entries };
 }
 
-/** Stage and commit all changes for a completed ticket.  Returns true if a commit was created. */
+/** Stage and commit all changes for a completed ticket.  Returns true if a commit was created.
+ *
+ *  A ticket that skipped its review stage says so here, after the `ticket(<stage>): <slug>`
+ *  prefix the review rules grep for (`git log --grep="ticket(implement): <slug>"`), so the
+ *  history still answers "why is there no review commit for this slug?" long after the run's
+ *  console output is gone. */
 export function commitTicket(ticket, cwd) {
-	return commitAll(cwd, `ticket(${ticket.stage}): ${ticket.slug}`, { context: ticket.slug });
+	const skipped = bypassesReview(ticket) ? ' — review skipped (review: skip)' : '';
+	return commitAll(cwd, `ticket(${ticket.stage}): ${ticket.slug}${skipped}`, { context: ticket.slug });
 }
 
 /** Run migration if needed and commit the result.  Returns whether a commit was made. */

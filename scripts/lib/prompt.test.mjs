@@ -191,3 +191,24 @@ test('board check findings get their own section before the inventory, and given
 		feedback: 'Defer a to GA.',
 	}));
 });
+
+test('a review: skip ticket is told its next stage is complete, and told to override the review handoff', async () => {
+	const ticketsDir = await makeBoard({ implement: [['x.md', withHeader('review: skip')]] });
+	const tessRoot = await tessRootBeside(ticketsDir);
+	const [ticket] = await discoverTickets(ticketsDir, 'implement', Infinity);
+
+	const prompt = await buildPrompt(ticket, tessRoot, dirname(ticketsDir));
+
+	assert.match(prompt, /^# Next stage: complete$/m);
+	assert.match(prompt, /## Review stage skipped for this ticket/);
+	assert.match(prompt, /write the `complete\/` ticket instead/);
+	// Late in the prompt, after the stage rules it is overriding.
+	assert.ok(prompt.indexOf('## Review stage skipped') > prompt.indexOf('Implement only.'));
+});
+
+test('an ordinary implement ticket gets neither the complete next-stage line nor the override section', async () => {
+	const { prompt } = await promptFor(null);
+
+	assert.match(prompt, /^# Next stage: review$/m);
+	assert.doesNotMatch(prompt, /Review stage skipped/);
+});

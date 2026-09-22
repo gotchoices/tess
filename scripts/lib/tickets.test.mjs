@@ -10,10 +10,15 @@ import {
 	findUnsatisfiedPrereq,
 	headerFieldLines,
 	indexAllTickets,
+	bypassesReview,
+	declinesCurrentStage,
+	nextStageFor,
 	parseDifficulty,
 	parseListField,
 	parsePrereqs,
+	parseReview,
 	parseTarget,
+	transitionLabel,
 	prereqNotes,
 	resolvePrereqs,
 } from './tickets.mjs';
@@ -409,4 +414,57 @@ test('parseListField matches the name case-insensitively, reads only the header,
 	assert.deepEqual(parseListField(content, 'features'), ['A']);
 	assert.deepEqual(parseListField(ticket.header, 'features'), ['A']);
 	assert.deepEqual(parseListField(content, 'aspects'), []);
+});
+
+// ── `review:` and the per-ticket stage graph ──────────────────────────────
+
+/** The one implement/ ticket of a board whose header holds `lines`. */
+async function implementTicket(...lines) {
+	const ticketsDir = await makeBoard({ implement: [['x.md', withHeader(...lines)]] });
+	const [ticket] = await discoverTickets(ticketsDir, 'implement', Infinity);
+	return ticket;
+}
+
+test('parseReview reads the field lowercased, and treats an absent or empty one as null', () => {
+	assert.equal(parseReview('---\ndescription: x\nreview: skip\n---\n'), 'skip');
+	assert.equal(parseReview('---\ndescription: x\nReview: SKIP\n---\n'), 'skip');
+	assert.equal(parseReview('---\ndescription: x\nreview:\nfiles: a.ts\n---\n'), null);
+	assert.equal(parseReview('---\ndescription: x\n---\n\nreview: skip is body prose\n'), null);
+	assert.equal(parseReview(withHeader()), null);
+});
+
+test('an implement ticket declaring review: skip advances to complete instead of review', async () => {
+	const ticket = await implementTicket('review: skip');
+
+	assert.equal(ticket.review, 'skip');
+	assert.equal(bypassesReview(ticket), true);
+	assert.equal(nextStageFor(ticket), 'complete');
+	assert.equal(transitionLabel(ticket), 'implement → complete (review skipped — review: skip)');
+});
+
+test('without the field — or with a value that is not skip — an implement ticket still goes to review', async () => {
+	for (const lines of [[], ['review: none'], ['review: false'], ['review: skipped']]) {
+		const ticket = await implementTicket(...lines);
+
+		assert.equal(bypassesReview(ticket), false, JSON.stringify(lines));
+		assert.equal(nextStageFor(ticket), 'review', JSON.stringify(lines));
+		assert.equal(transitionLabel(ticket), 'implement → review', JSON.stringify(lines));
+	}
+});
+
+test('review: skip is inert outside implement/, and a terminal stage still advances nowhere', async () => {
+	const ticketsDir = await makeBoard({
+		plan: [['p.md', withHeader('review: skip')]],
+		review: [['r.md', withHeader('review: skip')]],
+		complete: [['c.md', withHeader('review: skip')]],
+	});
+	const [plan] = await discoverTickets(ticketsDir, 'plan', Infinity);
+	const [review] = await discoverTickets(ticketsDir, 'review', Infinity);
+	const [complete] = await discoverTickets(ticketsDir, 'complete', Infinity);
+
+	assert.equal(nextStageFor(plan), 'implement');       // the field names one edge: implement → review
+	assert.equal(nextStageFor(review), 'complete');      // not re-read as "skip the complete stage"
+	assert.equal(nextStageFor(complete), null);
+	assert.equal(declinesCurrentStage(review), true);    // …but it is not ours to work in review/
+	assert.equal(declinesCurrentStage(plan), false);
 });

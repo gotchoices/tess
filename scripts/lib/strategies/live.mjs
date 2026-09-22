@@ -19,7 +19,8 @@
  *      the stage, concatenate preserving cross-stage priority → the live queue.
  *   2. Build one cross-stage index and pick the first queue ticket that is
  *      runnable: not excluded (agent-errored / timed-out / not runnable this
- *      run), named by --only when given, in this runner's --shard when given,
+ *      run), not declining the stage it sits in (a `review: skip` ticket
+ *      misfiled into `review/`), named by --only when given, in this runner's --shard when given,
  *      not behind a same-stage prereq this pass passed over, under the
  *      per-slug transition cap, not transitively blocked (when --skip-blocked), and with
  *      every prereq satisfied (strictly-later rank, not deferred to a later
@@ -53,7 +54,8 @@ import {
 	findTransitiveBlocker,
 	inShard,
 	inOnly,
-	NEXT_STAGE,
+	declinesCurrentStage,
+	nextStageFor,
 } from '../tickets.mjs';
 import { topoSortAndCheck } from '../topo.mjs';
 
@@ -116,7 +118,8 @@ async function buildQueue(ticketsDir, stages) {
 export async function pickNext(queue, { ticketsDir, index, blockIndex = null, shard = null, only = null, excluded, transitions }) {
 	const passedOver = new Set(excluded);
 	const isRunnable = async t => {
-		if (!NEXT_STAGE[t.stage]) return false;                                        // terminal stage — nothing to advance
+		if (!nextStageFor(t)) return false;                                            // terminal stage — nothing to advance
+		if (declinesCurrentStage(t)) return false;                                     // `review: skip` filed in review/ — not ours to work
 		if (passedOver.has(t.slug)) return false;                                      // excluded this run
 		if (!inOnly(t.slug, only)) return false;                                       // --only: not one of the named tickets
 		if (!inShard(t.slug, shard)) return false;                                     // --shard: another runner's ticket

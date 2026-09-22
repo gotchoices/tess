@@ -28,7 +28,7 @@
 
 import { writeFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { NEXT_STAGE, deferralReason, firstUnsatisfied, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs } from './tickets.mjs';
+import { deferralReason, firstUnsatisfied, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, transitionLabel } from './tickets.mjs';
 import { readBoardContext, ticketProblems } from './board-check.mjs';
 import { runAgent, MAX_TIMEOUT_RETRIES } from './process.mjs';
 import { commitAll, commitTicket, reconcileWorkingTree } from './git.mjs';
@@ -176,7 +176,7 @@ export async function runOneStage(ticket, ctx, { label }) {
 		const ticketBanner = [
 			`${'─'.repeat(72)}`,
 			`  ${label} ${ticket.file}${attemptLabel}`,
-			`  Stage: ${ticket.stage} → ${NEXT_STAGE[ticket.stage]}  |  Sequence: ${formatSeq(ticket.sequence)}`,
+			`  Stage: ${transitionLabel(ticket)}  |  Sequence: ${formatSeq(ticket.sequence)}`,
 			`  Log: ${currentLog}`,
 			`${'─'.repeat(72)}`,
 		].join('\n');
@@ -184,7 +184,7 @@ export async function runOneStage(ticket, ctx, { label }) {
 
 		await writeFile(currentLog, [
 			`Ticket: ${ticket.file}`,
-			`Stage: ${ticket.stage} → ${NEXT_STAGE[ticket.stage]}`,
+			`Stage: ${transitionLabel(ticket)}`,
 			`Sequence: ${formatSeq(ticket.sequence)}`,
 			`Agent: ${opts.agent}`,
 			`Tess: ${tessVersion}`,

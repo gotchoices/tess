@@ -152,6 +152,22 @@ test('a ticket with no target:, or one agreeing with its location, has no proble
 	}, RELEASES), { plain: [], current: [], top: [], deferred: [] });
 });
 
+test('a review: value the runner does not recognise makes the ticket not runnable, rather than silently skipping review', async () => {
+	assert.deepEqual(await problemsFor({
+		implement: [
+			['typo.md', withHeader('review: skipped')],
+			['negated.md', withHeader('review: false')],
+			['good.md', withHeader('review: skip')],
+			['absent.md', withHeader('review:')],
+		],
+	}), {
+		typo: ['review: skipped is not a recognised value (skip) — fix it or drop the field; until then the ticket is reviewed as normal'],
+		negated: ['review: false is not a recognised value (skip) — fix it or drop the field; until then the ticket is reviewed as normal'],
+		good: [],
+		absent: [],
+	});
+});
+
 // ── Anchors ───────────────────────────────────────────────────────────────
 
 const RUBRIC_RULES = ['rubric.md', '---\nanchor-fields: features, aspects\n---\nFeature codes and aspect names.\n'];

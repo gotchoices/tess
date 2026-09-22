@@ -14,7 +14,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from 'node:
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { inspectWorkingTree, reconcileWorkingTree, DIRTY_TREE_MODES } from './git.mjs';
+import { commitTicket, inspectWorkingTree, reconcileWorkingTree, DIRTY_TREE_MODES } from './git.mjs';
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -57,6 +57,30 @@ function captured(fn) {
 }
 
 const OWNER = { stage: 'implement', slug: '4-debt-promote-value-tree-entry' };
+
+// ── commitTicket ────────────────────────────────────────────────────────────
+
+test('a ticket that skipped its review stage says so in its commit message, after the greppable prefix', t => {
+	const { dir } = makeRepo(t);
+	writeFileSync(join(dir, 'seed.txt'), 'implemented\n');
+
+	assert.equal(commitTicket({ stage: 'implement', slug: 'tooltips-header', review: 'skip' }, dir), true);
+
+	assert.equal(subject(dir), 'ticket(implement): tooltips-header — review skipped (review: skip)');
+	// The review rules find an implementation by this prefix; the suffix must not break that.
+	assert.equal(execSync('git log --grep="ticket(implement): tooltips-header" -1 --format=%h', { cwd: dir, encoding: 'utf-8' }).trim().length > 0, true);
+});
+
+test('an ordinary ticket commit is unchanged, and an unrecognised review: value does not read as a skip', t => {
+	const { dir } = makeRepo(t);
+	writeFileSync(join(dir, 'seed.txt'), 'implemented\n');
+	assert.equal(commitTicket({ stage: 'implement', slug: 'plain', review: null }, dir), true);
+	assert.equal(subject(dir), 'ticket(implement): plain');
+
+	writeFileSync(join(dir, 'seed.txt'), 'again\n');
+	assert.equal(commitTicket({ stage: 'implement', slug: 'typo', review: 'skipped' }, dir), true);
+	assert.equal(subject(dir), 'ticket(implement): typo');
+});
 
 // ── reconcileWorkingTree ────────────────────────────────────────────────────
 

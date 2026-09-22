@@ -17,7 +17,7 @@
 
 import { anchorFieldsOf, anchorsRequiredBy, readProjectRules } from './project-rules.mjs';
 import { RELEASES_FILE, currentRelease, rankOf, readReleases } from './releases.mjs';
-import { boardLocation, deferralReason, parseListField, parseSlug, readBacklogLayout, resolvePrereqs } from './tickets.mjs';
+import { REVIEW_VALUES, boardLocation, deferralReason, parseListField, parseSlug, readBacklogLayout, resolvePrereqs } from './tickets.mjs';
 
 const RELEASES_PATH = `tickets/${RELEASES_FILE}`;
 
@@ -119,7 +119,21 @@ function releaseOrderWarnings(index) {
  * when it is runnable.
  */
 export function ticketProblems(ticket, context) {
-	return [...targetProblems(ticket, context.releases), ...anchorProblems(ticket, context)];
+	return [...targetProblems(ticket, context.releases), ...reviewProblems(ticket), ...anchorProblems(ticket, context)];
+}
+
+/**
+ * A `review:` header must say something the runner knows.  The field edits the
+ * stage graph, so a typo (`review: skipped`, `review: none`) would otherwise
+ * be indistinguishable from no field at all — the ticket would quietly take
+ * the full review path its author meant to opt out of, or, worse, a future
+ * value spelling would silently change meaning.  Failing closed is the safe
+ * direction, so an unrecognised value never skips anything; making the ticket
+ * not runnable is what keeps that visible rather than silent.
+ */
+function reviewProblems({ review }) {
+	if (!review || REVIEW_VALUES.includes(review)) return [];
+	return [`review: ${review} is not a recognised value (${REVIEW_VALUES.join(', ')}) — fix it or drop the field; until then the ticket is reviewed as normal`];
 }
 
 /**

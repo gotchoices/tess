@@ -29,7 +29,7 @@
  */
 
 import { runOneStage } from '../run-ticket.mjs';
-import { NEXT_STAGE, STAGE_RANK, findTicketBySlug, discoverTickets } from '../tickets.mjs';
+import { STAGE_RANK, findTicketBySlug, discoverTickets, nextStageFor } from '../tickets.mjs';
 import { topoSortAndCheck } from '../topo.mjs';
 
 // Bumped from 6 to give budget-triggered same-stage continuations room to
@@ -108,7 +108,7 @@ export async function run(ctx) {
 			}
 
 			const t = chain.shift();
-			if (!NEXT_STAGE[t.stage]) continue;  // terminal stage (e.g., complete)
+			if (!nextStageFor(t)) continue;  // terminal stage (e.g., complete)
 
 			const stepLabel = `[root ${i + 1}/${snapshot.length} · step ${step}]`;
 			const outcome = await runOneStage(t, ctx, { label: stepLabel });
@@ -147,7 +147,7 @@ export async function run(ctx) {
 			if (advanced) {
 				knownPaths.add(advanced.path);
 				followUps.push(advanced);
-				if (advanced.stage !== NEXT_STAGE[t.stage]) {
+				if (advanced.stage !== nextStageFor(t)) {
 					console.log(`  Chase: "${t.slug}" advanced ${t.stage}/ → ${advanced.stage}/ (skipped intermediate stage).`);
 				}
 			} else if (!outcome.budgetTriggered) {

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { pickNext } from './strategies/live.mjs';
-import { discoverTickets, indexAllTickets } from './tickets.mjs';
+import { discoverTickets, inShard, indexAllTickets } from './tickets.mjs';
 import { topoSortAndCheck } from './topo.mjs';
 import { makeBoard, withHeader } from './test-board.mjs';
 
@@ -80,4 +80,43 @@ test('a ticket whose prereq is deferred to a later release is never picked', asy
 	);
 
 	assert.equal(await pickWith(ticketsDir, ['implement'], []), null);
+});
+
+test('a `review: skip` ticket misfiled into review/ is not selected by a --stages review runner', async () => {
+	// Nothing should put one there — implement/ advances such a ticket straight to complete/ — but
+	// a hand-filed copy must not be reviewed in contradiction of its own header.  run.mjs drops it
+	// from the snapshot with a warning; this is the live arm of the same rule.
+	const ticketsDir = await makeBoard({
+		review: [['1-skipper.md', withHeader('review: skip')], '2-ordinary.md'],
+	});
+
+	assert.equal((await pickWith(ticketsDir, ['review'], [])).slug, 'ordinary');
+
+	const onlySkipper = await makeBoard({ review: [['skipper.md', withHeader('review: skip')]] });
+	assert.equal(await pickWith(onlySkipper, ['review'], []), null);
+});
+
+test('a `review: skip` ticket in implement/ is selected there like any other', async () => {
+	const ticketsDir = await makeBoard({ implement: [['x.md', withHeader('review: skip')]] });
+
+	assert.equal((await pickWith(ticketsDir, ['implement'], [])).slug, 'x');
+});
+
+test('review: skip composes with --only and --shard rather than overriding them', async () => {
+	const ticketsDir = await makeBoard({ implement: [['1-a.md', withHeader('review: skip')], ['2-b.md', withHeader('review: skip')]] });
+	const queue = await liveQueue(ticketsDir, ['implement']);
+	const pick = async gates => pickNext(queue, {
+		ticketsDir,
+		index: await indexAllTickets(ticketsDir),
+		excluded: new Set(),
+		transitions: new Map(),
+		...gates,
+	});
+	// Whichever shard of two 'a' lands in, the other runner must not get it.
+	const aShard = inShard('a', { index: 0, count: 2 }) ? 0 : 1;
+
+	assert.equal((await pick({ only: new Set(['b']) })).slug, 'b');
+	assert.equal(await pick({ only: new Set(['nobody']) }), null);
+	assert.equal((await pick({ shard: { index: aShard, count: 2 } })).slug, 'a');
+	assert.notEqual((await pick({ shard: { index: 1 - aShard, count: 2 } }))?.slug, 'a');
 });

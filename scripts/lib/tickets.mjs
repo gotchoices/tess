@@ -5,7 +5,7 @@
  * sub-folder, optional sequence prefix, slug, and the header fields.  All
  * filesystem-touching reads for the snapshot live here.
  *
- * NOTE: 592 lines (`wc -l`, 2026-09-14; 405 before release folders) mixing discovery, prereq
+ * NOTE: 706 lines (`wc -l`, 2026-09-21; 592 before the `review:` stage-graph knob) mixing discovery, prereq
  * resolution and header parsing; if it grows further, move header parsing (`headerBounds`,
  * `headerField*`, `parseListField`, the `parse*` fields) into its own module.
  */
@@ -21,7 +21,11 @@ export const PENDING_STAGES = ['review', 'implement', 'fix', 'plan'];
 /** All valid stage names (for --stages validation). */
 export const KNOWN_STAGES = ['backlog', 'fix', 'plan', 'implement', 'review', 'complete', 'blocked'];
 
-/** Map from stage → next stage in the pipeline (for prompt context). */
+/**
+ * Map from stage → next stage in the pipeline, for a ticket that says nothing
+ * about its own path.  Never read directly by the runner: a ticket may edit
+ * its own edge out of this graph (`review: skip`), so ask `nextStageFor`.
+ */
 export const NEXT_STAGE = {
 	backlog: 'plan',
 	fix: 'implement',
@@ -29,6 +33,56 @@ export const NEXT_STAGE = {
 	implement: 'review',
 	review: 'complete',
 };
+
+/** The one recognised `review:` value today; `REVIEW_VALUES` is what a header may say. */
+export const REVIEW_SKIP = 'skip';
+export const REVIEW_VALUES = [REVIEW_SKIP];
+
+/**
+ * True when a ticket's `review: skip` applies where it sits: an `implement/`
+ * ticket whose next stage is therefore `complete/`, not `review/`.
+ *
+ * The check is stage-scoped on purpose.  `review:` describes one edge of the
+ * graph — implement → review — so the field is inert on a ticket in any other
+ * stage rather than meaning something different in each.  An unrecognised
+ * value is not `skip`, so it fails closed (the ticket is reviewed as normal);
+ * lib/board-check.mjs `ticketProblems` is what makes it loud.
+ */
+export function bypassesReview(ticket) {
+	return ticket.stage === 'implement' && ticket.review === REVIEW_SKIP;
+}
+
+/**
+ * The stage this *particular* ticket advances to, or null when it sits in a
+ * terminal stage (`complete`, `blocked`).  This is the stage graph the runner
+ * walks — `NEXT_STAGE` is only its default.
+ */
+export function nextStageFor(ticket) {
+	return bypassesReview(ticket) ? 'complete' : (NEXT_STAGE[ticket.stage] ?? null);
+}
+
+/**
+ * True when a ticket's own header removes the stage it is sitting in from its
+ * path: today, a `review: skip` ticket filed in `review/`.  Nothing should
+ * ever put one there (an implement ticket that skips review goes straight to
+ * `complete/`), but a hand-filed or agent-misfiled one must not be worked by a
+ * `--stages review` runner in contradiction of its header.  Selection drops
+ * it; run.mjs says so out loud, so it is parked rather than silently gone.
+ */
+export function declinesCurrentStage(ticket) {
+	return ticket.stage === 'review' && ticket.review === REVIEW_SKIP;
+}
+
+/**
+ * The stage transition as the run banner, the log header and the deferral
+ * notes print it — `implement → review`, or `implement → complete (review
+ * skipped — review: skip)` when the ticket edited the graph.  One formatter so
+ * a skip never reads like an ordinary advance anywhere it is named.
+ */
+export function transitionLabel(ticket) {
+	const why = bypassesReview(ticket) ? ' (review skipped — review: skip)' : '';
+	return `${ticket.stage} → ${nextStageFor(ticket)}${why}`;
+}
 
 /**
  * Pipeline rank for cross-stage prereq satisfaction.  `fix` and `plan` share
@@ -564,6 +618,25 @@ export function parseTarget(content) {
 	return headerField(content, 'target') || null;
 }
 
+/**
+ * Parse the optional `review:` header field — the one knob a ticket has over
+ * its own path through the stage graph.  `review: skip` sends an `implement/`
+ * ticket straight to `complete/`, for mechanical work where a review cycle
+ * costs more than it is worth.
+ *
+ * A value-typed field rather than a boolean: it reads as a statement about the
+ * ticket's review instead of a negated flag, and leaves room for values that
+ * ask for *more* review without a second field.  Returned lowercased and
+ * verbatim, recognised or not — validation belongs to
+ * lib/board-check.mjs `ticketProblems`, the same place `target:` is checked,
+ * so an unrecognised value is one loud not-runnable problem rather than a
+ * silent skip.  An empty field is absent, as everywhere else.
+ */
+export function parseReview(content) {
+	const value = headerField(content, 'review');
+	return value ? value.toLowerCase() : null;
+}
+
 /** The ticket object discovery hands to strategies, validators and the agent prompt. */
 function buildTicket({ entry, folder, path }, stage, content, releases) {
 	return {
@@ -577,6 +650,7 @@ function buildTicket({ entry, folder, path }, stage, content, releases) {
 		prereqs: parsePrereqs(content),
 		difficulty: parseDifficulty(content),
 		target: parseTarget(content),
+		review: parseReview(content),             // raw: 'skip', an unrecognised value, or null
 		header: headerRegion(content),
 	};
 }

@@ -19,7 +19,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { NEXT_STAGE, formatSeq } from './tickets.mjs';
+import { bypassesReview, formatSeq, nextStageFor } from './tickets.mjs';
 import { RULES_DIR, readProjectRules } from './project-rules.mjs';
 import { detectSearch } from './detect-search.mjs';
 import { boardCheckLines, inventoryText, releaseSummary } from './garden-inventory.mjs';
@@ -44,7 +44,7 @@ export async function buildPrompt(ticket, tessRoot, repoRoot, prereqNotes = []) 
 
 	const sections = [
 		`# Ticket: ${ticket.file} (stage: ${ticket.stage}, sequence: ${formatSeq(ticket.sequence)})`,
-		`# Next stage: ${NEXT_STAGE[ticket.stage]}`,
+		`# Next stage: ${nextStageFor(ticket)}`,
 		'',
 		'## Ticket workflow rules:',
 		'',
@@ -71,6 +71,8 @@ export async function buildPrompt(ticket, tessRoot, repoRoot, prereqNotes = []) 
 		);
 	}
 
+	if (bypassesReview(ticket)) sections.push(...reviewSkipSection());
+
 	if (searchServer) {
 		sections.push(searchDirective(searchServer));
 	}
@@ -81,6 +83,30 @@ export async function buildPrompt(ticket, tessRoot, repoRoot, prereqNotes = []) 
 	);
 
 	return sections.join('\n');
+}
+
+/**
+ * Told to an implement agent whose ticket declares `review: skip`.
+ *
+ * The runner has already taken the review edge out of this ticket's graph — it
+ * commits the transition as implement → complete either way — so this section
+ * is not what makes the skip happen.  It exists because the implement stage
+ * rules, a few thousand tokens earlier in the same prompt, say to hand off
+ * into `review/`; without an override the agent would write the wrong file
+ * into the wrong folder.  Late in the prompt, where agents weight instructions
+ * most heavily.
+ */
+function reviewSkipSection() {
+	return [
+		'',
+		'## Review stage skipped for this ticket',
+		'',
+		'This ticket\'s header declares `review: skip`, so the runner has removed the review stage from its path: `implement/ → complete/`.',
+		'Where the stage rules above say to hand off into `review/`, write the `complete/` ticket instead — the archived summary of finished work (what was built, key files, testing notes, usage).',
+		'No reviewer comes after you: the implement stage\'s own bar for build, tests and an honest account of what was left undone is the last one this ticket gets.',
+		'If the work turns out to need a review pass after all — it was less mechanical than the ticket assumed, or you are unsure of a change you made — write the `review/` ticket as normal and say why in it. The skip is the ticket author\'s estimate, not an instruction to lower the bar.',
+		'',
+	];
 }
 
 /**
