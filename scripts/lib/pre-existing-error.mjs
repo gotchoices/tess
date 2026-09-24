@@ -42,12 +42,55 @@ const REPORT_FILE = '.pre-existing-error.md';
 const LEDGER_FILE = '.pre-existing-known.md';
 
 /**
- * A tracked ledger line has the shape
- *   - `<test-signature>` → <slug> | <state> | <filed>
- * (arrow may be `→` or `->`). Groups: 1=signature, 2=slug, 3=state.
+ * A tracked ledger line opens with a backticked test signature and *ends* with
+ *   → <slug> | <state> | <YYYY-MM-DD>
+ * (arrow may be `→` or `->`). Groups: 1=signature, 2=slug, 3=state, 4=date.
+ *
+ * Everything between the two is free prose, and that prose is the point: a
+ * signature is usually a file path, and one file can hold two unrelated
+ * failures, so triage writes the disambiguating detail — which tests, which
+ * error text, what was measured, how to confirm it is this one — into the
+ * entry. An earlier form of this regex allowed only whitespace there and so
+ * matched none of the entries agents actually write.
+ *
+ * The `.*` is greedy on purpose: it backtracks to the *last* arrow on the
+ * line, so prose containing its own arrow does not capture a slug out of the
+ * middle of a sentence. The `$` anchor is what makes that safe — the tail must
+ * be the final thing on the line.
+ *
  * Non-matching lines (heading, blanks, human comments) are left untouched.
  */
-const ENTRY_RE = /^-\s+`([^`]+)`\s*(?:→|->)\s*([^|]+)\|\s*([^|]+)\|/;
+const ENTRY_RE = /^-\s+`([^`]+)`.*(?:→|->)\s*([^|]+)\|\s*([^|]+)\|\s*(\S+)\s*$/;
+
+/**
+ * States whose entry still has an open tracking ticket, and so both suppress
+ * re-triage and are candidates for the staleness sweep. The third state in use,
+ * `one-off`, is a deliberate permanent record of a failure investigated and
+ * resolved without a ticket: it names no slug, suppresses nothing, and is never
+ * pruned.
+ */
+const TRACKED_STATES = new Set(['in-flight', 'blocked']);
+
+/**
+ * A ledger that has entry-shaped lines but parses none of them is broken, not
+ * empty — and it reads as empty at every call site. Warn so the next run says
+ * so instead of silently tracking nothing. Only fires when *nothing* parses:
+ * human notes are legitimately bullets, so a single unparsed dash line among
+ * good ones is not a signal.
+ */
+function warnIfLedgerInert(lines, reader) {
+	if (lines.some((line) => ENTRY_RE.test(line))) return;
+	const dashed = lines.filter((line) => /^-\s/.test(line)).length;
+	if (dashed === 0) return;
+	console.warn(
+		`[runner] ${LEDGER_FILE}: ${dashed} entry-shaped line(s), none parsed — the ledger is tracking nothing (${reader}).`,
+	);
+}
+
+/** Filename-safe timestamp, so two log files from one run never collide. */
+function stamp() {
+	return new Date().toISOString().replace(/[:.]/g, '-');
+}
 
 function reportPath(ticketsDir) {
 	return join(ticketsDir, REPORT_FILE);
@@ -66,20 +109,21 @@ async function readReport(ticketsDir) {
 }
 
 /**
- * Parse the known-failures ledger into entries. Each tracked line has the shape
- *   - `<test-signature>` → <slug> | <state> | <filed>
- * where <state> is `in-flight` (a fix ticket is live) or `blocked`. Malformed
- * or comment lines are ignored so the file stays human-editable.
+ * Parse the known-failures ledger into entries, each `ENTRY_RE`-shaped (see
+ * above). Malformed or comment lines are ignored so the file stays
+ * human-editable — but a file where *every* line is ignored is reported.
  */
-async function readLedgerEntries(ticketsDir) {
+export async function readLedgerEntries(ticketsDir) {
 	let text;
 	try {
 		text = await readFile(ledgerPath(ticketsDir), 'utf-8');
 	} catch {
 		return [];
 	}
+	const lines = text.split('\n');
+	warnIfLedgerInert(lines, 'reading known failures');
 	const entries = [];
-	for (const line of text.split('\n')) {
+	for (const line of lines) {
 		const m = line.match(ENTRY_RE);
 		if (m) entries.push({ signature: m[1].trim(), slug: m[2].trim(), state: m[3].trim() });
 	}
@@ -91,11 +135,16 @@ async function readLedgerEntries(ticketsDir) {
  * entry whose fix is still open (`in-flight`/`blocked`). Substring match on the
  * failing-test path is deliberate — the report rule requires agents to include
  * the exact test path, and a live tracking ticket already owns that root cause.
+ *
+ * NOTE: the match cannot tell two distinct failures in one test file apart —
+ * it sees the path, not the entry's confirm-protocol prose. On 2026-09-24 a
+ * fixture bug in `src/lamina-scope-node.test.ts` would have been suppressed by
+ * that file's unrelated timeout entry. That is why the caller archives the
+ * report it suppresses rather than only deleting it; if this misfires often
+ * enough to notice, the entry needs a narrower signature than a bare path.
  */
 function findKnownEntry(report, ledger) {
-	return ledger.find(
-		(e) => (e.state === 'in-flight' || e.state === 'blocked') && e.signature && report.includes(e.signature),
-	);
+	return ledger.find((e) => TRACKED_STATES.has(e.state) && e.signature && report.includes(e.signature));
 }
 
 /**
@@ -109,10 +158,17 @@ function findKnownEntry(report, ledger) {
  * tracking ticket lands. Those entries go stale: they suppress re-triage of a
  * *genuine* regression sharing the same test path, and the file grows forever.
  *
- * This sweep drops any entry whose tracking slug is no longer holding the
- * failure — either absent from the board entirely (completed-then-pruned,
- * renamed, or typo'd) or sitting in `complete/` (the fix landed). Entries whose
- * slug is still live (fix/plan/implement/review/blocked/backlog) are kept.
+ * This sweep drops an entry only when both halves hold: its state is one that
+ * implies an open tracker (`in-flight`/`blocked`), and that slug resolves on
+ * the board to stage `complete`. `indexAllTickets` folds the tombstone ledger
+ * in as `complete`, so a completed-then-swept slug resolves too.
+ *
+ * An entry whose slug resolves *nowhere* is kept and its slug returned in
+ * `unresolved`. "Absent from the board" is not evidence the fix landed: it is
+ * equally a typo, a rename, a tracker living on another repo's board (this
+ * repo's lamina submodule has its own), or the literal non-slug an `one-off`
+ * entry carries. None of those should silently delete accumulated triage
+ * detail, so absence is reported rather than acted on.
  *
  * Safe-conservative: pruning removes only the *suppression*, never re-detection.
  * If a failure is in fact still broken after its tracker completed, the next
@@ -121,33 +177,37 @@ function findKnownEntry(report, ledger) {
  * through untouched; if no tracked entries remain, the file is removed (triage
  * recreates it with its heading on demand).
  *
- * Returns `{ removed, slugs }` where `slugs` are the pruned tracking slugs.
+ * Returns `{ removed, slugs, unresolved }` — `slugs` are the pruned tracking
+ * slugs, `unresolved` the kept-but-unfindable ones.
  */
 export async function pruneKnownFailures(ticketsDir, repoRoot, { dryRun = false, noCommit = false } = {}) {
 	let text;
 	try {
 		text = await readFile(ledgerPath(ticketsDir), 'utf-8');
 	} catch {
-		return { removed: 0, slugs: [] };  // no ledger yet
+		return { removed: 0, slugs: [], unresolved: [] };  // no ledger yet
 	}
 
+	const lines = text.split('\n');
+	warnIfLedgerInert(lines, 'pruning resolved entries');
+
 	const index = await indexAllTickets(ticketsDir);
-	const isStale = (slug) => {
-		const rec = index.get(slug);
-		return !rec || rec.stage === 'complete';
-	};
 
 	const kept = [];
 	const prunedSlugs = [];
+	const unresolved = [];
 	let keptEntryCount = 0;
-	for (const line of text.split('\n')) {
+	for (const line of lines) {
 		const m = line.match(ENTRY_RE);
 		if (!m) {
 			kept.push(line);  // heading, blank, or human note — preserve verbatim
 			continue;
 		}
 		const slug = m[2].trim();
-		if (isStale(slug)) {
+		const state = m[3].trim();
+		const rec = TRACKED_STATES.has(state) ? index.get(slug) : null;
+		if (TRACKED_STATES.has(state) && !rec) unresolved.push(slug);
+		if (rec?.stage === 'complete') {
 			prunedSlugs.push(slug);
 		} else {
 			kept.push(line);
@@ -155,8 +215,14 @@ export async function pruneKnownFailures(ticketsDir, repoRoot, { dryRun = false,
 		}
 	}
 
-	if (prunedSlugs.length === 0) return { removed: 0, slugs: [] };
-	if (dryRun) return { removed: prunedSlugs.length, slugs: prunedSlugs, dryRun: true };
+	if (unresolved.length > 0) {
+		console.warn(
+			`[runner] ${LEDGER_FILE}: kept ${unresolved.length} entr${unresolved.length === 1 ? 'y' : 'ies'} whose tracking slug is not on this board — ${unresolved.join(', ')}. Check for a typo, or a tracker on another repo's board.`,
+		);
+	}
+
+	if (prunedSlugs.length === 0) return { removed: 0, slugs: [], unresolved };
+	if (dryRun) return { removed: prunedSlugs.length, slugs: prunedSlugs, unresolved, dryRun: true };
 
 	if (keptEntryCount === 0) {
 		// Nothing tracked remains — drop the file rather than leave a bare heading.
@@ -168,7 +234,7 @@ export async function pruneKnownFailures(ticketsDir, repoRoot, { dryRun = false,
 
 	if (!noCommit) commitKnownFailurePrune(prunedSlugs.length, repoRoot);
 
-	return { removed: prunedSlugs.length, slugs: prunedSlugs };
+	return { removed: prunedSlugs.length, slugs: prunedSlugs, unresolved };
 }
 
 /** Stage just the ledger change and commit it. Returns true on commit. */
@@ -264,12 +330,27 @@ export function buildTriagePrompt(report, anchorFields) {
 		'After filing `fix/` or `blocked/` ticket (or if one already exists from prior',
 		'pass), append or update its entry in `tickets/.pre-existing-known.md` so later',
 		'tickets do not re-triage from cold. Create file if absent with',
-		'`# Known pre-existing failures (tess)` heading. Each entry one line:',
-		'    - `<failing-test-path-or-id>` → <slug> | <state> | <YYYY-MM-DD>',
-		'where <state> is `in-flight` for `fix/` ticket or `blocked` for `blocked/`',
-		'one. Use exact test path from report as signature. When you land root-cause',
-		'fix in place instead of filing ticket, remove any existing entry for that',
-		'signature.',
+		'`# Known pre-existing failures (tess)` heading. Each entry is exactly ONE',
+		'line — no wrapping — opening with backticked signature and ENDING with the',
+		'tracking tail:',
+		'    - `<failing-test-path-or-id>` — <prose> → <slug> | <state> | <YYYY-MM-DD>',
+		'Use exact test path from report as signature. <state> is `in-flight` (a',
+		'`fix/` ticket is live), `blocked` (a `blocked/` ticket is), or `one-off` (you',
+		'investigated and resolved it with no ticket filed — a deliberate permanent',
+		'record; write `no tracking ticket` in the slug position). Only `in-flight`',
+		'and `blocked` suppress re-triage.',
+		'',
+		'The <prose> between signature and tail is the valuable part — WRITE IT. One',
+		'file can hold two unrelated failures, and the runner matches on the',
+		'signature alone, so without prose a later reporter cannot tell your failure',
+		'from a different one at the same path. Say which tests, which error text,',
+		'what you measured, and a confirm protocol ("re-run the file on its own; if',
+		'it fails there too, it is not this"). The ONLY hard constraint: the',
+		'` → <slug> | <state> | <date>` tail must be the last thing on the line, and',
+		'the whole entry must stay on one line.',
+		'',
+		'When you land root-cause fix in place instead of filing ticket, remove any',
+		'existing entry for that signature.',
 		'',
 		'Do NOT modify or re-write `tickets/.pre-existing-error.md` — runner deletes it',
 		'after you exit. Do NOT commit; runner handles commits. Do NOT advance, touch,',
@@ -301,15 +382,21 @@ export async function handlePreExistingError(ctx) {
 	// owns. Drop the report and let the tracking ticket resolve it.
 	const known = findKnownEntry(report, await readLedgerEntries(ticketsDir));
 	if (known) {
+		// Archive before unlinking. The match is on the signature alone, so it can
+		// suppress a *second*, unrelated failure that happens to live in the same
+		// test file; keeping the text makes that recoverable instead of gone, and
+		// naming the matched signature is what lets a reader see the misfire.
+		const suppressed = join(logsDir, `pre-existing-error.suppressed.${stamp()}.log`);
+		await writeFile(suppressed, report, 'utf-8').catch(() => {});
 		console.log(
-			`\n  ⚠  Pre-existing test failure reported — already tracked in ${known.slug} (${known.state}); skipping re-triage.`,
+			`\n  ⚠  Pre-existing test failure reported — matched \`${known.signature}\`, already tracked in ${known.slug} (${known.state}); skipping re-triage.`,
 		);
+		console.log(`     Suppressed report: ${suppressed}`);
 		await unlink(reportPath(ticketsDir)).catch(() => {});
 		return true;
 	}
 
-	const ts = new Date().toISOString().replace(/[:.]/g, '-');
-	const logFile = join(logsDir, `pre-existing-error.${ts}.log`);
+	const logFile = join(logsDir, `pre-existing-error.${stamp()}.log`);
 	console.log(`\n  ⚠  Pre-existing test failure reported — dispatching triage agent.`);
 	console.log(`     Log: ${logFile}`);
 

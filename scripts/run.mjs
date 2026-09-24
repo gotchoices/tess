@@ -97,9 +97,10 @@ async function main() {
 			console.log(`\n  ${verb} ${pruned.removed} completed ticket(s) older than ${opts.pruneCompletedDays} days.`);
 		}
 
-		// Reconcile the known-failure ledger: drop entries whose tracking ticket
-		// has landed in complete/ (or vanished), so a later regression of the same
-		// test isn't wrongly suppressed and the ledger doesn't grow unbounded.
+		// Reconcile the known-failure ledger: drop entries whose tracking ticket has
+		// landed in complete/, so a later regression of the same test isn't wrongly
+		// suppressed and the ledger doesn't grow unbounded. Entries whose slug
+		// resolves nowhere are kept and warned about, not dropped.
 		const staleKnown = await pruneKnownFailures(ticketsDir, repoRoot, {
 			dryRun: opts.dryRun,
 			noCommit: opts.noCommit,
