@@ -129,7 +129,7 @@ At every stage you are writing for someone — a teammate, the next agent, your 
 
 If the tests you run surface a failure that is plainly **not yours** — broken at HEAD before your edits, in a subsystem outside your diff, or otherwise clearly unrelated — do NOT try to chase it inside this ticket. But equally, do **not** paper over it: `it.skip`, `describe.skip`, commenting out the test, or loosening its assertions to get a green run are **forbidden** — they bury a real defect and cost far more to rediscover later than to fix now. Instead:
 
-1. Check `tickets/.pre-existing-known.md` for the failing test. If it is already listed with an in-flight `fix/` or `blocked/` slug, the root cause is already tracked — do **not** re-report it. Note in your handoff that you are aware of / blocked on that slug and move on.
+1. Check `tickets/.pre-existing-known.md` for the failing test. An entry's state says what to do: `in-flight` or `blocked` means the root cause is already tracked by that slug — do **not** re-report it; note in your handoff that you are aware of / blocked on it and move on. `one-off` means the failure was diagnosed and resolved with no ticket: read that record, follow its confirm protocol, and report only if it is genuinely back, citing what the record already ruled out.
 2. Otherwise write `tickets/.pre-existing-error.md` (overwrite if it already exists) containing:
    - the exact test command(s) you ran (and from which package, for monorepos),
    - the failing test name(s) and its exact path, plus a short excerpt of the error output,

@@ -87,6 +87,17 @@ function warnIfLedgerInert(lines, reader) {
 	);
 }
 
+/**
+ * True when the kept text holds nothing a reader would miss — heading and blank
+ * lines only. Surviving entries are not the only reason the file is worth
+ * keeping: the ledger accumulates `<!-- FIXED ... -->` records of failures
+ * diagnosed and resolved without a ticket, and in practice those are most of
+ * its bulk, so "no entries left" is not "nothing left".
+ */
+function isBareLedger(lines) {
+	return lines.every((line) => line.trim() === '' || line.trim().startsWith('#'));
+}
+
 /** Filename-safe timestamp, so two log files from one run never collide. */
 function stamp() {
 	return new Date().toISOString().replace(/[:.]/g, '-');
@@ -174,8 +185,10 @@ function findKnownEntry(report, ledger) {
  * If a failure is in fact still broken after its tracker completed, the next
  * ticket that trips it re-runs the test, reproduces at HEAD, re-files, and
  * re-adds the entry. Non-entry lines (heading, blanks, human notes) pass
- * through untouched; if no tracked entries remain, the file is removed (triage
- * recreates it with its heading on demand).
+ * through untouched — including the `<!-- FIXED ... -->` records of failures
+ * resolved without a ticket, which are most of a mature ledger's bulk. Only a
+ * file left with nothing but its heading is removed (triage recreates it on
+ * demand).
  *
  * Returns `{ removed, slugs, unresolved }` — `slugs` are the pruned tracking
  * slugs, `unresolved` the kept-but-unfindable ones.
@@ -195,8 +208,10 @@ export async function pruneKnownFailures(ticketsDir, repoRoot, { dryRun = false,
 
 	const kept = [];
 	const prunedSlugs = [];
-	const unresolved = [];
-	let keptEntryCount = 0;
+	// A set, not a list: one tracking ticket routinely owns several entries — ten
+	// of this repo's twelve name the same slug — and repeating it once per entry
+	// would make both the warning and the returned field unreadable.
+	const unresolvedSlugs = new Set();
 	for (const line of lines) {
 		const m = line.match(ENTRY_RE);
 		if (!m) {
@@ -204,28 +219,25 @@ export async function pruneKnownFailures(ticketsDir, repoRoot, { dryRun = false,
 			continue;
 		}
 		const slug = m[2].trim();
-		const state = m[3].trim();
-		const rec = TRACKED_STATES.has(state) ? index.get(slug) : null;
-		if (TRACKED_STATES.has(state) && !rec) unresolved.push(slug);
-		if (rec?.stage === 'complete') {
-			prunedSlugs.push(slug);
-		} else {
-			kept.push(line);
-			keptEntryCount++;
-		}
+		const tracked = TRACKED_STATES.has(m[3].trim());
+		const rec = tracked ? index.get(slug) : null;
+		if (tracked && !rec) unresolvedSlugs.add(slug);
+		if (rec?.stage === 'complete') prunedSlugs.push(slug);
+		else kept.push(line);
 	}
 
+	const unresolved = [...unresolvedSlugs];
 	if (unresolved.length > 0) {
 		console.warn(
-			`[runner] ${LEDGER_FILE}: kept ${unresolved.length} entr${unresolved.length === 1 ? 'y' : 'ies'} whose tracking slug is not on this board — ${unresolved.join(', ')}. Check for a typo, or a tracker on another repo's board.`,
+			`[runner] ${LEDGER_FILE}: kept the entries tracked by ${unresolved.length} slug(s) not on this board — ${unresolved.join(', ')}. Check for a typo, or a tracker on another repo's board.`,
 		);
 	}
 
 	if (prunedSlugs.length === 0) return { removed: 0, slugs: [], unresolved };
 	if (dryRun) return { removed: prunedSlugs.length, slugs: prunedSlugs, unresolved, dryRun: true };
 
-	if (keptEntryCount === 0) {
-		// Nothing tracked remains — drop the file rather than leave a bare heading.
+	if (isBareLedger(kept)) {
+		// Only the heading is left — drop the file rather than leave it bare.
 		await unlink(ledgerPath(ticketsDir)).catch(() => {});
 	} else {
 		// Preserve trailing newline shape; kept already excludes pruned lines.
@@ -387,11 +399,13 @@ export async function handlePreExistingError(ctx) {
 		// test file; keeping the text makes that recoverable instead of gone, and
 		// naming the matched signature is what lets a reader see the misfire.
 		const suppressed = join(logsDir, `pre-existing-error.suppressed.${stamp()}.log`);
-		await writeFile(suppressed, report, 'utf-8').catch(() => {});
+		const archived = await writeFile(suppressed, report, 'utf-8').then(() => true, () => false);
 		console.log(
 			`\n  ⚠  Pre-existing test failure reported — matched \`${known.signature}\`, already tracked in ${known.slug} (${known.state}); skipping re-triage.`,
 		);
-		console.log(`     Suppressed report: ${suppressed}`);
+		// Say which happened: a path printed for a file that was never written would
+		// send someone hunting for the one copy of a report this line then deletes.
+		console.log(archived ? `     Suppressed report: ${suppressed}` : `     Could not archive the suppressed report to ${suppressed}.`);
 		await unlink(reportPath(ticketsDir)).catch(() => {});
 		return true;
 	}

@@ -91,3 +91,22 @@ test('the prune drops an entry only when its tracker resolves to complete/ — a
 	assert.match(after, /^# Known pre-existing failures \(tess\)$/m);
 	for (const sig of ['c.test.ts', 'd.test.ts', 'e.test.ts']) assert.ok(after.includes(sig), `${sig} should survive`);
 });
+
+// regression: the sweep deleted the whole file once its last entry resolved, taking
+// the `<!-- FIXED ... -->` records with it — 485 of this repo's 497 ledger lines.
+test('a ledger whose last entry prunes keeps its human notes, and is removed only when nothing but the heading is left', async () => {
+	const withNotes = await makeBoard({ complete: ['landed-fix.md'] });
+	const bare = await makeBoard({ complete: ['landed-fix.md'] });
+	const entry = '- `a.test.ts` — prose → landed-fix | in-flight | 2026-01-01';
+	const note = '<!-- FIXED 2026-01-03 — root cause found and fixed in place; no ticket. -->';
+	await writeFile(join(withNotes, '.pre-existing-known.md'), ['# Known', '', note, '', entry, ''].join('\n'), 'utf-8');
+	await writeFile(join(bare, '.pre-existing-known.md'), ['# Known', '', entry, ''].join('\n'), 'utf-8');
+
+	assert.equal((await pruneKnownFailures(withNotes, dirname(withNotes), { noCommit: true })).removed, 1);
+	assert.equal((await pruneKnownFailures(bare, dirname(bare), { noCommit: true })).removed, 1);
+
+	const after = await readFile(join(withNotes, '.pre-existing-known.md'), 'utf-8');
+	assert.ok(after.includes(note), 'the FIXED record must survive the sweep');
+	assert.equal(after.includes('a.test.ts'), false);
+	await assert.rejects(readFile(join(bare, '.pre-existing-known.md'), 'utf-8'), { code: 'ENOENT' });
+});
