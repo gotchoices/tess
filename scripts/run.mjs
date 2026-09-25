@@ -46,6 +46,7 @@ import { checkBoard, readBoardContext, ticketProblems } from './lib/board-check.
 import { topoSortAndCheck } from './lib/topo.mjs';
 import { readAndClearInProgress, readInProgress, addResumeNote } from './lib/state.mjs';
 import { ensureLogsDir, pruneOldLogs } from './lib/logging.mjs';
+import { watchCodeVersion } from './lib/code-version.mjs';
 import { getTessVersion, runMigrationIfNeeded, reconcileWorkingTree } from './lib/git.mjs';
 import { parseArgs, formatStageSummary } from './lib/cli.mjs';
 import { strategies } from './lib/strategies/index.mjs';
@@ -288,6 +289,8 @@ async function main() {
 		tessVersion,
 		logsDir,
 		opts,
+		// Set when a supervisor restarts us on RUNNER_RESTART_EXIT_CODE; runOneStage checks it.
+		codeWatch: watchCodeVersion(TESS_ROOT),
 	};
 	let result;
 	try {
@@ -303,6 +306,11 @@ async function main() {
 		// timed out — i.e. the runner is about to conclude with a report still
 		// sitting in tickets/.
 		await handlePreExistingError(runCtx);
+	}
+
+	// Tess's own code moved under us: exit for the supervisor to restart the run on it.
+	if (runCtx.restartForCode) {
+		process.exit(runCtx.codeWatch.exitCode);
 	}
 
 	// A mid-run dirty tree the runner could not salvage stops the strategy through the same

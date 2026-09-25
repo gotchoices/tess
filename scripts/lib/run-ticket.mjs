@@ -66,6 +66,15 @@ export async function runOneStage(ticket, ctx, { label }) {
 		return { kind: 'stopped' };
 	}
 
+	// Tess's code moved since this run started (a pin bump or checkout): stop before the next
+	// ticket, same as a stop file, and let run.mjs exit for a restart onto the new code.
+	const moved = ctx.codeWatch?.changed();
+	if (moved) {
+		console.log(`\n⟳  tess moved ${moved.from} → ${moved.to} — halting before next ticket to restart on it.`);
+		ctx.restartForCode = true;
+		return { kind: 'stopped' };
+	}
+
 	// Guard: a previous agent may have already moved this ticket.
 	try {
 		await access(ticket.path, constants.R_OK);
