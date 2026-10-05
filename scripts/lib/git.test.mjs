@@ -10,7 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -37,9 +37,32 @@ function makeRepo(t) {
 	return { dir, run };
 }
 
+/** A real nested git repo at `<parent>/<path>`, recorded in the parent as a gitlink plus a
+ *  `.gitmodules` entry — the shape `inspectSubmodules` reads.  Built by hand rather than with
+ *  `git submodule add`, which needs `protocol.file.allow` to clone over a local path. */
+function addSubmodule({ dir, run }, path) {
+	const sub = join(dir, path);
+	mkdirSync(sub);
+	const subRun = cmd => execSync(cmd, { cwd: sub, encoding: 'utf-8', stdio: 'pipe' });
+	subRun('git init -q');
+	subRun('git config user.email tess@example.invalid');
+	subRun('git config user.name "tess test"');
+	subRun('git config commit.gpgsign false');
+	writeFileSync(join(sub, 'inner.txt'), 'inner\n');
+	subRun('git add -A');
+	subRun('git commit -q -m seed');
+
+	appendFileSync(join(dir, '.gitmodules'), `[submodule "${path}"]\n\tpath = ${path}\n\turl = ./${path}\n`);
+	run('git add .gitmodules');
+	run(`git -c advice.addEmbeddedRepo=false add ${path}`);
+	run(`git commit -q -m "add submodule ${path}"`);
+	return { sub, subRun };
+}
+
 const commitCount = dir => Number(execSync('git rev-list --count HEAD', { cwd: dir, encoding: 'utf-8' }).trim());
 const subject = dir => execSync('git log -1 --format=%s', { cwd: dir, encoding: 'utf-8' }).trim();
 const porcelain = dir => execSync('git status --porcelain', { cwd: dir, encoding: 'utf-8' });
+const body = dir => execSync('git log -1 --format=%B', { cwd: dir, encoding: 'utf-8' }).trim();
 const filesInHead = dir => execSync('git show --name-only --format= HEAD', { cwd: dir, encoding: 'utf-8' })
 	.split('\n').map(s => s.trim()).filter(Boolean);
 
@@ -92,6 +115,46 @@ test('an ordinary ticket commit is unchanged, and an unrecognised review: value 
 	writeFileSync(join(dir, 'seed.txt'), 'again\n');
 	assert.equal(commitTicket({ stage: 'implement', slug: 'typo', review: 'skipped' }, dir), true);
 	assert.equal(subject(dir), 'ticket(implement): typo');
+});
+
+test('a stage commit surfaces uncommitted work stranded in a submodule, and records it in the commit', t => {
+	// Regression: `1-lamina-failed-commit-keeps-refcount-changes` and its child both reached
+	// `tickets/complete/` with full write-ups while the lamina-side fix sat uncommitted in the
+	// submodule's working tree, because the parent's probe passes `--ignore-submodules=dirty`.
+	const { dir, run } = makeRepo(t);
+	const { sub } = addSubmodule({ dir, run }, 'lamina');
+	writeFileSync(join(sub, 'inner.txt'), 'the submodule half of the fix\n');
+	writeFileSync(join(dir, 'seed.txt'), 'the parent half of the fix\n');
+
+	const { result, lines } = captured(() => commitTicket({ stage: 'implement', slug: 'half-landed', review: null }, dir));
+
+	assert.equal(result, true, 'the commit must still save the parent-side work');
+	assert.equal(subject(dir), 'ticket(implement): half-landed', 'the greppable subject must be untouched');
+	assert.match(body(dir), /^Stranded-submodule: lamina$/m, 'the durable half: a console notice is gone with the run');
+	assert.equal(porcelain(join(sub)).trim(), 'M inner.txt', 'the submodule edit is still there, uncommitted');
+
+	const notice = lines.join('\n');
+	assert.match(notice, /1 uncommitted path\(s\) in 1 submodule\(s\) at ticket\(implement\): half-landed/);
+	assert.match(notice, /M inner\.txt/);
+	assert.match(notice, /git -C lamina commit/);
+});
+
+test('a clean submodule, and one initialised but never checked out, are both silent', t => {
+	const { dir, run } = makeRepo(t);
+	addSubmodule({ dir, run }, 'lamina');
+	// `git submodule init` without `update` leaves the directory empty.  `git -C` on an empty
+	// directory inside a repo reports the PARENT's status, so without the checked-out test this
+	// would read `seed.txt` below as stranded submodule work.
+	mkdirSync(join(dir, 'rubric'));
+	appendFileSync(join(dir, '.gitmodules'), '[submodule "rubric"]\n\tpath = rubric\n\turl = ./rubric\n');
+	run('git commit -q -a -m "declare an uninitialised submodule"');
+	writeFileSync(join(dir, 'seed.txt'), 'parent work only\n');
+
+	const { result, lines } = captured(() => commitTicket({ stage: 'review', slug: 'all-landed', review: null }, dir));
+
+	assert.equal(result, true);
+	assert.equal(body(dir), 'ticket(review): all-landed', 'no trailer when there is nothing stranded');
+	assert.deepEqual(lines, [], `expected silence when no submodule is dirty, got:\n${lines.join('\n')}`);
 });
 
 // ── reconcileWorkingTree ────────────────────────────────────────────────────

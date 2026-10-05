@@ -4,6 +4,8 @@
  */
 
 import { execFileSync, execSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { migrate, needsMigration, FORMAT_VERSION } from '../migrate.mjs';
 import { bypassesReview } from './tickets.mjs';
 
@@ -59,16 +61,72 @@ function parsePorcelain(raw) {
  * `exec` is injectable so tests can assert the command shape without a nested-repo fixture.
  *
  * NOTE: the exclusion also hides *uncommitted* submodule edits from `commitAll`, which used to
- * notice them by failing loudly with "nothing to commit".  Fine today — those edits were
- * unrecoverable from the parent either way, and agent rules already require committing inside
- * the submodule.  If the runner ever needs to warn about that state, it needs a second probe
- * (plain `git status --porcelain`, compared against this one), not a relaxation of this flag.
+ * notice them by failing loudly with "nothing to commit".  `inspectSubmodules` below is the
+ * second probe this NOTE used to ask for; it stays a *separate* probe rather than a relaxation
+ * of this flag, because relaxing the flag would reintroduce the no-op-salvage failure above.
  */
 export function inspectWorkingTree(cwd, { exec = execSync } = {}) {
 	const raw = exec('git status --porcelain --ignore-submodules=dirty', { cwd, encoding: 'utf-8' });
 	const entries = parsePorcelain(raw);
 	const deletions = entries.filter(e => e.code[0] === 'D' || e.code[1] === 'D').length;
 	return { dirty: entries.length > 0, entries, deletions };
+}
+
+/** Run git with an argv array, never a shell string: the arguments below carry submodule paths
+ *  read out of `.gitmodules`, which may contain a space or a shell metacharacter. */
+function runGit(cwd, args) {
+	return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+/**
+ * Probe every submodule this repo declares for uncommitted *content* — the half of the working
+ * tree `inspectWorkingTree` deliberately cannot see.
+ *
+ * Returns `[{ path, entries }]`, one element per submodule that has uncommitted content, with
+ * `entries` in `inspectWorkingTree`'s shape.  An empty array means there is nothing to strand.
+ *
+ * Paths come from `.gitmodules`, not a list in this file: tess is itself a submodule of several
+ * different host projects, and each has its own set.  Two states deliberately read as clean
+ * rather than as errors — a repo with no `.gitmodules` at all, and a submodule that is declared
+ * but not checked out.  Neither holds work that could be stranded, and neither is a reason to
+ * fail the commit that is about to save the stage's actual work.
+ *
+ * `git` is injectable so tests can assert the command shape without a nested-repo fixture.
+ */
+export function inspectSubmodules(cwd, { git = runGit } = {}) {
+	let declared;
+	try {
+		declared = git(cwd, ['config', '--file', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$']);
+	} catch {
+		return [];
+	}
+
+	const dirty = [];
+	for (const line of String(declared ?? '').split('\n')) {
+		// `submodule.<name>.path <path>` — the value is everything past the first space, so a
+		// path containing spaces survives.
+		const space = line.indexOf(' ');
+		if (space === -1) continue;
+		const path = line.slice(space + 1).replace(/\r$/, '').trim();
+		if (!path) continue;
+
+		// Checked-out test before the probe, and not just a try/catch around it: `git -C` on an
+		// *empty* directory — what `git submodule init` without `update` leaves behind — walks up
+		// and reports the PARENT repo's status, which would read the parent's own dirt as stranded
+		// submodule work on every ticket.  A checked-out submodule always has a `.git` (a file
+		// pointing into `.git/modules/`, or a real directory in an older or converted checkout).
+		if (!existsSync(resolve(cwd, path, '.git'))) continue;
+
+		let raw;
+		try {
+			raw = git(cwd, ['-C', path, 'status', '--porcelain']);
+		} catch {
+			continue; // a `.git` whose gitdir is gone, or an otherwise unreadable repo
+		}
+		const entries = parsePorcelain(raw);
+		if (entries.length > 0) dirty.push({ path, entries });
+	}
+	return dirty;
 }
 
 /** Stage and commit all working-tree changes under one message.  Returns true if a commit
@@ -131,6 +189,32 @@ function printDirtyNotice(entries, label, owner) {
 	} else {
 		console.log(`[runner]   No ticket in progress — cannot attribute this to a ticket.`);
 	}
+}
+
+/** Print the stranded-submodule notice.  Deliberately as loud as `printDirtyNotice`, and for
+ *  the same reason: the failure this exists to prevent was silent.  Two ticket stages for
+ *  `1-lamina-failed-commit-keeps-refcount-changes` reached `complete/` with detailed write-ups
+ *  while the lamina-side fix sat uncommitted in the submodule's working tree, and the only
+ *  thing that caught it was a human diffing the cited commits against lamina's own history. */
+function printStrandedSubmoduleNotice(stranded, label) {
+	const total = stranded.reduce((n, sub) => n + sub.entries.length, 0);
+	console.error(`[runner] WARNING: ${total} uncommitted path(s) in ${stranded.length} submodule(s) at ${label}:`);
+	for (const sub of stranded) {
+		console.error(`[runner]   ${sub.path}/`);
+		for (const e of sub.entries.slice(0, MAX_NOTICE_ENTRIES)) {
+			console.error(`[runner]     ${e.code} ${e.path}`);
+		}
+		if (sub.entries.length > MAX_NOTICE_ENTRIES) {
+			console.error(`[runner]     … +${sub.entries.length - MAX_NOTICE_ENTRIES} more`);
+		}
+	}
+	console.error('[runner]   A parent commit cannot capture a submodule\'s working tree, so the commit below');
+	console.error('[runner]   does NOT contain any of this.  If it is part of the work this stage just claimed,');
+	console.error('[runner]   the change is half-landed until it is committed where it lives:');
+	for (const sub of stranded) {
+		console.error(`[runner]     git -C ${sub.path} commit -a -m "<what this work was>" && git -C ${sub.path} push`);
+	}
+	console.error('[runner]   then commit the moved pin in the parent.');
 }
 
 function salvageMessage(owner) {
@@ -219,7 +303,37 @@ export function reconcileWorkingTree(cwd, { owner = null, mode = 'salvage', noCo
  *  console output is gone. */
 export function commitTicket(ticket, cwd) {
 	const skipped = bypassesReview(ticket) ? ' — review skipped (review: skip)' : '';
-	return commitAll(cwd, `ticket(${ticket.stage}): ${ticket.slug}${skipped}`, { context: ticket.slug });
+	const subject = `ticket(${ticket.stage}): ${ticket.slug}${skipped}`;
+	return commitAll(cwd, subject + strandedSubmoduleTrailer(cwd, subject), { context: ticket.slug });
+}
+
+/** The stranded-submodule check, run at the one moment it is about to matter: a ticket's stage
+ *  is finished and its commit is about to claim so.  Prints the notice and returns the commit
+ *  trailer that records it, or '' when every submodule is clean.
+ *
+ *  Only `commitTicket` calls this, not `commitAll`: the runner's other commits (salvage, resume
+ *  note, migration) claim nothing about a stage being done, and an implement agent is allowed
+ *  to leave a submodule mid-edit between them.
+ *
+ *  NOTE: this warns and lets the commit proceed; refusing was weighed and declined.  A refusal
+ *  here cannot actually stop the strand — by this point the agent has already moved the ticket
+ *  file, so a refused commit just leaves the board move uncommitted for the *next* ticket's
+ *  `reconcileWorkingTree` to salvage under the wrong ticket's name, trading a visible warning
+ *  for silent mis-attribution.  Worse, tess never cleans submodule content (`inspectWorkingTree`
+ *  cannot see it), so stale dirt from an earlier interrupted session would wedge every
+ *  subsequent ticket with no way for the runner to clear it.  Revisit if the runner ever learns
+ *  to commit inside a submodule on a ticket's behalf, which would make refusal recoverable.
+ *
+ *  The trailer is the durable half: the console notice is gone with the run's output, but
+ *  `Stranded-submodule:` in the commit itself is what a later audit of "did this ticket really
+ *  land its submodule half?" will actually meet. */
+function strandedSubmoduleTrailer(cwd, subject) {
+	const stranded = inspectSubmodules(cwd);
+	if (stranded.length === 0) return '';
+	printStrandedSubmoduleNotice(stranded, subject);
+	return `\n\nStranded-submodule: ${stranded.map(sub => sub.path).join(', ')}\n`
+		+ 'Those submodule working trees had uncommitted content when this commit was made, and a\n'
+		+ 'parent commit cannot carry it.  If this stage claimed work in them, that half is not here.';
 }
 
 /** Run migration if needed and commit the result.  Returns whether a commit was made. */
