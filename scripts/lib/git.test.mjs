@@ -54,7 +54,7 @@ function addSubmodule({ dir, run }, path) {
 
 	appendFileSync(join(dir, '.gitmodules'), `[submodule "${path}"]\n\tpath = ${path}\n\turl = ./${path}\n`);
 	run('git add .gitmodules');
-	run(`git -c advice.addEmbeddedRepo=false add ${path}`);
+	run(`git -c advice.addEmbeddedRepo=false add '${path}'`);
 	run(`git commit -q -m "add submodule ${path}"`);
 	return { sub, subRun };
 }
@@ -123,18 +123,24 @@ test('a stage commit surfaces uncommitted work stranded in a submodule, and reco
 	// submodule's working tree, because the parent's probe passes `--ignore-submodules=dirty`.
 	const { dir, run } = makeRepo(t);
 	const { sub } = addSubmodule({ dir, run }, 'lamina');
+	// The second submodule's path carries a space on purpose.  `git submodule add` derives the
+	// submodule's *name* from its path, so `git config --get-regexp` emits a key with a space in
+	// it; a reader that splits a record on its first space reads a non-path, skips the submodule
+	// and misses exactly the state this probe exists to catch.
+	const { sub: spaced } = addSubmodule({ dir, run }, 'vendor lib');
 	writeFileSync(join(sub, 'inner.txt'), 'the submodule half of the fix\n');
+	writeFileSync(join(spaced, 'inner.txt'), 'and a second submodule\n');
 	writeFileSync(join(dir, 'seed.txt'), 'the parent half of the fix\n');
 
 	const { result, lines } = captured(() => commitTicket({ stage: 'implement', slug: 'half-landed', review: null }, dir));
 
 	assert.equal(result, true, 'the commit must still save the parent-side work');
 	assert.equal(subject(dir), 'ticket(implement): half-landed', 'the greppable subject must be untouched');
-	assert.match(body(dir), /^Stranded-submodule: lamina$/m, 'the durable half: a console notice is gone with the run');
-	assert.equal(porcelain(join(sub)).trim(), 'M inner.txt', 'the submodule edit is still there, uncommitted');
+	assert.match(body(dir), /^Stranded-submodule: lamina, vendor lib$/m, 'the durable half: a console notice is gone with the run');
+	assert.equal(porcelain(sub).trim(), 'M inner.txt', 'the submodule edit is still there, uncommitted');
 
 	const notice = lines.join('\n');
-	assert.match(notice, /1 uncommitted path\(s\) in 1 submodule\(s\) at ticket\(implement\): half-landed/);
+	assert.match(notice, /2 uncommitted path\(s\) in 2 submodule\(s\) at ticket\(implement\): half-landed/);
 	assert.match(notice, /M inner\.txt/);
 	assert.match(notice, /git -C lamina commit/);
 });

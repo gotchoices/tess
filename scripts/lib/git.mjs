@@ -90,24 +90,26 @@ function runGit(cwd, args) {
  * rather than as errors — a repo with no `.gitmodules` at all, and a submodule that is declared
  * but not checked out.  Neither holds work that could be stranded, and neither is a reason to
  * fail the commit that is about to save the stage's actual work.
- *
- * `git` is injectable so tests can assert the command shape without a nested-repo fixture.
  */
-export function inspectSubmodules(cwd, { git = runGit } = {}) {
+function inspectSubmodules(cwd) {
 	let declared;
 	try {
-		declared = git(cwd, ['config', '--file', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$']);
+		// `-z` is load-bearing rather than tidiness.  Without it a record reads
+		// `submodule.<name>.path <path>` on one line, and the name `git submodule add` derives from
+		// a path containing a space contains that space too — so splitting on the first space yields
+		// a non-path, the submodule is skipped, and the probe silently misses exactly the state it
+		// exists to catch.  Under `-z` records are NUL-separated and the key/value split is an
+		// unambiguous newline; git has already stripped CR and surrounding whitespace from the value.
+		declared = runGit(cwd, ['config', '-z', '--file', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$']);
 	} catch {
 		return [];
 	}
 
 	const dirty = [];
-	for (const line of String(declared ?? '').split('\n')) {
-		// `submodule.<name>.path <path>` — the value is everything past the first space, so a
-		// path containing spaces survives.
-		const space = line.indexOf(' ');
-		if (space === -1) continue;
-		const path = line.slice(space + 1).replace(/\r$/, '').trim();
+	for (const record of String(declared ?? '').split('\0')) {
+		const newline = record.indexOf('\n');
+		if (newline === -1) continue;
+		const path = record.slice(newline + 1);
 		if (!path) continue;
 
 		// Checked-out test before the probe, and not just a try/catch around it: `git -C` on an
@@ -119,7 +121,7 @@ export function inspectSubmodules(cwd, { git = runGit } = {}) {
 
 		let raw;
 		try {
-			raw = git(cwd, ['-C', path, 'status', '--porcelain']);
+			raw = runGit(cwd, ['-C', path, 'status', '--porcelain']);
 		} catch {
 			continue; // a `.git` whose gitdir is gone, or an otherwise unreadable repo
 		}
@@ -192,10 +194,8 @@ function printDirtyNotice(entries, label, owner) {
 }
 
 /** Print the stranded-submodule notice.  Deliberately as loud as `printDirtyNotice`, and for
- *  the same reason: the failure this exists to prevent was silent.  Two ticket stages for
- *  `1-lamina-failed-commit-keeps-refcount-changes` reached `complete/` with detailed write-ups
- *  while the lamina-side fix sat uncommitted in the submodule's working tree, and the only
- *  thing that caught it was a human diffing the cited commits against lamina's own history. */
+ *  the same reason: the failure this exists to prevent was silent (the incident is in
+ *  `docs/DESIGN.md` § *The Clean-Tree Invariant*). */
 function printStrandedSubmoduleNotice(stranded, label) {
 	const total = stranded.reduce((n, sub) => n + sub.entries.length, 0);
 	console.error(`[runner] WARNING: ${total} uncommitted path(s) in ${stranded.length} submodule(s) at ${label}:`);
@@ -309,24 +309,16 @@ export function commitTicket(ticket, cwd) {
 
 /** The stranded-submodule check, run at the one moment it is about to matter: a ticket's stage
  *  is finished and its commit is about to claim so.  Prints the notice and returns the commit
- *  trailer that records it, or '' when every submodule is clean.
+ *  trailer that records it, or '' when every submodule is clean.  Why only `commitTicket` calls
+ *  it, and why the trailer rather than the notice alone is the durable half, are in
+ *  `docs/DESIGN.md` § *The Clean-Tree Invariant*.
  *
- *  Only `commitTicket` calls this, not `commitAll`: the runner's other commits (salvage, resume
- *  note, migration) claim nothing about a stage being done, and an implement agent is allowed
- *  to leave a submodule mid-edit between them.
- *
- *  NOTE: this warns and lets the commit proceed; refusing was weighed and declined.  A refusal
- *  here cannot actually stop the strand — by this point the agent has already moved the ticket
- *  file, so a refused commit just leaves the board move uncommitted for the *next* ticket's
- *  `reconcileWorkingTree` to salvage under the wrong ticket's name, trading a visible warning
- *  for silent mis-attribution.  Worse, tess never cleans submodule content (`inspectWorkingTree`
- *  cannot see it), so stale dirt from an earlier interrupted session would wedge every
- *  subsequent ticket with no way for the runner to clear it.  Revisit if the runner ever learns
- *  to commit inside a submodule on a ticket's behalf, which would make refusal recoverable.
- *
- *  The trailer is the durable half: the console notice is gone with the run's output, but
- *  `Stranded-submodule:` in the commit itself is what a later audit of "did this ticket really
- *  land its submodule half?" will actually meet. */
+ *  NOTE: accepted tradeoff — this warns and lets the commit proceed; refusing was weighed and
+ *  declined, because a refusal cannot stop the strand (the agent has already moved the ticket
+ *  file, so the board move would just be mis-attributed to the next ticket's salvage) and stale
+ *  submodule dirt would wedge every later ticket with nothing in the runner able to clear it.
+ *  Revisit if the runner ever learns to commit inside a submodule on a ticket's behalf, which
+ *  would make refusal recoverable.  Full argument in the DESIGN.md section above. */
 function strandedSubmoduleTrailer(cwd, subject) {
 	const stranded = inspectSubmodules(cwd);
 	if (stranded.length === 0) return '';
