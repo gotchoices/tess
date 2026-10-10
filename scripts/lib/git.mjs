@@ -46,9 +46,34 @@ function parsePorcelain(raw) {
 			const arrow = path.indexOf(' -> ');
 			if (arrow !== -1) path = path.slice(arrow + 4);
 		}
-		entries.push({ code, path });
+		entries.push({ code, path: unquotePath(path) });
 	}
 	return entries;
+}
+
+const C_ESCAPES = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13 };
+
+/** Undo the C-style quoting porcelain applies to a path holding a space, a quote, a backslash or
+ *  a non-ASCII byte (`"vendor lib"`, `"caf\303\251"`).  Load-bearing for submodule paths: the
+ *  pin guard matches entries against `.gitmodules`, which holds the path unquoted. */
+function unquotePath(path) {
+	if (path.length < 2 || path[0] !== '"' || path[path.length - 1] !== '"') return path;
+	const bytes = [];
+	// By code point, not code unit: with `core.quotePath=false` git leaves non-ASCII unescaped,
+	// and splitting a surrogate pair would turn it into two replacement characters.
+	const chars = [...path.slice(1, -1)];
+	for (let i = 0; i < chars.length; i++) {
+		if (chars[i] !== '\\') {
+			bytes.push(...Buffer.from(chars[i]));
+		} else if (/[0-7]/.test(chars[i + 1])) {
+			bytes.push(parseInt(chars.slice(i + 1, i + 4).join(''), 8));
+			i += 3;
+		} else {
+			const escaped = chars[++i];
+			bytes.push(C_ESCAPES[escaped] ?? escaped.charCodeAt(0));
+		}
+	}
+	return Buffer.from(bytes).toString('utf-8');
 }
 
 /**
@@ -64,12 +89,21 @@ function parsePorcelain(raw) {
  * notice them by failing loudly with "nothing to commit".  `inspectSubmodules` below is the
  * second probe this NOTE used to ask for; it stays a *separate* probe rather than a relaxation
  * of this flag, because relaxing the flag would reintroduce the no-op-salvage failure above.
+ *
+ * A moved gitlink is committable, but not always committed: one whose new pin does not descend
+ * from HEAD's is the one thing the runner's sweep refuses (`refusedPinMoves`).  Such an entry is
+ * reported in `refusedPins` and left out of `entries` and `dirty` for the same no-op-salvage
+ * reason — it stays modified in `git status`, and counting it would make every later reconcile
+ * salvage it, stage nothing and stop the run.  Its git calls do not go through `exec`, and they
+ * run only when the tree is dirty: a clean tree still costs one `git status`.
  */
 export function inspectWorkingTree(cwd, { exec = execSync } = {}) {
 	const raw = exec('git status --porcelain --ignore-submodules=dirty', { cwd, encoding: 'utf-8' });
-	const entries = parsePorcelain(raw);
+	const all = parsePorcelain(raw);
+	const refusedPins = all.length > 0 ? refusedPinMoves(cwd, all) : [];
+	const entries = all.filter(e => !refusedPins.some(pin => pin.path === e.path));
 	const deletions = entries.filter(e => e.code[0] === 'D' || e.code[1] === 'D').length;
-	return { dirty: entries.length > 0, entries, deletions };
+	return { dirty: entries.length > 0, entries, deletions, refusedPins };
 }
 
 /** Run git with an argv array, never a shell string: the arguments below carry submodule paths
@@ -78,20 +112,10 @@ function runGit(cwd, args) {
 	return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-/**
- * Probe every submodule this repo declares for uncommitted *content* — the half of the working
- * tree `inspectWorkingTree` deliberately cannot see.
- *
- * Returns `[{ path, entries }]`, one element per submodule that has uncommitted content, with
- * `entries` in `inspectWorkingTree`'s shape.  An empty array means there is nothing to strand.
- *
- * Paths come from `.gitmodules`, not a list in this file: tess is itself a submodule of several
- * different host projects, and each has its own set.  Two states deliberately read as clean
- * rather than as errors — a repo with no `.gitmodules` at all, and a submodule that is declared
- * but not checked out.  Neither holds work that could be stranded, and neither is a reason to
- * fail the commit that is about to save the stage's actual work.
- */
-function inspectSubmodules(cwd) {
+/** Every submodule path `.gitmodules` declares, checked out or not.  Read from there rather than
+ *  a list in this file: tess is itself a submodule of several different host projects, and each
+ *  has its own set.  A repo with no `.gitmodules` declares none. */
+function declaredSubmodulePaths(cwd) {
 	let declared;
 	try {
 		// `-z` is load-bearing rather than tidiness.  Without it a record reads
@@ -104,20 +128,123 @@ function inspectSubmodules(cwd) {
 	} catch {
 		return [];
 	}
-
-	const dirty = [];
+	const paths = [];
 	for (const record of String(declared ?? '').split('\0')) {
 		const newline = record.indexOf('\n');
 		if (newline === -1) continue;
 		const path = record.slice(newline + 1);
-		if (!path) continue;
+		if (path) paths.push(path);
+	}
+	return paths;
+}
 
-		// Checked-out test before the probe, and not just a try/catch around it: `git -C` on an
-		// *empty* directory — what `git submodule init` without `update` leaves behind — walks up
-		// and reports the PARENT repo's status, which would read the parent's own dirt as stranded
-		// submodule work on every ticket.  A checked-out submodule always has a `.git` (a file
-		// pointing into `.git/modules/`, or a real directory in an older or converted checkout).
-		if (!existsSync(resolve(cwd, path, '.git'))) continue;
+/** Whether a declared submodule is checked out.  Test this before any `git -C <path>`, rather than
+ *  catching its failure: `git -C` on an *empty* directory — what `git submodule init` without
+ *  `update` leaves behind — walks up and answers for the PARENT repo instead.  A checked-out
+ *  submodule always has a `.git` (a file pointing into `.git/modules/`, or a real directory in an
+ *  older or converted checkout). */
+function isCheckedOut(cwd, path) {
+	return existsSync(resolve(cwd, path, '.git'));
+}
+
+/** Gitlinks (mode 160000) in `git ls-tree -z` or `git ls-files -s -z` output, as `path → sha`.
+ *  The formats differ in one field: ls-tree puts the object type before the sha, ls-files the
+ *  stage number after it. */
+function readGitlinks(cwd, args) {
+	let raw;
+	try {
+		raw = runGit(cwd, args);
+	} catch {
+		return new Map(); // an unborn HEAD records nothing to compare against
+	}
+	const links = new Map();
+	for (const record of raw.split('\0')) {
+		const match = /^160000 (?:commit )?([0-9a-f]+)(?: \d+)?\t([^]+)$/.exec(record);
+		if (match) links.set(match[2], match[1]);
+	}
+	return links;
+}
+
+/** Whether commit `a` is an ancestor of commit `b` in the submodule at `path`; null when git
+ *  cannot say, which is what a commit missing from the submodule's object store looks like. */
+function isAncestor(cwd, path, a, b) {
+	try {
+		runGit(cwd, ['-C', path, 'merge-base', '--is-ancestor', a, b]);
+		return true;
+	} catch (err) {
+		return err.status === 1 ? false : null;
+	}
+}
+
+/** How a candidate pin relates to the one HEAD records, in a checked-out submodule: 'forward' |
+ *  'behind' | 'diverged' | 'unknown'.  The same descent question the host's CI pin checks ask. */
+function pinRelation(cwd, path, recorded, actual) {
+	const forward = isAncestor(cwd, path, recorded, actual);
+	if (forward === true) return 'forward';
+	const behind = forward === null ? null : isAncestor(cwd, path, actual, recorded);
+	if (behind === null) return 'unknown';
+	return behind ? 'behind' : 'diverged';
+}
+
+function checkoutHead(cwd, path) {
+	try {
+		return runGit(cwd, ['-C', path, 'rev-parse', '--verify', '-q', 'HEAD']).trim() || null;
+	} catch {
+		return null; // a submodule repo with no commits yet
+	}
+}
+
+/**
+ * The submodule pins among the dirty `entries` that a runner commit must not record: each one
+ * whose new pin does not descend from the pin in HEAD.  Returns
+ * `[{ path, recorded, actual, relation, checkedOut }]` with `relation` one of 'behind' |
+ * 'diverged' | 'unknown'; forward moves, and submodules HEAD does not record yet, are absent
+ * because they commit as any other change does.  Why diverged and unprovable moves are refused
+ * along with backward ones: `docs/DESIGN.md` § *The Clean-Tree Invariant*.
+ *
+ * `actual` is what `git add -A` would record: the checkout's HEAD, or — for a submodule that is
+ * not checked out, which `git add -A` leaves alone — whatever gitlink is already staged.  The
+ * second case is a gitlink staged by hand; nothing in that empty directory can prove its
+ * ancestry, so it reads as 'unknown'.
+ */
+function refusedPinMoves(cwd, entries) {
+	const dirty = new Set(entries.map(e => e.path));
+	const paths = declaredSubmodulePaths(cwd).filter(path => dirty.has(path));
+	if (paths.length === 0) return [];
+
+	const recorded = readGitlinks(cwd, ['ls-tree', '-z', 'HEAD', '--', ...paths]);
+	const staged = readGitlinks(cwd, ['ls-files', '-s', '-z', '--', ...paths]);
+	const refused = [];
+	for (const path of paths) {
+		const was = recorded.get(path);
+		if (!was) continue;
+		const checkedOut = isCheckedOut(cwd, path);
+		const now = checkedOut ? checkoutHead(cwd, path) : staged.get(path);
+		if (!now || now === was) continue;
+		const relation = checkedOut ? pinRelation(cwd, path, was, now) : 'unknown';
+		if (relation !== 'forward') refused.push({ path, recorded: was, actual: now, relation, checkedOut });
+	}
+	return refused;
+}
+
+/**
+ * Probe every submodule this repo declares for uncommitted *content* — the half of the working
+ * tree `inspectWorkingTree` deliberately cannot see.
+ *
+ * Returns `[{ path, entries }]`, one element per submodule that has uncommitted content, with
+ * `entries` in `inspectWorkingTree`'s shape.  An empty array means there is nothing to strand.
+ *
+ * Two states deliberately read as clean rather than as errors — a repo with no `.gitmodules` at
+ * all, and a submodule that is declared but not checked out.  Neither holds work that could be
+ * stranded, and neither is a reason to fail the commit that is about to save the stage's actual
+ * work.
+ */
+function inspectSubmodules(cwd) {
+	const dirty = [];
+	for (const path of declaredSubmodulePaths(cwd)) {
+		// Without the checked-out test the parent's own dirt would read as stranded submodule work
+		// on every ticket (see `isCheckedOut`).
+		if (!isCheckedOut(cwd, path)) continue;
 
 		let raw;
 		try {
@@ -132,17 +259,26 @@ function inspectSubmodules(cwd) {
 }
 
 /** Stage and commit all working-tree changes under one message.  Returns true if a commit
- *  was created.  `context` labels the abort message when the deletion guard trips.
+ *  was created.  `context` labels the abort message when the deletion guard trips, and the
+ *  refused-pin notice.  `probe` is one the caller already took and whose refused pins it already
+ *  announced — reconcile's salvage — so the notice is not printed twice.
  *
  *  NOTE: accepted tradeoff — this stages with `git add -A`, so it captures whatever is in the
  *  tree rather than only what the current ticket changed.  Per-ticket path tracking was weighed
  *  and declined: ticket agents touch arbitrary paths and the runner has no way to enumerate
  *  them.  What makes the unscoped sweep safe is the clean-tree invariant enforced by
  *  `reconcileWorkingTree` before any ticket agent starts — there is nothing foreign left for
- *  this to sweep.  Revisit if the runner ever learns which paths a ticket touched. */
-export function commitAll(cwd, message, { context = message } = {}) {
+ *  this to sweep.  Revisit if the runner ever learns which paths a ticket touched.
+ *
+ *  The one thing the sweep refuses is a submodule pin that does not move forward.  The invariant
+ *  cannot cover it: a checkout left behind HEAD's gitlink (a rebase or pull with no
+ *  `git submodule update`) is not residue anyone can salvage, and the runner never has a reason
+ *  to record a rewind — so it is left out of every commit, with a warning, until a human sorts
+ *  the checkout out. */
+export function commitAll(cwd, message, { context = message, probe: announced = null } = {}) {
 	try {
-		const probe = inspectWorkingTree(cwd);
+		const probe = announced ?? inspectWorkingTree(cwd);
+		if (!announced) printRefusedPinNotice(probe.refusedPins, context);
 		if (!probe.dirty) return false;
 
 		// Safety guard: refuse to capture a spurious mass deletion (e.g. a transient/partial
@@ -157,7 +293,7 @@ export function commitAll(cwd, message, { context = message } = {}) {
 			return false;
 		}
 
-		execSync('git add -A', { cwd, encoding: 'utf-8' });
+		stageAllButRefusedPins(cwd, probe.refusedPins);
 		// execFileSync, not execSync: the message carries the ticket slug, which comes from a
 		// filename an agent wrote.  Interpolating that into a shell string let a slug containing
 		// a quote, `$(…)` or a backtick corrupt the commit — or run.
@@ -167,6 +303,23 @@ export function commitAll(cwd, message, { context = message } = {}) {
 		console.error(`[runner] Git commit failed: ${err.message}`);
 		return false;
 	}
+}
+
+/** `git add -A`, minus the refused pins.  The exclude pathspec only stops this call from staging
+ *  them, so a refused gitlink that was already staged — by hand, or by an earlier `git add` — is
+ *  then put back to HEAD's pin in the index.  Index-only throughout: nothing inside a submodule is
+ *  checked out, reset or updated, because the older checkout may be there on purpose. */
+function stageAllButRefusedPins(cwd, refusedPins) {
+	if (refusedPins.length === 0) {
+		runGit(cwd, ['add', '-A']);
+		return;
+	}
+	const paths = refusedPins.map(pin => pin.path);
+	runGit(cwd, ['add', '-A', '--', ':/', ...paths.map(path => `:(exclude,literal)${path}`)]);
+	const staged = readGitlinks(cwd, ['ls-files', '-s', '-z', '--', ...paths]);
+	const restore = refusedPins.filter(pin => staged.get(pin.path) !== pin.recorded);
+	// `literal`, unlike the read above: a glob character in a path would widen a reset, not a lookup.
+	if (restore.length > 0) runGit(cwd, ['reset', '-q', '--', ...restore.map(pin => `:(literal)${pin.path}`)]);
 }
 
 /** Print the dirty-tree notice.  Every reconcile branch except the clean one prints this — the
@@ -217,6 +370,33 @@ function printStrandedSubmoduleNotice(stranded, label) {
 	console.error('[runner]   then commit the moved pin in the parent.');
 }
 
+const RELATION_TEXT = {
+	behind: 'behind: an ancestor of the recorded pin',
+	diverged: 'diverged: neither commit descends from the other',
+	unknown: 'unknown: ancestry cannot be shown (a commit is missing from the submodule, or it is not checked out)',
+};
+
+/** Print the refused-pin notice, as loud as `printStrandedSubmoduleNotice` and for the same
+ *  reason: the commits it replaces were silent, and rewound lamina's pin six times under
+ *  unrelated subjects before CI caught one (`docs/DESIGN.md` § *The Clean-Tree Invariant*).
+ *  A no-op when nothing was refused. */
+function printRefusedPinNotice(refusedPins, label) {
+	if (refusedPins.length === 0) return;
+	console.error(`[runner] WARNING: not committing ${refusedPins.length} submodule pin(s) that would move backwards or sideways (${label}):`);
+	for (const pin of refusedPins) {
+		const where = pin.checkedOut ? 'checked out' : 'staged';
+		console.error(`[runner]   ${pin.path}: HEAD records ${pin.recorded.slice(0, 9)}, ${where} is ${pin.actual.slice(0, 9)} — ${RELATION_TEXT[pin.relation]}`);
+	}
+	console.error('[runner]   Recording that would drop submodule commits the parent already points at, so the pin');
+	console.error('[runner]   stays as HEAD has it and `git status` keeps showing the path modified.  If the checkout');
+	console.error('[runner]   is simply stale, bring it up to the recorded pin:');
+	for (const pin of refusedPins) {
+		console.error(`[runner]     git submodule update ${pin.path}`);
+	}
+	console.error('[runner]   If the rewind is intended, commit it by hand with the trailer your CI\'s pin check');
+	console.error('[runner]   accepts (e.g. `Lamina-rewind: <reason>`).');
+}
+
 function salvageMessage(owner) {
 	return owner
 		? `ticket(${owner.stage}): ${owner.slug} (partial — salvaged from interrupted run)`
@@ -245,6 +425,9 @@ export function reconcileWorkingTree(cwd, { owner = null, mode = 'salvage', noCo
 	// with a human working the same checkout ever makes startup flaky, retry the probe here; do
 	// not degrade it into "assume clean".
 	const probe = inspectWorkingTree(cwd);
+	// Before the clean return, not after: a tree whose only change is a refused pin reads as clean,
+	// and a stale checkout must not sit through a whole run unmentioned.
+	printRefusedPinNotice(probe.refusedPins, label);
 	if (!probe.dirty) return { action: 'clean', entries: [] };
 
 	printDirtyNotice(probe.entries, label, owner);
@@ -277,7 +460,7 @@ export function reconcileWorkingTree(cwd, { owner = null, mode = 'salvage', noCo
 	}
 
 	const message = salvageMessage(owner);
-	if (commitAll(cwd, message, { context: owner ? owner.slug : 'working-tree salvage' })) {
+	if (commitAll(cwd, message, { context: owner ? owner.slug : 'working-tree salvage', probe })) {
 		console.log(`[runner]   Salvaged as: ${message}`);
 		console.log('[runner]   If that attribution is wrong, `git reset --soft HEAD~1` puts it back.');
 		return { action: 'salvaged', entries: probe.entries };

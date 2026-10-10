@@ -93,9 +93,10 @@ test('every unscoped tree sweep in the runner goes through commitAll', () => {
 	const offenders = [];
 	for (const f of files) {
 		for (const line of read(f).split('\n')) {
-			if (!line.includes('execSync(')) continue;
-			if (!/git add -A(?!\s*--)/.test(line)) continue;
-			if (f === './git.mjs' && line.includes("execSync('git add -A', { cwd, encoding")) continue;  // commitAll itself
+			const shell = line.includes('execSync(') && /git add -A(?!\s*--)/.test(line);
+			const argv = /'add', '-A'(?!, '--', '[^:])/.test(line);  // `:/` is the whole tree, so still unscoped
+			if (!shell && !argv) continue;
+			if (f === './git.mjs' && line.includes("runGit(cwd, ['add', '-A'")) continue;  // commitAll's stageAllButRefusedPins
 			offenders.push(`${f}: ${line.trim()}`);
 		}
 	}

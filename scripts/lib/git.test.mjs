@@ -59,12 +59,31 @@ function addSubmodule({ dir, run }, path) {
 	return { sub, subRun };
 }
 
+/** Commit once more inside a submodule from `addSubmodule`, so it has an older and a newer pin. */
+function advanceSubmodule({ sub, subRun }) {
+	const older = subRun('git rev-parse HEAD').trim();
+	appendFileSync(join(sub, 'inner.txt'), 'newer\n');
+	subRun('git commit -q -am newer');
+	return { older, newer: subRun('git rev-parse HEAD').trim() };
+}
+
+/** Record a submodule's newer pin in the parent, then check its older one back out: what a rebase
+ *  or pull leaves behind when no `git submodule update` follows it. */
+function leaveCheckoutBehind({ run }, submodule, path) {
+	const { older, newer } = advanceSubmodule(submodule);
+	run(`git add '${path}'`);
+	run(`git commit -q -m "move ${path} forward"`);
+	submodule.subRun(`git checkout -q ${older}`);
+	return { older, newer };
+}
+
 const commitCount = dir => Number(execSync('git rev-list --count HEAD', { cwd: dir, encoding: 'utf-8' }).trim());
 const subject = dir => execSync('git log -1 --format=%s', { cwd: dir, encoding: 'utf-8' }).trim();
 const porcelain = dir => execSync('git status --porcelain', { cwd: dir, encoding: 'utf-8' });
 const body = dir => execSync('git log -1 --format=%B', { cwd: dir, encoding: 'utf-8' }).trim();
 const filesInHead = dir => execSync('git show --name-only --format= HEAD', { cwd: dir, encoding: 'utf-8' })
 	.split('\n').map(s => s.trim()).filter(Boolean);
+const pinInHead = (dir, path) => execSync(`git rev-parse 'HEAD:${path}'`, { cwd: dir, encoding: 'utf-8' }).trim();
 
 /** Run `fn` with console.log/warn/error captured, so tests can assert on the notice. */
 function captured(fn) {
@@ -163,7 +182,50 @@ test('a clean submodule, and one initialised but never checked out, are both sil
 	assert.deepEqual(lines, [], `expected silence when no submodule is dirty, got:\n${lines.join('\n')}`);
 });
 
+test('a commit leaves out a submodule pin that would move backwards, and still commits a forward one', t => {
+	// regression: runner-salvage-commits-a-backwards-lamina-pin — `git add -A` re-recorded a
+	// lamina checkout a hand rebase had left behind HEAD's pin, and six runner commits rewound it.
+	const { dir, run } = makeRepo(t);
+	const lamina = addSubmodule({ dir, run }, 'lamina');
+	const rubric = addSubmodule({ dir, run }, 'rubric');
+	const { older, newer } = leaveCheckoutBehind({ run }, lamina, 'lamina');
+	const { newer: rubricForward } = advanceSubmodule(rubric);
+	writeFileSync(join(dir, 'seed.txt'), 'the ticket\'s own work\n');
+
+	const { result, lines } = captured(() => commitTicket({ stage: 'implement', slug: 'stale-checkout', review: null }, dir));
+
+	assert.equal(result, true);
+	assert.deepEqual(filesInHead(dir).sort(), ['rubric', 'seed.txt'], 'the file and the forward pin, not the backward one');
+	assert.equal(pinInHead(dir, 'lamina'), newer);
+	assert.equal(pinInHead(dir, 'rubric'), rubricForward);
+	assert.equal(lamina.subRun('git rev-parse HEAD').trim(), older, 'the submodule checkout itself is never touched');
+
+	const notice = lines.join('\n');
+	assert.match(notice, /WARNING: not committing 1 submodule pin/);
+	assert.match(notice, new RegExp(`lamina: HEAD records ${newer.slice(0, 7)}\\w*, checked out is ${older.slice(0, 7)}\\w* — behind`));
+	assert.match(notice, /git submodule update lamina$/m);
+});
+
 // ── reconcileWorkingTree ────────────────────────────────────────────────────
+
+test('a tree whose only change is a backward submodule pin reconciles as clean, warns, and stays that way', t => {
+	// regression: runner-salvage-commits-a-backwards-lamina-pin — a refused pin left counted as
+	// dirt would make every reconcile salvage it, stage nothing, and stop the run.  The path carries
+	// a space on purpose: porcelain prints it quoted, `.gitmodules` does not, and a probe matching
+	// the quoted form would sweep this pin straight back into the salvage.
+	const { dir, run } = makeRepo(t);
+	const vendored = addSubmodule({ dir, run }, 'vendor lib');
+	leaveCheckoutBehind({ run }, vendored, 'vendor lib');
+	const before = commitCount(dir);
+
+	for (const pass of ['first', 'second']) {
+		const { result, lines } = captured(() => reconcileWorkingTree(dir, { owner: null, label: 'this run' }));
+		assert.equal(result.action, 'clean', `${pass} reconcile`);
+		assert.match(lines.join('\n'), /WARNING: not committing 1 submodule pin.*\(this run\)[^]*vendor lib: HEAD records/, `${pass} reconcile`);
+	}
+	assert.equal(commitCount(dir), before);
+	assert.equal(porcelain(dir), ' M "vendor lib"\n', 'still visible in git status, for the operator to sort out');
+});
 
 test('clean tree: no action, no commit, and completely silent', t => {
 	const { dir } = makeRepo(t);
