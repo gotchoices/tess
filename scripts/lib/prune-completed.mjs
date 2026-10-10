@@ -56,7 +56,9 @@ function commitPrune(count, maxAgeDays, repoRoot, ledgerPath) {
 		const status = execSync(`git status --porcelain -- ${pathspec}`, { cwd: repoRoot, encoding: 'utf-8' }).trim();
 		if (!status) return false;
 		const msg = `tess: prune ${count} completed ticket(s) older than ${maxAgeDays} days`;
-		execSync(`git commit -m "${msg}"`, { cwd: repoRoot, encoding: 'utf-8' });
+		// Pathspec on the commit too, not just the add: a bare `git commit` takes the whole index,
+		// including anything staged by hand — such as a stale submodule pin that `commitAll` refuses.
+		execSync(`git commit -m "${msg}" -- ${pathspec}`, { cwd: repoRoot, encoding: 'utf-8' });
 		return true;
 	} catch (err) {
 		console.error(`[runner] Prune commit failed: ${err.message}`);

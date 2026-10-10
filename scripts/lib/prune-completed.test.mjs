@@ -117,3 +117,20 @@ test('the prune commit carries the tombstone ledger alongside the deletion', asy
 	assert.ok(touched.includes('tickets/complete/committed-ticket.md'));
 	assert.equal(git(repo, 'status', '--porcelain').trim(), '');
 });
+
+test('the prune commit leaves out anything staged outside its own paths', async () => {
+	// regression: runner-salvage-commits-a-backwards-lamina-pin — a bare `git commit` took the whole
+	// index, so a stale submodule pin a human had staged with `git add -A` (and which `commitAll`
+	// refuses) rode in on the next prune commit and rewound the pin anyway.
+	const repo = await makeRepo();
+	await commitCompleted(repo, 'committed-ticket.md', 60);
+	await writeFile(join(repo, 'staged-by-hand.txt'), 'not the prune\'s\n', 'utf-8');
+	git(repo, 'add', 'staged-by-hand.txt');
+
+	await pruneCompletedTickets(join(repo, 'tickets'), repo, { maxAgeDays: 30 });
+
+	const touched = git(repo, 'show', '--name-only', '--format=', 'HEAD').trim().split('\n');
+	assert.ok(touched.includes('tickets/complete/committed-ticket.md'), 'the prune itself still committed');
+	assert.ok(!touched.includes('staged-by-hand.txt'), `foreign staged path swept into the prune commit: ${touched.join(', ')}`);
+	assert.equal(git(repo, 'status', '--porcelain').trim(), 'A  staged-by-hand.txt');
+});

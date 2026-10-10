@@ -260,7 +260,8 @@ function commitKnownFailurePrune(count, repoRoot) {
 		if (!status) return false;
 		const plural = count === 1 ? 'entry' : 'entries';
 		const msg = `tess: prune ${count} resolved known-failure ledger ${plural}`;
-		execSync(`git commit -m "${msg}"`, { cwd: repoRoot, encoding: 'utf-8' });
+		// Scoped like the add, for the reason in prune-completed.mjs's `commitPrune`.
+		execSync(`git commit -m "${msg}" -- tickets/.pre-existing-known.md`, { cwd: repoRoot, encoding: 'utf-8' });
 		return true;
 	} catch (err) {
 		console.error(`[runner] Known-failure ledger prune commit failed: ${err.message}`);
