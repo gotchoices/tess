@@ -104,15 +104,24 @@ async function buildQueue(ticketsDir, stages) {
  * The highest-priority runnable ticket in the live queue, or null when nothing
  * is runnable.
  *
- * Holding is the same-stage arm of the deferral cascade. A slug passed over in
- * this pass — excluded for the run, or failing any gate below — stays in its
- * stage, so a dependent in a *later* stage is already gated by rank; but a
- * dependent in the *same* stage passes the rank gate (in-stage order is the
- * topo sort's job) and would run ahead of work that has not landed. So a
- * same-stage dependent of a passed-over slug is passed over too; the queue is
- * topo-sorted within each stage, so one forward pass carries the hold down a
- * chain. A dependent in an *earlier* stage is left to the rank gate: the stages
- * its prereq has already passed through have landed.
+ * Holding is the same-stage arm of the deferral cascade. A slug this runner
+ * passed over *while it was this runner's to pick* — excluded for the run, or
+ * failing any gate below other than --shard/--only — stays in its stage, so a
+ * dependent in a *later* stage is already gated by rank; but a dependent in
+ * the *same* stage passes the rank gate (in-stage order is the topo sort's
+ * job) and would run ahead of work that has not landed. So a same-stage
+ * dependent of such a slug is passed over too; the queue is topo-sorted within
+ * each stage, so one forward pass carries the hold down a chain. A dependent
+ * in an *earlier* stage is left to the rank gate: the stages its prereq has
+ * already passed through have landed.
+ *
+ * A slug outside this runner's --shard/--only is excluded from that cascading
+ * set entirely: it was never this runner's to advance regardless of its own
+ * state, so it carries no information about *this runner's* forward progress.
+ * Letting it cascade-hold a same-stage dependent that IS this runner's to run
+ * means a same-stage prereq chain that happens to cross a shard boundary empties
+ * every shard but the one that owns the chain's root — the chain's own runner
+ * may be advancing that prereq concurrently, in a separate process, right now.
  */
 export async function pickNext(queue, { ticketsDir, index, blockIndex = null, shard = null, only = null, excluded, transitions }) {
 	const passedOver = new Set(excluded);
@@ -129,7 +138,7 @@ export async function pickNext(queue, { ticketsDir, index, blockIndex = null, sh
 	};
 	for (const t of queue) {
 		if (await isRunnable(t)) return t;
-		passedOver.add(t.slug);
+		if (inOnly(t.slug, only) && inShard(t.slug, shard)) passedOver.add(t.slug);     // cascade only on this runner's own skipped work
 	}
 	return null;
 }

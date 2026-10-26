@@ -73,6 +73,28 @@ test('--only skips a higher-priority ticket that was not named', async () => {
 	assert.equal(pick?.slug, 'b');
 });
 
+test('a same-stage prereq owned by another shard does not cascade-hold its dependent', async () => {
+	// 'p' hashes to shard 1, 'dependent' hashes to shard 0 (count 2) — picked so the test exercises
+	// a real cross-shard split rather than asserting on a coincidence. Running as shard 0, 'p' is
+	// never this runner's to advance either way, so it must not hold 'dependent' hostage: shard 1's
+	// own runner may be working 'p' concurrently, in a separate process, right now.
+	const ticketsDir = await makeBoard({
+		plan: ['1-p.md', ['2-dependent.md', withHeader('prereq: p')]],
+	});
+	const queue = await liveQueue(ticketsDir, ['plan']);
+	const index = await indexAllTickets(ticketsDir);
+
+	const pick = await pickNext(queue, {
+		ticketsDir,
+		index,
+		excluded: new Set(),
+		transitions: new Map(),
+		shard: { index: 0, count: 2 },
+	});
+
+	assert.equal(pick?.slug, 'dependent');
+});
+
 test('a ticket whose prereq is deferred to a later release is never picked', async () => {
 	const ticketsDir = await makeBoard(
 		{ implement: [['a.md', withHeader('prereq: later')]], 'backlog/GA': ['later.md'] },
