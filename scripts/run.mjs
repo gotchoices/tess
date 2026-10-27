@@ -41,7 +41,7 @@ import { mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { discoverTickets, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, firstUnsatisfied, boardLocation, findTransitiveBlocker, inShard, inOnly, KNOWN_STAGES } from './lib/tickets.mjs';
+import { discoverTickets, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, firstUnsatisfied, boardLocation, findTransitiveBlocker, inShard, inOnly, shardGuard, KNOWN_STAGES } from './lib/tickets.mjs';
 import { checkBoard, readBoardContext, ticketProblems } from './lib/board-check.mjs';
 import { topoSortAndCheck } from './lib/topo.mjs';
 import { readAndClearInProgress, readInProgress, addResumeNote } from './lib/state.mjs';
@@ -62,6 +62,21 @@ async function main() {
 
 	const repoRoot = process.cwd();
 	const ticketsDir = join(repoRoot, 'tickets');
+
+	// ── Shard guard ──
+	// A board declaring `runner-shards: N` is shared by N runners on separate clones, and the
+	// `--shard k/N` split is all that keeps them off each other's tickets.  A start that would
+	// leave the split is refused here, ahead of the reconcile, migration and prune steps below,
+	// because each of those can commit and a refused start must leave history as it found it.
+	// The board context read here is the board check's too: none of those steps touch
+	// `releases.md` or `tickets/rules/`.
+	const boardContext = await readBoardContext(ticketsDir);
+	const guard = shardGuard({ runnerShards: boardContext.runnerShards, shard: opts.shard, only: opts.only, wholeBoard: opts.wholeBoard, dryRun: opts.dryRun });
+	for (const warning of guard.warnings) console.warn(`[runner] warning: ${warning}`);
+	if (guard.refuse) {
+		console.error(`\n[runner] Refusing to start: ${guard.refuse}`);
+		process.exit(2);
+	}
 
 	// ── Clean-tree invariant ──
 	// Every commit the runner makes stages the whole tree, so anything already dirty when a
@@ -117,7 +132,6 @@ async function main() {
 	// folder named after the current release, a slug filed twice — is not safe to rank.  Like a
 	// prereq cycle, it stops the run before any agent does anything, dry-run included.  The
 	// prereq index built here is reused by --skip-blocked below.
-	const boardContext = await readBoardContext(ticketsDir);
 	const indexWithPrereqs = await indexAllTickets(ticketsDir, { withPrereqs: true });
 	const board = await checkBoard(ticketsDir, boardContext, indexWithPrereqs);
 	for (const warning of board.warnings) console.warn(`[runner] warning: ${warning}`);

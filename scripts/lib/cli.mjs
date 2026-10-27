@@ -72,15 +72,23 @@ export function printHelp() {
 		'                       Lets n runners on separate clones share the same stages',
 		'                       without picking the same ticket; a ticket stays in its',
 		'                       shard as it moves through stages.  (default: all tickets)',
-			'  --only <slugs>       Comma-separated ticket slugs (no sequence prefix, no .md).',
-			'                       Restricts selection to exactly these tickets, overriding',
-			'                       the runner\'s own priority/sequence ranking within --stages',
-			'                       entirely.  A named ticket still must sit in one of the',
-			'                       requested --stages to be found — pair with --stages if it',
-			'                       is not in the default set.  Composes with --shard (a ticket',
-			'                       must pass both to run).  For hand-assigning specific tickets',
-			'                       to a runner, e.g. splitting work between two clones without',
-			'                       relying on shard hashing.        (default: no restriction)',
+		'                       A board whose tickets/rules/ declares `runner-shards: n`',
+		'                       refuses a start without --shard k/n, --only or',
+		'                       --whole-board (--dry-run excepted).',
+		'  --only <slugs>       Comma-separated ticket slugs (no sequence prefix, no .md).',
+		'                       Restricts selection to exactly these tickets, overriding',
+		'                       the runner\'s own priority/sequence ranking within --stages',
+		'                       entirely.  A named ticket still must sit in one of the',
+		'                       requested --stages to be found — pair with --stages if it',
+		'                       is not in the default set.  Composes with --shard (a ticket',
+		'                       must pass both to run).  For hand-assigning specific tickets',
+		'                       to a runner, e.g. splitting work between two clones without',
+		'                       relying on shard hashing.        (default: no restriction)',
+		'                       On a `runner-shards:` board, --only without --shard warns',
+		'                       which shard owns each named slug.',
+		'  --whole-board        Work the whole board on a board that declares',
+		'                       `runner-shards:` — only once every other runner on it is',
+		'                       stopped.  Not with --shard.  No effect on other boards.',
 		'  --refresh-index      Run the local code indexer incrementally before each',
 		'                       ticket (no-op if tickets/.index/ does not exist).',
 		`  --prune-completed-days <n>  Remove completed tickets whose landing commit is`,
@@ -114,6 +122,7 @@ export function parseArgs(argv) {
 		skipBlocked: false,
 		shardRaw: null,
 		onlyRaw: null,
+		wholeBoard: false,
 		refreshIndex: false,
 		dirtyTree: DIRTY_TREE_MODES[0],
 		maxTickets: Infinity,
@@ -152,6 +161,9 @@ export function parseArgs(argv) {
 				break;
 			case '--only':
 				opts.onlyRaw = argv[++i];
+				break;
+			case '--whole-board':
+				opts.wholeBoard = true;
 				break;
 			case '--refresh-index':
 				opts.refreshIndex = true;

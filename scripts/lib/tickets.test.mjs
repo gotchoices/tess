@@ -10,6 +10,7 @@ import {
 	findUnsatisfiedPrereq,
 	headerFieldLines,
 	indexAllTickets,
+	inShard,
 	bypassesReview,
 	nextStageFor,
 	parseDifficulty,
@@ -20,6 +21,7 @@ import {
 	transitionLabel,
 	prereqNotes,
 	resolvePrereqs,
+	shardGuard,
 } from './tickets.mjs';
 import { TOMBSTONE_FILE } from './tombstones.mjs';
 import { makeBoard, withHeader } from './test-board.mjs';
@@ -464,4 +466,35 @@ test('review: skip is inert outside implement/, and a terminal stage still advan
 	assert.equal(nextStageFor(plan), 'implement');       // the field names one edge: implement → review
 	assert.equal(nextStageFor(review), 'complete');      // not re-read as "skip the complete stage"
 	assert.equal(nextStageFor(complete), null);
+});
+
+test('shardGuard keeps a runner-shards: board inside its split: it refuses a start that leaves it and names the shard owning each --only slug', () => {
+	const runnerShards = { count: 2, declaredIn: ['tickets/rules/runners.md'] };
+	const shard = (index, count) => ({ index, count });
+	const owner = slug => [0, 1].find(index => inShard(slug, shard(index, 2)));
+	const ok = { refuse: null, warnings: [] };
+	const UNSHARDED = /^this board is split 2 ways \(tickets\/rules\/runners\.md declares runner-shards: 2\) and this runner has no share of it\.  Start with one of:\n  --shard k\/2 .*\n  --only <slugs> .*\n  --whole-board .*$/;
+	const rows = [
+		['no declaration, no flags', { runnerShards: null }, ok],
+		['no declaration, any shard count', { runnerShards: null, shard: shard(0, 3) }, ok],
+		['no declaration, --only', { runnerShards: null, only: new Set(['gamma']) }, ok],
+		['no declaration, --whole-board', { runnerShards: null, wholeBoard: true }, ok],
+		['matching --shard', { shard: shard(1, 2) }, ok],
+		['matching --shard with --only', { shard: shard(0, 2), only: new Set(['gamma']) }, ok],
+		['--whole-board', { wholeBoard: true }, ok],
+		['--whole-board with --only', { wholeBoard: true, only: new Set(['gamma']) }, ok],
+		['mismatched --shard, dry run', { shard: shard(0, 3), dryRun: true }, ok],
+		['unsharded, dry run', { dryRun: true }, ok],
+		['mismatched --shard', { shard: shard(0, 3) }, { refuse: '--shard 0/3 does not match this board: tickets/rules/runners.md declares runner-shards: 2, so every runner starts with --shard k/2', warnings: [] }],
+		['unsharded', {}, { refuse: UNSHARDED, warnings: [] }],
+		['--whole-board with --shard, even undeclared and dry', { runnerShards: null, wholeBoard: true, shard: shard(0, 2), dryRun: true }, { refuse: '--whole-board works every ticket and --shard only one share of them — pass one or the other', warnings: [] }],
+		['--only alone', { only: new Set(['gamma', 'beta']) }, { refuse: null, warnings: ['gamma', 'beta'].map(slug => `--only "${slug}" is shard ${owner(slug)} of 2 — stop or skip that runner for it, or it may be worked twice`) }],
+	];
+
+	for (const [name, flags, expected] of rows) {
+		const { refuse, warnings } = shardGuard({ runnerShards, shard: null, only: null, wholeBoard: false, dryRun: false, ...flags });
+		if (expected.refuse instanceof RegExp) assert.match(refuse, expected.refuse, name);
+		else assert.equal(refuse, expected.refuse, name);
+		assert.deepEqual(warnings, expected.warnings, name);
+	}
 });

@@ -15,7 +15,7 @@
  * context rather than each caller re-reading files.
  */
 
-import { anchorFieldsOf, anchorsRequiredBy, readProjectRules } from './project-rules.mjs';
+import { anchorFieldsOf, anchorsRequiredBy, readProjectRules, runnerShardsOf } from './project-rules.mjs';
 import { RELEASES_FILE, currentRelease, rankOf, readReleases } from './releases.mjs';
 import { REVIEW_VALUES, boardLocation, deferralReason, parseListField, parseSlug, readBacklogLayout, resolvePrereqs } from './tickets.mjs';
 
@@ -23,14 +23,18 @@ const RELEASES_PATH = `tickets/${RELEASES_FILE}`;
 
 /**
  * Everything the board rules read: `{ releases, rules, anchorFields,
- * anchorsRequired }`.  `rules` is `readProjectRules`' `{ rules, errors }`;
- * `anchorFields` is every header field that counts as an anchor;
- * `anchorsRequired` says whether a worked ticket must name one (see
- * lib/project-rules.mjs `anchorsRequiredBy`).
+ * anchorsRequired, runnerShards }`.  `rules` is `readProjectRules`' `{ rules,
+ * errors }`, its errors joined by any disagreement between addenda over
+ * `runner-shards:`; `anchorFields` is every header field that counts as an
+ * anchor; `anchorsRequired` says whether a worked ticket must name one (see
+ * lib/project-rules.mjs `anchorsRequiredBy`); `runnerShards` is the declared
+ * runner count, `{ count, declaredIn }` or null (`runnerShardsOf`).
  */
 export async function readBoardContext(ticketsDir) {
-	const [releases, rules] = await Promise.all([readReleases(ticketsDir), readProjectRules(ticketsDir)]);
-	return { releases, rules, anchorFields: anchorFieldsOf(rules.rules), anchorsRequired: anchorsRequiredBy(rules.rules) };
+	const [releases, read] = await Promise.all([readReleases(ticketsDir), readProjectRules(ticketsDir)]);
+	const shards = runnerShardsOf(read.rules);
+	const rules = { rules: read.rules, errors: [...read.errors, ...shards.errors] };
+	return { releases, rules, anchorFields: anchorFieldsOf(rules.rules), anchorsRequired: anchorsRequiredBy(rules.rules), runnerShards: shards.runnerShards };
 }
 
 const ticketCount = n => `${n} ticket${n === 1 ? '' : 's'}`;

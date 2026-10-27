@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { anchorFieldsOf, anchorsRequiredBy, parseProjectRule, readProjectRules } from './project-rules.mjs';
+import { anchorFieldsOf, anchorsRequiredBy, parseProjectRule, readProjectRules, runnerShardsOf } from './project-rules.mjs';
 import { makeBoard } from './test-board.mjs';
 
 const BAD_NAME = 'is not a field name — use a lowercase letter followed by lowercase letters, digits or hyphens';
@@ -12,7 +12,7 @@ test('a fenced declaration header is parsed, and the body is everything after it
 	const text = '---\nanchor-fields: features, aspects\nowner: rubric\n---\nRule text.\n\nMore.\n';
 
 	assert.deepEqual(parseProjectRule('rubric.md', text), {
-		rule: { name: 'rubric.md', body: 'Rule text.\n\nMore.\n', anchorFields: ['features', 'aspects'] },
+		rule: { name: 'rubric.md', body: 'Rule text.\n\nMore.\n', anchorFields: ['features', 'aspects'], runnerShards: null },
 		errors: [],
 	});
 });
@@ -21,14 +21,14 @@ test('anchor-fields: takes the bracket and list forms; a four-dash fence, CRLF e
 	const bracket = parseProjectRule('a.md', '﻿----\r\nanchor-fields: [features]\r\n----\r\nBody\r\n');
 	const list = parseProjectRule('b.md', '---\nanchor-fields:\n  - features\n  - aspects\n---\nBody\n');
 
-	assert.deepEqual(bracket, { rule: { name: 'a.md', body: 'Body\n', anchorFields: ['features'] }, errors: [] });
+	assert.deepEqual(bracket, { rule: { name: 'a.md', body: 'Body\n', anchorFields: ['features'], runnerShards: null }, errors: [] });
 	assert.deepEqual(list.rule.anchorFields, ['features', 'aspects']);
 });
 
 test('a file whose first line is not a fence is all body and declares nothing', () => {
 	const text = 'anchor-fields: features\n\nProse that happens to start like a field.\n---\nMore prose.\n';
 
-	assert.deepEqual(parseProjectRule('plain.md', text), { rule: { name: 'plain.md', body: text, anchorFields: [] }, errors: [] });
+	assert.deepEqual(parseProjectRule('plain.md', text), { rule: { name: 'plain.md', body: text, anchorFields: [], runnerShards: null }, errors: [] });
 });
 
 test('an invalid field name is an error naming the file; the valid names still count, tess\'s own architecture among them', () => {
@@ -44,7 +44,7 @@ test('an invalid field name is an error naming the file; the valid names still c
 test('an opening fence with no closing fence is an unterminated-header error, and the file appends and declares nothing', () => {
 	const { rule, errors } = parseProjectRule('open.md', '---\nanchor-fields: features\nRule text.\n');
 
-	assert.deepEqual(rule, { name: 'open.md', body: '', anchorFields: [] });
+	assert.deepEqual(rule, { name: 'open.md', body: '', anchorFields: [], runnerShards: null });
 	assert.deepEqual(errors, ['tickets/rules/open.md: unterminated header — line 1 is a fence with no closing fence, so the file appends and declares nothing']);
 });
 
@@ -95,4 +95,29 @@ test('anchors are required only once an addendum lists a field — architecture 
 	assert.equal(anchorsRequiredBy([none]), false);
 	assert.equal(anchorsRequiredBy([none, { name: 'a.md', body: '', anchorFields: ['architecture'] }]), true);
 	assert.equal(anchorsRequiredBy([{ name: 'r.md', body: '', anchorFields: ['features'] }]), true);
+});
+
+test('runner-shards: a whole number of 2 or more declares the count; anything else, or two addenda disagreeing, is an error that declares nothing', () => {
+	const NOT_A_COUNT = 'is not a runner count — use a whole number of 2 or more';
+	const rows = [
+		{ files: [['a.md', 'Prose only.\n']], runnerShards: null, errors: [] },
+		{ files: [['a.md', '---\nrunner-shards: 2\n---\n']], runnerShards: { count: 2, declaredIn: ['tickets/rules/a.md'] }, errors: [] },
+		{ files: [['a.md', '---\nrunner-shards: 3\n---\n'], ['b.md', '---\nanchor-fields: features\nrunner-shards: 3\n---\nBody\n']], runnerShards: { count: 3, declaredIn: ['tickets/rules/a.md', 'tickets/rules/b.md'] }, errors: [] },
+		...['two', '1', '0', '2.5', ''].map(value => ({
+			files: [['a.md', `---\nrunner-shards: ${value}\n---\n`]],
+			runnerShards: null,
+			errors: [`tickets/rules/a.md: runner-shards: "${value}" ${NOT_A_COUNT}`],
+		})),
+		{
+			files: [['a.md', '---\nrunner-shards: 2\n---\n'], ['b.md', '---\nrunner-shards: 3\n---\n']],
+			runnerShards: null,
+			errors: ['runner-shards: tickets/rules/a.md says 2, tickets/rules/b.md says 3 — declare one count, or the same count everywhere'],
+		},
+	];
+
+	for (const { files, runnerShards, errors } of rows) {
+		const parsed = files.map(([name, text]) => parseProjectRule(name, text));
+		const folded = runnerShardsOf(parsed.map(p => p.rule));
+		assert.deepEqual({ runnerShards: folded.runnerShards, errors: [...parsed.flatMap(p => p.errors), ...folded.errors] }, { runnerShards, errors }, JSON.stringify(files));
+	}
 });

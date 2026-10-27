@@ -246,13 +246,60 @@ export async function indexAllTickets(ticketsDir, { withPrereqs = false } = {}) 
  * through stages.
  */
 export function inShard(slug, shard) {
-	if (!shard) return true;
+	return !shard || shardOf(slug, shard.count) === shard.index;
+}
+
+/** The 0-based shard of `count` that owns `slug` — the one hash `inShard` tests against. */
+export function shardOf(slug, count) {
 	let h = 0x811c9dc5;  // FNV-1a
 	for (let i = 0; i < slug.length; i++) {
 		h ^= slug.charCodeAt(i);
 		h = Math.imul(h, 0x01000193) >>> 0;
 	}
-	return h % shard.count === shard.index;
+	return h % count;
+}
+
+/**
+ * Whether a runner may start on a board, given its `--shard`, `--only` and
+ * `--whole-board` flags and the board's `runner-shards:` declaration
+ * (lib/project-rules.mjs `runnerShardsOf`; null when there is none).  Returns
+ * `{ refuse, warnings }`: `refuse` is the reason not to start, or null.
+ *
+ * The split is the only thing keeping runners on separate clones off the same
+ * ticket, and it holds only while every runner uses it with the declared
+ * count, so a start that leaves it is refused: a different count, or no
+ * restriction at all.  `--only` overrides the split by hand and is allowed,
+ * with a warning naming each slug's owning shard, since the runner that owns
+ * it may pick it up too.  `--whole-board` is the operator saying every other
+ * runner is stopped.  `--dry-run` changes nothing, so it is never refused.
+ * With no declaration nothing is refused or warned, whatever the flags — bar
+ * `--whole-board` with `--shard`, which contradict each other on any board.
+ */
+export function shardGuard({ runnerShards, shard, only, wholeBoard, dryRun }) {
+	const allowed = { refuse: null, warnings: [] };
+	if (wholeBoard && shard) return { refuse: '--whole-board works every ticket and --shard only one share of them — pass one or the other', warnings: [] };
+	if (!runnerShards || wholeBoard) return allowed;
+
+	const { count, declaredIn } = runnerShards;
+	const declared = `${declaredIn.join(' and ')} declare${declaredIn.length === 1 ? 's' : ''} runner-shards: ${count}`;
+	if (shard) {
+		if (shard.count === count || dryRun) return allowed;
+		return { refuse: `--shard ${shard.index}/${shard.count} does not match this board: ${declared}, so every runner starts with --shard k/${count}`, warnings: [] };
+	}
+	if (only) {
+		return { refuse: null, warnings: [...only].map(slug => `--only "${slug}" is shard ${shardOf(slug, count)} of ${count} — stop or skip that runner for it, or it may be worked twice`) };
+	}
+	if (dryRun) return allowed;
+	const ways = [
+		[`--shard k/${count}`, `this runner's share, 0 <= k < ${count}`],
+		['--only <slugs>', 'named tickets only; keep the runner whose share they are off them'],
+		['--whole-board', 'every ticket, once every other runner on this board is stopped'],
+	];
+	const width = Math.max(...ways.map(([flag]) => flag.length)) + 2;
+	return {
+		refuse: [`this board is split ${count} ways (${declared}) and this runner has no share of it.  Start with one of:`, ...ways.map(([flag, use]) => `  ${flag.padEnd(width)}${use}`)].join('\n'),
+		warnings: [],
+	};
 }
 
 /**
