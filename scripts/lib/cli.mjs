@@ -55,6 +55,9 @@ export function printHelp() {
 		'                       up next within the chain.  In `batch`, splits roll into',
 		'                       the next run.                          (default: unset)',
 		'  --no-commit          Skip automatic git commit after each ticket',
+		'  --no-sync            Commit each ticket locally but skip the post-commit sync (fetch,',
+		'                       rebase onto the upstream branch, push). No-op when HEAD has no',
+		'                       upstream, or already with --no-commit (nothing new to sync).',
 		'  --dirty-tree <mode>  salvage | abort | ignore                 (default: salvage)',
 		'                       What to do when the working tree is already dirty before a',
 		'                       ticket starts (e.g. a killed agent left partial edits behind).',
@@ -119,6 +122,7 @@ export function parseArgs(argv) {
 		strategy: DEFAULT_STRATEGY,
 		dryRun: false,
 		noCommit: false,
+		noSync: false,
 		skipBlocked: false,
 		shardRaw: null,
 		onlyRaw: null,
@@ -149,6 +153,9 @@ export function parseArgs(argv) {
 				break;
 			case '--no-commit':
 				opts.noCommit = true;
+				break;
+			case '--no-sync':
+				opts.noSync = true;
 				break;
 			case '--dirty-tree':
 				opts.dirtyTree = argv[++i];

@@ -28,7 +28,8 @@ tickets/
 ├── CLAUDE.md      # Points to tess agent rules
 ├── .version       # Ticket format version (managed by tess)
 ├── .logs/         # Agent execution logs (git-ignored)
-└── .in-progress   # Current ticket state for resume (git-ignored)
+├── .in-progress   # Current ticket state for resume (git-ignored)
+└── .sync-blocked  # Present only when per-ticket sync gave up (git-ignored; see Per-Ticket Sync)
 ```
 
 ## Quick Start
@@ -125,6 +126,7 @@ node tess/scripts/run.mjs --strategy chase
 | `--max <n>` | _unlimited_ | Stop after processing at most n tickets (with `live`, caps stage transitions rather than snapshot size) |
 | `--token-budget <n>` | _unset_ | Soft per-ticket context budget (claude only). When the running context size crosses *n* tokens, a one-shot `BUDGET_WARNING` is injected via a PreToolUse hook so the agent splits residual work into continuation tickets. See [Token Budget](#token-budget). |
 | `--no-commit` | — | Skip automatic git commit after each ticket (also skips the migration commit) |
+| `--no-sync` | — | Commit each ticket locally but skip the post-commit sync to the upstream branch. No-op with `--no-commit` (nothing new to sync) or when `HEAD` has no upstream. See [Per-Ticket Sync](#per-ticket-sync). |
 | `--dirty-tree <mode>` | `salvage` | What to do when the working tree is already dirty before a ticket starts: `salvage` (commit the leftovers first, under their own name), `abort` (refuse to start, exit 1), or `ignore` (proceed anyway). See [Clean Working Tree](#clean-working-tree). |
 | `--skip-blocked` | — | Pre-filter the snapshot: drop any ticket whose prereq chain reaches a slug parked in `blocked/`. The runtime cross-stage prereq gate still applies to other misses. |
 | `--shard <k>/<n>` | _unset_ | Only run tickets whose slug hashes to shard *k* of *n* (0-based). Lets *n* runners on separate clones split the same stages without picking the same ticket; a ticket stays in its shard as it moves through stages. The split holds only while every runner uses it with the same *n*: a board that declares [`runner-shards: n`](#project-rules) refuses any other start. |
@@ -620,6 +622,16 @@ If a mid-run salvage cannot be committed (it would capture a suspicious mass del
 `scripts/garden.mjs` runs the same check at the top of its pass, before it invokes the gardener and before its own `git add -A` commit — its commit is unscoped too, so leftovers sitting there would otherwise land under `tess: garden backlog (...)`. It has no `--dirty-tree` flag of its own: it is human-invoked and single-shot, so it always salvages and the operator sees the notice.
 
 `scripts/release.mjs ship` runs the check too, but always refuses a dirty tree instead of salvaging it: a ship has no interrupted ticket to attribute leftovers to, and its commit would file them under `tess: ship release <CODE>`. `ship --no-commit` skips the check with the commit.
+
+## Per-Ticket Sync
+
+On a checkout whose `HEAD` tracks an upstream branch, the runner tries to land each ticket's commit there right after making it — fetch, rebase onto the upstream, push — rather than let a checkout's unpushed history grow across many tickets before anyone looks at it. A checkout with no upstream configured is unaffected (logged once, not every ticket); `--no-commit` and `--no-sync` both disable it.
+
+A clean rebase just pushes. A push that loses a race to another pusher retries fetch–rebase–push a bounded number of times — never a force-push, under any circumstance.
+
+A rebase that actually conflicts hands it to one bounded agent turn: told which commits are "ours" and "theirs" and which files are conflicted, and explicitly **not** to run `rebase --continue/--abort`, `commit`, or `push` itself — those stay the runner's own git-state transitions, and the runner verifies them mechanically (no remaining conflict markers, a clean exit) rather than trust the agent's own account of what it did. Anything that doesn't verify is `git rebase --abort`, which restores the tree exactly as it was — the ticket's local commit survives, unpushed.
+
+A resolve failure counts toward a small budget (a few tickets' worth) before the runner gives up: it writes `tickets/.sync-blocked` (what was tried, what conflicted, why) and stops before the next ticket, the same way a `.stop` file does — except this is a failure, so the process exits non-zero rather than concluding cleanly. **Nobody deletes that file by hand.** Restarting tess retries the same sync before picking up any ticket; success clears the file, a recurring conflict updates it and exits the same way again. See [docs/DESIGN.md § Per-Ticket Sync](docs/DESIGN.md#per-ticket-sync) for the full design and the reasoning behind it.
 
 ## Pre-existing Test Failure Triage
 

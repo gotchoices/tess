@@ -52,10 +52,15 @@ import { parseArgs, formatStageSummary } from './lib/cli.mjs';
 import { strategies } from './lib/strategies/index.mjs';
 import { handlePreExistingError, pruneKnownFailures } from './lib/pre-existing-error.mjs';
 import { pruneCompletedTickets } from './lib/prune-completed.mjs';
+import { sweepSyncBlocked } from './lib/sync.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TESS_ROOT = join(__dirname, '..');
+
+/** Exit code for an unresolved `tickets/.sync-blocked` — distinct from 75 (RUNNER_RESTART_EXIT_CODE,
+ *  "restart me on new code", which this is not) so a supervisor's restart loop actually ends. */
+const SYNC_BLOCKED_EXIT_CODE = 3;
 
 async function main() {
 	const opts = parseArgs(process.argv.slice(2));
@@ -97,6 +102,26 @@ async function main() {
 	if (reconciled.action === 'abort') process.exit(1);
 
 	const tessVersion = getTessVersion(TESS_ROOT);
+	const logsDir = await ensureLogsDir(ticketsDir);
+
+	// ── Sync-blocked sweep ──
+	// A prior run that spent its whole per-ticket-sync failure budget (lib/sync.mjs) left
+	// `tickets/.sync-blocked` and exited.  Nobody deletes that file by hand — restarting tess IS
+	// the retry, so try the sync again, right here, before picking any ticket.  Succeeds → the
+	// file is gone and startup continues as normal.  Still conflicts → the file is updated (not
+	// replaced — `firstBlockedAt` survives) and this process exits the same way the first one did.
+	// Comes after the clean-tree invariant above (a sync needs a clean tree to rebase) and before
+	// migration/prune (neither should run against a tree this process is about to give up on).
+	if (!opts.dryRun) {
+		const sweepCtx = { repoRoot, ticketsDir, opts, tessVersion, logsDir };
+		const swept = await sweepSyncBlocked(sweepCtx);
+		if (swept.blocked) {
+			console.error(`\n[runner] tickets/.sync-blocked still conflicts after a retry (attempt ${swept.record?.attempts ?? '?'}) — not picking up any ticket.`);
+			console.error(`[runner] Reason: ${swept.record?.reason ?? 'unknown'}`);
+			console.error('[runner] Inspect and resolve by hand, or re-run tess once the upstream branch has moved.');
+			process.exit(SYNC_BLOCKED_EXIT_CODE);
+		}
+	}
 
 	// Auto-migrate legacy format before snapshotting tickets.
 	await runMigrationIfNeeded(ticketsDir, repoRoot, { noCommit: opts.noCommit, dryRun: opts.dryRun });
@@ -284,7 +309,6 @@ async function main() {
 	].join('\n');
 	console.log(banner);
 
-	const logsDir = await ensureLogsDir(ticketsDir);
 	const pruned = await pruneOldLogs(logsDir, priorRun?.logFile);
 	if (pruned.removedGroups > 0) {
 		console.log(`  Pruned ${pruned.removedGroups} old log set(s) (${pruned.removedFiles} file(s)).`);
@@ -334,6 +358,18 @@ async function main() {
 		console.error('\nHalted: the working tree could not be salvaged mid-run; remaining tickets were not processed.');
 		console.error('Inspect with `git status`, sort the tree out, then re-run.');
 		process.exit(1);
+	}
+
+	// A ticket landed and committed, but syncing it to the shared remote spent its whole
+	// failure budget (lib/sync.mjs) — `tickets/.sync-blocked` is written.  Also a `stopped`
+	// outcome, also a failure rather than a requested halt: exit non-zero, non-75 (that code
+	// means "restart me on new code" to the supervisor wrapper, which this is not) so the
+	// wrapper's loop actually ends rather than spin on the same conflict.
+	if (runCtx.syncBlocked) {
+		console.error(`\nHalted: sync to the shared remote is blocked after ${runCtx.syncBlocked.attempts} attempt(s); remaining tickets were not processed.`);
+		console.error(`Reason: ${runCtx.syncBlocked.reason}`);
+		console.error('See tickets/.sync-blocked. Restarting tess retries the sync before picking up any ticket.');
+		process.exit(SYNC_BLOCKED_EXIT_CODE);
 	}
 
 	const errors = result?.errors ?? [];

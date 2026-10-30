@@ -13,9 +13,11 @@
  *   - 'agent-error'  : agent exited non-zero (non-timeout); the strategy
  *                      decides whether to abort the run.  `exitCode` is set.
  *   - 'skipped'      : ticket file was already moved before we ran it
- *   - 'stopped'      : halt requested — either a .stop file was detected, or the runner
- *                      refused to continue with a working tree it could not salvage; no
- *                      work performed
+ *   - 'stopped'      : halt requested — a .stop file was detected, the runner refused to
+ *                      continue with a working tree it could not salvage, or (unlike those
+ *                      two) work WAS performed and committed but syncing it to the shared
+ *                      remote spent its whole failure budget (lib/sync.mjs); `ctx.syncBlocked`
+ *                      is set when it's the latter
  *   - 'deferred'     : a cross-stage prereq is still behind (parked in
  *                      blocked/, or deferred to a later release); the strategy
  *                      adds the slug to its run-local deferred set so
@@ -37,6 +39,7 @@ import { logPath } from './logging.mjs';
 import { buildPrompt } from './prompt.mjs';
 import { maybeRefreshIndex } from './refresh-index.mjs';
 import { handlePreExistingError } from './pre-existing-error.mjs';
+import { syncAfterTicket } from './sync.mjs';
 
 /**
  * Persist a resume note onto a ticket that did not complete cleanly, and
@@ -248,6 +251,19 @@ export async function runOneStage(ticket, ctx, { label }) {
 		await clearInProgress(ticketsDir);
 		if (!opts.noCommit && commitTicket(ticket, repoRoot)) {
 			console.log(`  Committed.`);
+			// Land this ticket's commit on the shared remote now, rather than let drift accumulate
+			// across many tickets — see lib/sync.mjs. A sync that spends the whole failure budget
+			// (a conflict the resolve agent could not clear, or a push that kept losing its race)
+			// is a `stopped` outcome like a `.stop` file or an unsalvageable dirty tree: the local
+			// commit stays, nothing is pushed, and the run ends for a human (or a restart, which
+			// retries via `sweepSyncBlocked`) to look at — never force-pushed, never silently
+			// dropped.
+			const sync = await syncAfterTicket(ctx, { ticket });
+			if (sync.outcome === 'blocked') {
+				console.error(`\n⏹  Sync to the shared remote is blocked — halting before next ticket. See tickets/.sync-blocked.`);
+				ctx.syncBlocked = sync.record;
+				return { kind: 'stopped' };
+			}
 		}
 		await handlePreExistingError(ctx);
 		console.log(`\n  ${label} Complete: ${ticket.file}\n`);
