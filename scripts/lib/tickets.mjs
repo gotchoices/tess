@@ -240,6 +240,36 @@ export async function indexAllTickets(ticketsDir, { withPrereqs = false } = {}) 
 }
 
 /**
+ * Every slug held by two or more ticket files across the whole board, as
+ * `{ slug, paths }` sorted by slug — `paths` in discovery order, each
+ * `tickets/<stage>[/<folder>]/<file>`.
+ *
+ * Unlike `indexAllTickets`, which silently resolves a shared slug to its
+ * most-advanced copy for prereq lookups, this surfaces every duplicate. That
+ * shape — a slug sitting at two paths at once — is what a rebase produces
+ * when it replays an old add past a later delete with no conflict to flag it;
+ * `indexAllTickets`'s own masking is exactly why that shape goes unnoticed
+ * until something reads the board this way instead. Used by `sync.mjs`'s
+ * post-rebase gate; SiteCAD's `check-ticket-slug-uniqueness.mjs` (CI's own
+ * check over the same invariant) does the equivalent walk against its own
+ * project-local anchor code.
+ */
+export async function findDuplicateSlugs(ticketsDir) {
+	const pathsBySlug = new Map();
+	for (const stage of KNOWN_STAGES) {
+		for (const { entry, folder } of await stageFiles(ticketsDir, stage, true)) {
+			const slug = parseSlug(entry);
+			const path = folder ? `tickets/${stage}/${folder}/${entry}` : `tickets/${stage}/${entry}`;
+			pathsBySlug.set(slug, [...(pathsBySlug.get(slug) ?? []), path]);
+		}
+	}
+	return [...pathsBySlug]
+		.filter(([, paths]) => paths.length > 1)
+		.map(([slug, paths]) => ({ slug, paths }))
+		.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+/**
  * `--shard k/n` membership: a stable hash of the slug, so two runners on
  * separate clones given `0/2` and `1/2` split every stage between them without
  * ever picking the same ticket, and a ticket keeps its runner as it moves

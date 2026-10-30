@@ -12,10 +12,19 @@
  *      and stops — it never runs rebase/commit/push itself. The runner trusts the agent's verdict
  *      only as far as the git state it left behind: exit 0 AND no remaining conflict markers is
  *      "resolved"; anything else is `git rebase --abort`.
- *   4. A resolve that fails leaves the local commit(s) in place, unpushed, and counts toward
- *      MAX_CONSECUTIVE_SYNC_FAILURES. Once that budget is spent, `.sync-blocked` is written and
- *      the caller (run-ticket.mjs) reports a `stopped` outcome so the run ends — a human (or a
- *      fresh restart, which re-attempts via `sweepSyncBlocked`) has to look at it.
+ *   4. Once the rebase itself reports success — whether or not any conflict round ran — a
+ *      post-rebase gate (`findDuplicateSlugs`, lib/tickets.mjs) re-reads the whole ticket board:
+ *      a *clean, conflict-free* rebase can still replay an old add past a later delete with
+ *      nothing to flag as a conflict, resurrecting a ticket file the other side had deleted. A
+ *      duplicate found here gets its own bounded resolve turn (runDuplicateSlugResolveAgent); a
+ *      resolve that succeeds is committed as its own commit (the agent never commits). A resolve
+ *      that fails resets the working tree to its pre-rebase HEAD, exactly as a `rebase --abort`
+ *      would, since there is no in-progress rebase left to abort by the time this gate runs.
+ *   5. A resolve that fails (conflict or duplicate-slug) leaves the local commit(s) in place,
+ *      unpushed, and counts toward MAX_CONSECUTIVE_SYNC_FAILURES. Once that budget is spent,
+ *      `.sync-blocked` is written and the caller (run-ticket.mjs) reports a `stopped` outcome so
+ *      the run ends — a human (or a fresh restart, which re-attempts via `sweepSyncBlocked`) has
+ *      to look at it.
  *
  * Hard rules carried over from the design: never force-push; never resolve a conflict by taking
  * one side wholesale (see buildResolvePrompt); push only commits a verification step passed.
@@ -32,6 +41,7 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runAgent } from './process.mjs';
+import { findDuplicateSlugs } from './tickets.mjs';
 
 export const SYNC_BLOCKED_FILE = '.sync-blocked';
 
@@ -162,11 +172,102 @@ async function runResolveAgent(ctx, { ticket, upstream, conflicts, ourCommits, t
 }
 
 /**
+ * The prompt for the one bounded resolve turn over a post-rebase duplicate-slug finding. Unlike
+ * `buildResolvePrompt`, there are no conflict markers to point at — the rebase itself reported
+ * success — so this instead gives the agent the duplicate slugs and the same stage-precedence
+ * convention `indexAllTickets` already applies when it silently picks a winner for prereq lookups
+ * (most-advanced stage wins), so a human-legible resolve matches what the board does invisibly.
+ */
+function buildDuplicateSlugPrompt({ ticket, upstream, duplicates, ourCommits, theirCommits }) {
+	return [
+		'# Sync duplicate-ticket-slug resolution',
+		'',
+		`Rebasing this checkout's unpushed commit(s) onto \`${upstream}\` reported success with no conflicts, but left ${duplicates.length} ticket slug(s) sitting at more than one path on the board — the shape a rebase produces when it replays an old add past a later delete with nothing to flag as a conflict.`,
+		ticket ? `The ticket just completed on this checkout: **${ticket.stage}/${ticket.slug}** (${ticket.file}).` : 'No specific ticket is attributed to this sync attempt (this is a startup retry of a previously blocked sync).',
+		'',
+		'## Our commit(s) just replayed onto the upstream tip',
+		'',
+		formatCommits(ourCommits),
+		'',
+		`## Commit(s) already on ${upstream} that this checkout did not have`,
+		'',
+		formatCommits(theirCommits),
+		'',
+		'## Duplicate slugs',
+		'',
+		...duplicates.flatMap(({ slug, paths }) => [`- \`${slug}\`:`, ...paths.map(p => `  - \`${p}\``)]),
+		'',
+		'## Your job',
+		'',
+		'1. For each slug above, decide whether one copy is a stale duplicate of the other — the usual case, almost always the copy lacking the later stage\'s content, e.g. no `## Review findings` beside a `complete/` copy that has them — or the two are genuinely different tickets that happen to share a slug. Delete the stale copy; if they are genuinely different, rename one and update any `prereq:` elsewhere on the board that names it.',
+		'2. If you cannot tell which copy is stale, do not guess — leave it as-is and say so plainly in your final message. The runner re-reads the board itself rather than trusting this narration, and treats this sync attempt as failed if any duplicate remains.',
+		'3. `git add`/`git rm` whatever files this requires. Do not stage or touch anything else, and do not create, move, or delete any ticket file beyond what resolving the listed duplicates requires.',
+		'4. Do NOT run `git commit`, `git rebase --continue`, `git rebase --abort`, or `git push` — the runner commits the result once you are done.',
+		'',
+		'Work only inside this repository\'s working tree. Nothing else is expected of you this turn.',
+	].join('\n');
+}
+
+/**
+ * Run the one bounded resolve turn over a duplicate-slug finding and report whether the board is
+ * actually clean afterward — not what the agent claimed. Mirrors `runResolveAgent`'s trust
+ * boundary (re-check the real state, not the exit code alone), but against `findDuplicateSlugs`
+ * rather than conflict markers, and commits a successful resolve itself: unlike a conflict
+ * resolve, which lands inside the paused rebase's own `--continue`, there is no in-progress
+ * rebase step left here to fold the fix into.
+ */
+async function runDuplicateSlugResolveAgent(ctx, { ticket, upstream, duplicates, ourCommits, theirCommits }, { agentRunner = runAgent } = {}) {
+	const { repoRoot, ticketsDir, logsDir, opts, tessVersion } = ctx;
+	const prompt = buildDuplicateSlugPrompt({ ticket, upstream, duplicates, ourCommits, theirCommits });
+	const ts = new Date().toISOString().replace(/[:.]/g, '-');
+	const logFile = join(logsDir, `sync-dedup.${ts}.log`);
+	await writeFile(logFile, [
+		'Sync duplicate-slug resolve',
+		`Upstream: ${upstream}`,
+		`Duplicate slugs: ${duplicates.map(d => d.slug).join(', ') || '(none listed)'}`,
+		`Agent: ${opts.agent}`,
+		`Tess: ${tessVersion}`,
+		`Started: ${new Date().toISOString()}`,
+		'═'.repeat(72),
+		'',
+	].join('\n'));
+
+	const result = await agentRunner(opts.agent, prompt, repoRoot, logFile, { stage: 'sync-resolve', difficulty: 'hard' });
+	if (result.exitCode !== 0) {
+		return { ok: false, reason: `duplicate-slug resolve agent exited ${result.exitCode}`, logFile };
+	}
+	const remaining = await findDuplicateSlugs(ticketsDir);
+	if (remaining.length > 0) {
+		return { ok: false, reason: `resolve agent exited 0 but ${remaining.length} duplicate slug(s) remain: ${remaining.map(d => d.slug).join(', ')}`, logFile };
+	}
+	tryGit(repoRoot, ['add', '-A', '--', 'tickets/']);
+	const committed = tryGit(repoRoot, ['commit', '-m', `sync: resolve duplicate ticket slug(s)${ticket ? ` found after ${ticket.stage}/${ticket.slug}` : ''}`]);
+	if (!committed.ok) {
+		return { ok: false, reason: `could not commit the duplicate-slug resolution — ${committed.output.trim()}`, logFile };
+	}
+	return { ok: true, logFile };
+}
+
+/**
+ * Post-rebase gate: re-read the whole board for a duplicate slug the rebase itself didn't flag
+ * as a conflict (module doc, step 4). A clean board is a no-op; a finding gets the one bounded
+ * resolve turn above.
+ */
+async function gateDuplicateSlugs(ctx, { ticket, upstream, ourCommits, theirCommits }, { agentRunner } = {}) {
+	const duplicates = await findDuplicateSlugs(ctx.ticketsDir);
+	if (duplicates.length === 0) return { ok: true };
+	return await runDuplicateSlugResolveAgent(ctx, { ticket, upstream, duplicates, ourCommits, theirCommits }, { agentRunner });
+}
+
+/**
  * Rebase onto `upstream`, driving the resolve agent through as many conflict rounds as the
  * replay needs (bounded by one more than the number of local commits — a well-formed rebase
- * never needs more rounds than commits being replayed). Returns `{ ok, ourCommits, theirCommits,
- * conflictedFiles, reason? }`. On any failure the rebase is left aborted — the working tree is
- * exactly what it was before this call, local commits included.
+ * never needs more rounds than commits being replayed), then the post-rebase duplicate-slug gate
+ * (`gateDuplicateSlugs`). Returns `{ ok, ourCommits, theirCommits, conflictedFiles, reason? }`.
+ * On any failure the working tree ends up exactly what it was before this call, local commits
+ * included — a conflict aborts the in-progress rebase; a duplicate-slug finding that can't be
+ * resolved resets back to the commit recorded before the rebase started, since by then the
+ * rebase itself has already finished and left nothing to abort.
  */
 async function rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner } = {}) {
 	const { repoRoot } = ctx;
@@ -174,6 +275,8 @@ async function rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner } = {
 	const theirCommits = commitSummaries(repoRoot, `HEAD..${upstream}`);
 
 	if (ourCommits.length === 0) return { ok: true, ourCommits, theirCommits }; // nothing of ours to replay
+
+	const preRebaseHead = runGit(repoRoot, ['rev-parse', 'HEAD']).trim();
 
 	let rebase = tryGit(repoRoot, ['rebase', upstream]);
 	let round = 0;
@@ -200,6 +303,13 @@ async function rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner } = {
 		tryGit(repoRoot, ['rebase', '--abort']);
 		return { ok: false, reason: `rebase failed: ${rebase.output.trim()}`, ourCommits, theirCommits, conflictedFiles: [] };
 	}
+
+	const duplicateGate = await gateDuplicateSlugs(ctx, { ticket, upstream, ourCommits, theirCommits }, { agentRunner });
+	if (!duplicateGate.ok) {
+		tryGit(repoRoot, ['reset', '--hard', preRebaseHead]);
+		return { ok: false, reason: duplicateGate.reason, ourCommits, theirCommits, conflictedFiles: [] };
+	}
+
 	return { ok: true, ourCommits, theirCommits };
 }
 

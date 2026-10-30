@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import {
 	deferralReason,
 	discoverTickets,
+	findDuplicateSlugs,
 	findTicketBySlug,
 	findUnsatisfiedPrereq,
 	headerFieldLines,
@@ -144,6 +145,40 @@ test('the index always includes backlog folder tickets: top level first, folders
 	assert.deepEqual(placeOf(index.get('only-v2')), { stage: 'backlog', folder: 'V2', releaseRank: 2 });
 	assert.deepEqual(placeOf(index.get('session-store')), { stage: 'complete', folder: null, releaseRank: 0 });
 	assert.equal(index.has('too-deep'), false);
+});
+
+// ── findDuplicateSlugs ────────────────────────────────────────────────────
+
+test('findDuplicateSlugs sees nothing on a healthy board, one slug per path', async () => {
+	const ticketsDir = await makeBoard({ implement: ['user-model.md'], complete: ['session-store.md'] });
+	assert.deepEqual(await findDuplicateSlugs(ticketsDir), []);
+});
+
+test('findDuplicateSlugs surfaces a slug shared across stages — the shape indexAllTickets masks', async () => {
+	const ticketsDir = await makeBoard({ implement: ['user-model.md'], complete: ['user-model.md'] });
+
+	// indexAllTickets silently picks the most-advanced copy for prereq lookups...
+	const index = await indexAllTickets(ticketsDir);
+	assert.equal(index.get('user-model').stage, 'complete');
+
+	// ...which is exactly why this walk, not that one, has to be the gate.
+	assert.deepEqual(await findDuplicateSlugs(ticketsDir), [
+		{ slug: 'user-model', paths: ['tickets/implement/user-model.md', 'tickets/complete/user-model.md'] },
+	]);
+});
+
+test('findDuplicateSlugs sorts multiple findings by slug and reports every path, not just the first two', async () => {
+	const ticketsDir = await makeBoard({
+		implement: ['zeta.md', 'alpha.md'],
+		review: ['zeta.md'],
+		complete: ['alpha.md'],
+		blocked: ['alpha.md'],
+	});
+
+	assert.deepEqual(await findDuplicateSlugs(ticketsDir), [
+		{ slug: 'alpha', paths: ['tickets/implement/alpha.md', 'tickets/complete/alpha.md', 'tickets/blocked/alpha.md'] },
+		{ slug: 'zeta', paths: ['tickets/implement/zeta.md', 'tickets/review/zeta.md'] },
+	]);
 });
 
 test('findTicketBySlug looks inside backlog folders when backlog is one of the stages searched', async () => {

@@ -238,6 +238,62 @@ test('syncAfterTicket distrusts an exit-0 resolver that left conflict markers un
 	assert.deepEqual(originLog(origin), ['seed', 'their change']);
 });
 
+// ── post-rebase duplicate-slug gate ──────────────────────────────────────────
+
+/**
+ * Two independent, non-conflicting histories that each legitimately create a ticket file for the
+ * same slug — one already on `origin/dev`, one in our own unpushed commit. Rebasing ours onto
+ * theirs is a plain, non-overlapping file add on each side, so git never flags it as a conflict —
+ * exactly the shape `check-ticket-slug-uniqueness.mjs` exists to catch after the fact.
+ */
+function makeDuplicateSlug(t, origin) {
+	seedOrigin(t, origin, { 'seed.txt': 'seed\n' });
+	const clone = makeClone(t, origin, 'a');
+
+	const other = makeClone(t, origin, 'other');
+	writeFile(other, 'tickets/complete/foo.md', 'description: x\n----\ndone\n');
+	commit(other, 'ticket(complete): foo');
+	run(other, 'git push -q origin dev');
+
+	writeFile(clone, 'tickets/implement/foo.md', 'description: x\n----\nin progress\n');
+	commit(clone, 'ticket(implement): foo');
+	return clone;
+}
+
+/** A fake `agentRunner` that resolves a duplicate-slug finding by deleting the stale copy at `path` — it does not commit; the runner does that once the board is confirmed clean. */
+function fakeDuplicateResolver(path) {
+	return async (_agent, _prompt, cwd) => {
+		run(cwd, `git rm -q -- "${path}"`);
+		return { exitCode: 0 };
+	};
+}
+
+test('syncAfterTicket catches a clean-rebase duplicate slug, resolves it, and pushes', async (t) => {
+	const origin = makeBareOrigin(t);
+	const clone = makeDuplicateSlug(t, origin);
+
+	const result = await syncAfterTicket(makeCtx(clone), { ticket: fakeTicket, agentRunner: fakeDuplicateResolver('tickets/implement/foo.md') });
+
+	assert.equal(result.outcome, 'pushed');
+	assert.ok(!existsSync(join(clone, 'tickets', 'implement', 'foo.md')), 'stale copy removed');
+	assert.ok(existsSync(join(clone, 'tickets', 'complete', 'foo.md')), 'the other side\'s copy kept');
+	assert.deepEqual(originLog(origin), ['seed', 'ticket(complete): foo', 'ticket(implement): foo', 'sync: resolve duplicate ticket slug(s) found after implement/example-ticket']);
+});
+
+test('syncAfterTicket resets to the pre-rebase commit when a duplicate slug cannot be resolved', async (t) => {
+	const origin = makeBareOrigin(t);
+	const clone = makeDuplicateSlug(t, origin);
+	const localHead = headSha(clone);
+
+	const result = await syncAfterTicket(makeCtx(clone), { ticket: fakeTicket, agentRunner: givingUpResolver });
+
+	assert.equal(result.outcome, 'failed');
+	assert.equal(headSha(clone), localHead, 'local commit preserved, not rewritten');
+	assert.deepEqual(originLog(origin), ['seed', 'ticket(complete): foo'], 'nothing pushed');
+	assert.ok(existsSync(join(clone, 'tickets', 'implement', 'foo.md')), 'working tree restored, not left mid-resolve');
+	assert.ok(!existsSync(join(clone, '.git', 'rebase-merge')) && !existsSync(join(clone, '.git', 'rebase-apply')));
+});
+
 // ── failure budget → .sync-blocked ───────────────────────────────────────────
 
 test('repeated failures write .sync-blocked only once the budget is spent, and never before', async (t) => {
