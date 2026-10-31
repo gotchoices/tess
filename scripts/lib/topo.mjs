@@ -8,8 +8,15 @@
  * to re-number.  Cycles are also a hard error.
  */
 
-/** Kahn's algorithm with sequence as the priority tiebreaker. */
+import { byQueueOrder } from './tickets.mjs';
+
+/**
+ * Kahn's algorithm, picking among ready tickets in in-stage queue order
+ * (sequence, then arrival) and, past that, in the order they were given —
+ * discovery's, so the topo sort only ever moves a ticket to satisfy a prereq.
+ */
 export function topoSortAndCheck(tickets) {
+	const position = new Map(tickets.map((t, i) => [t, i]));
 	const bySlug = new Map();
 	for (const t of tickets) {
 		// If two tickets in the batch share a slug (different stages), index by
@@ -38,12 +45,7 @@ export function topoSortAndCheck(tickets) {
 	const queue = tickets.filter(t => indegree.get(t) === 0);
 	const sorted = [];
 	while (queue.length > 0) {
-		queue.sort((a, b) => {
-			const sa = a.sequence ?? Infinity;
-			const sb = b.sequence ?? Infinity;
-			if (sa !== sb) return sa - sb;
-			return a.slug.localeCompare(b.slug);
-		});
+		queue.sort((a, b) => byQueueOrder(a, b) || position.get(a) - position.get(b));
 		const next = queue.shift();
 		sorted.push(next);
 		for (const dep of graph.get(next)) {

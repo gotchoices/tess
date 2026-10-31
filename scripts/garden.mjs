@@ -34,7 +34,8 @@ import { commitAll, getTessVersion, reconcileWorkingTree } from './lib/git.mjs';
 import { readInProgress } from './lib/state.mjs';
 import { buildGardenPrompt } from './lib/prompt.mjs';
 import { checkBoard, readBoardContext } from './lib/board-check.mjs';
-import { DEFAULT_DECLINE_AFTER_DAYS, topLevelArrivals } from './lib/backlog-age.mjs';
+import { DEFAULT_DECLINE_AFTER_DAYS } from './lib/backlog-age.mjs';
+import { stageArrivals } from './lib/stage-arrivals.mjs';
 import { boardCheckLines, buildInventory, inventoryText, releaseSummary } from './lib/garden-inventory.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -198,7 +199,9 @@ async function main() {
 		releases: context.releases,
 		anchorFields: context.anchorFields,
 		anchorsRequired: context.anchorsRequired,
-		arrivals: topLevelArrivals(repoRoot, 'tickets', { warn: message => console.warn(`[garden] warning: ${message}`) }),
+		arrivals: await stageArrivals(ticketsDir, 'backlog', {
+			warn: message => console.warn(`[garden] warning: ${message} — every backlog ticket's age reads new, so none is proposed for decline`),
+		}),
 		nowSeconds: Math.floor(Date.now() / 1000),
 		declineAfterDays: opts.declineAfterDays,
 	});

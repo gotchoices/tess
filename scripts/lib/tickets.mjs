@@ -14,6 +14,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { readTombstones } from './tombstones.mjs';
 import { readReleases, releasePlacement } from './releases.mjs';
+import { stageArrivals } from './stage-arrivals.mjs';
 
 /** Default stages from which to pull tickets (backlog excluded — parked by design). */
 export const PENDING_STAGES = ['review', 'implement', 'fix', 'plan'];
@@ -128,13 +129,14 @@ const isTicketFile = d => !d.isDirectory() && d.name.endsWith('.md');
 const isSubfolder = d => d.isDirectory() && !d.name.startsWith('.');
 /** Code-unit order: identical on every platform and filesystem, and case-sensitive like release codes. */
 export const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const ticketNames = dirents => dirents.filter(isTicketFile).map(d => d.name).sort(byName);
 
 /**
  * The layout of `backlog/`: its top-level ticket files, and each immediate
  * sub-folder (dot-folders skipped) with its ticket files and the directories
- * nested inside it.  Folders come in name order, files in directory order.
- * Discovery never reads deeper than one level; `nested` exists so the board
- * check can say what is being ignored.
+ * nested inside it, all in name order, so every listing built on it is the
+ * same on every filesystem.  Discovery never reads deeper than one level;
+ * `nested` exists so the board check can say what is being ignored.
  */
 export async function readBacklogLayout(ticketsDir) {
 	const backlogDir = join(ticketsDir, 'backlog');
@@ -145,17 +147,18 @@ export async function readBacklogLayout(ticketsDir) {
 		if (!inner) continue;  // raced with a remove/rename
 		folders.push({
 			name,
-			files: inner.filter(isTicketFile).map(d => d.name),
+			files: ticketNames(inner),
 			nested: inner.filter(isSubfolder).map(d => d.name).sort(byName),
 		});
 	}
-	return { top: dirents.filter(isTicketFile).map(d => d.name), folders };
+	return { top: ticketNames(dirents), folders };
 }
 
 /**
  * Every ticket file of one stage as `{ entry, folder, path }`: the top level
  * first, then — for `backlog` with `includeFolders` — each sub-folder's files,
- * folders in name order.
+ * folders and files in name order.  This is the last tiebreak of discovery's
+ * queue order, so it must not depend on the filesystem's listing order.
  */
 export async function stageFiles(ticketsDir, stage, includeFolders) {
 	const stageDir = join(ticketsDir, stage);
@@ -166,8 +169,7 @@ export async function stageFiles(ticketsDir, stage, includeFolders) {
 			...folders.flatMap(({ name, files }) => files.map(entry => ({ entry, folder: name, path: join(stageDir, name, entry) }))),
 		];
 	}
-	const dirents = await readDirents(stageDir) ?? [];
-	return dirents.filter(isTicketFile).map(d => ({ entry: d.name, folder: null, path: join(stageDir, d.name) }));
+	return ticketNames(await readDirents(stageDir) ?? []).map(entry => ({ entry, folder: null, path: join(stageDir, entry) }));
 }
 
 /** A ticket file's text, or null when it was removed or moved between listing and reading. */
@@ -718,7 +720,37 @@ function buildTicket({ entry, folder, path }, stage, content, releases) {
 		target: parseTarget(content),
 		review: parseReview(content),             // raw: 'skip', an unrecognised value, or null
 		header: headerRegion(content),
+		arrival: null,                            // epoch seconds it reached the stage; discoverTickets fills it when it orders by it
 	};
+}
+
+/**
+ * In-stage queue order: ascending sequence with unnumbered last, then earliest
+ * arrival in the stage, so a same-sequence tie goes to whichever ticket has
+ * waited longest.  A ticket whose arrival is unknown — not yet committed, or
+ * never read because nothing in its stage shared its sequence — counts as the
+ * newest.  Tickets equal on both keep the caller's order: discovery's is
+ * `stageFiles` order, and the prereq topo sort (lib/topo.mjs) keeps
+ * discovery's.  Arrivals tie often: a plan split into three implement tickets
+ * lands them in one commit.
+ */
+export function byQueueOrder(a, b) {
+	const sa = a.sequence ?? Infinity, sb = b.sequence ?? Infinity;
+	if (sa !== sb) return sa < sb ? -1 : 1;
+	const aa = a.arrival ?? Infinity, ab = b.arrival ?? Infinity;
+	return aa === ab ? 0 : aa < ab ? -1 : 1;
+}
+
+/** Two top-level tickets share a sequence (both unnumbered counts), so arrival decides between them. */
+function hasSequenceTie(tickets) {
+	const seen = new Set();
+	for (const t of tickets) {
+		if (t.folder != null) continue;  // a backlog sub-folder ticket has no arrival to compare
+		const key = t.sequence ?? Infinity;
+		if (seen.has(key)) return true;
+		seen.add(key);
+	}
+	return false;
 }
 
 /**
@@ -744,13 +776,18 @@ export async function findTicketBySlug(ticketsDir, slug, stages) {
 }
 
 /**
- * Discover all .md ticket files in a stage folder, filtered by max sequence.
+ * Discover all .md ticket files in a stage folder, filtered by max sequence,
+ * in `byQueueOrder`.
  *
  * `includeFolders` adds the tickets in each immediate sub-folder of `backlog/`
  * (never deeper, dot-folders skipped).  The runner leaves it off: a deferred
  * ticket must never be promoted by `--stages backlog:N`.
+ *
+ * Arrivals come from one `git log` over the stage, run only when two top-level
+ * tickets share a sequence.  When git fails, `warn` is called and same-sequence
+ * tickets fall back to file name order; discovery itself never fails on git.
  */
-export async function discoverTickets(ticketsDir, stage, maxSequence, { includeFolders = false } = {}) {
+export async function discoverTickets(ticketsDir, stage, maxSequence, { includeFolders = false, warn = console.warn } = {}) {
 	const releases = await readReleases(ticketsDir);
 	const tickets = [];
 
@@ -762,8 +799,16 @@ export async function discoverTickets(ticketsDir, stage, maxSequence, { includeF
 		tickets.push(buildTicket(file, stage, content, releases));
 	}
 
-	// Within a stage: ascending sequence (low first); unnumbered (null) sorts last.
-	tickets.sort((a, b) => (a.sequence ?? Infinity) - (b.sequence ?? Infinity));
+	// NOTE: no cache across calls — live mode re-discovers after each stage transition, not on a timer, so
+	// this is one `git log` per tied stage per ticket worked (0.19 s on SiteCAD's implement/, 2026-10-31);
+	// if discovery ever runs on a fast poll, keep the map between calls and refresh it on HEAD changes.
+	if (hasSequenceTie(tickets)) {
+		const arrivals = await stageArrivals(ticketsDir, stage, {
+			warn: message => warn(`warning: ${message} — same-sequence ${stage}/ tickets are ordered by file name instead of by arrival`),
+		});
+		for (const t of tickets) if (t.folder == null) t.arrival = arrivals.get(t.slug) ?? null;
+	}
+	tickets.sort(byQueueOrder);
 	return tickets;
 }
 

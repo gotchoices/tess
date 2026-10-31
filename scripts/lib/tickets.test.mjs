@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
 import {
@@ -25,7 +25,8 @@ import {
 	shardGuard,
 } from './tickets.mjs';
 import { TOMBSTONE_FILE } from './tombstones.mjs';
-import { makeBoard, withHeader } from './test-board.mjs';
+import { topoSortAndCheck } from './topo.mjs';
+import { commitAt, git, makeBoard, withHeader } from './test-board.mjs';
 
 const ticket = (slug, stage, prereqs) => ({ slug, stage, prereqs, file: `${slug}.md` });
 
@@ -191,6 +192,24 @@ test('findTicketBySlug looks inside backlog folders when backlog is one of the s
 		['backlog', 'GA', '2-parked.md', 1, 'GA', ['a']],
 	);
 	assert.equal(await findTicketBySlug(ticketsDir, 'parked', ['plan']), null);
+});
+
+// DESIGN.md Q14: same-sequence tickets queue by arrival in the stage, oldest first — not by name or listing order.
+test('same-sequence tickets queue oldest arrival in the stage first, an uncommitted one last', async () => {
+	const ticketsDir = await makeBoard({ implement: [] });
+	const repo = dirname(ticketsDir);
+	git(repo, ['init', '-q']);
+	const add = name => writeFile(join(ticketsDir, 'implement', name), withHeader(), 'utf-8');
+	await commitAt(repo, 1_700_000_000, () => add('zeta.md'));
+	await commitAt(repo, 1_700_000_100, () => add('3-numbered.md'));
+	await commitAt(repo, 1_700_000_200, () => add('alpha.md'));
+	await add('mid.md');
+
+	const discovered = await discoverTickets(ticketsDir, 'implement', Infinity);
+
+	const expected = ['numbered', 'zeta', 'alpha', 'mid'];
+	assert.deepEqual(discovered.map(t => t.slug), expected);
+	assert.deepEqual(topoSortAndCheck(discovered).map(t => t.slug), expected);
 });
 
 test('a discovered ticket carries its target: and its header region', async () => {

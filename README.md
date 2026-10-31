@@ -10,7 +10,7 @@ Tess lives as its own repository and integrates into any project, giving every r
 
 ## How It Works
 
-Tickets are markdown files organized into stage folders inside a project's `tickets/` directory. Each ticket file is named with an optional sequence prefix (`3-my-feature.md` — lower runs sooner) and contains a lightweight metadata header followed by architecture notes and TODO items. The sequence prefix is optional; unnumbered tickets follow after all numbered ones in a stage.
+Tickets are markdown files organized into stage folders inside a project's `tickets/` directory. Each ticket file is named with an optional sequence prefix (`3-my-feature.md` — lower runs sooner) and contains a lightweight metadata header followed by architecture notes and TODO items. The sequence prefix is optional; unnumbered tickets follow after all numbered ones in a stage, and tickets sharing a sequence run oldest-arrival-in-stage first.
 
 A runner script processes tickets one at a time, invoking an AI agent for each. The agent owns the full stage transition: it creates the next-stage file(s), deletes the source ticket, and commits. The runner chooses what to work next under one of three strategies — **live** (default; re-discover and re-prioritize the whole board after every transition, picking up tickets created mid-run), **batch** (snapshot at startup; drain stage-by-stage), or **chase** (snapshot at startup; follow one ticket through every stage before moving to the next). See [Strategies](#strategies) below.
 
@@ -656,7 +656,7 @@ The runner deletes the report afterwards and commits any resulting changes as `t
 - **Snapshot-based** — Ticket list captured once per run; newly created tickets wait for the next run
 - **Agent-owned transitions** — The agent creates and deletes ticket files; the runner handles commits
 - **Commit per ticket** — Clean git history for human review between runs
-- **Sequence-driven** — Tickets processed lowest-sequence-first within each stage (optional prefix; unnumbered tickets trail numbered ones)
+- **Sequence-driven** — Tickets processed lowest-sequence-first within each stage (optional prefix; unnumbered tickets trail numbered ones; a same-sequence tie goes to the ticket that has waited longest in the stage)
 - **Prereq-aware** — `prereq:` edges topologically sort tickets within a stage and gate them across stages by pipeline rank; conflicts with explicit sequence numbers fail fast
 - **Non-interactive** — Batch processing with human review between runs
 

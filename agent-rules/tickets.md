@@ -16,7 +16,7 @@ One ticket may edit that graph for itself: an `implement/` ticket whose header s
 
 tickets/ folder at project root contains `backlog`, `fix`, `plan`, `implement`, `review`, `blocked`, `complete` subfolders. Each ticket = markdown file inside one of these folders.
 
-Filename convention: `<slug>.md`, optionally prefixed with numeric **sequence** (integer or decimal) — `3-my-ticket.md` or `3.5-my-ticket.md`. **Lower sequence runs sooner.** Prefix optional; unnumbered tickets (`my-ticket.md`) follow after all numbered ones in same stage. Sequence number is not part of ticket identity — when referencing another ticket, use only its slug (`my-ticket`), not the full filename.
+Filename convention: `<slug>.md`, optionally prefixed with numeric **sequence** (integer or decimal) — `3-my-ticket.md` or `3.5-my-ticket.md`. **Lower sequence runs sooner.** Prefix optional; unnumbered tickets (`my-ticket.md`) follow after all numbered ones in same stage; tickets sharing a sequence run oldest-arrival-in-stage first. Sequence number is not part of ticket identity — when referencing another ticket, use only its slug (`my-ticket`), not the full filename.
 
 You own the full stage transition. When done:
   1. Create the next-stage output file(s) in the appropriate tickets/ subfolder, keeping the anchor fields (see *Name an anchor*). May split one ticket into multiple next-stage tickets if warranted — give each a distinct slug and chain with `prereq:` so runner enforces topo order. Don't combine unrelated tickets. May keep, add, or adjust the sequence prefix. Respect `prereq:` relationships: a prereq must have a sequence ≤ its dependent (or be unnumbered only if the dependent is also unnumbered) — runner fails fast on conflicts.

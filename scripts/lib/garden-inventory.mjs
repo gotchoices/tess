@@ -94,8 +94,8 @@ export function inventoryLine(ticket, { anchorFields, anchorsRequired, ageDays =
 
 /**
  * The whole inventory, as `{ groups: [{ heading, entries }], counts: { top,
- * folders, proposed } }`.  `arrivals` is lib/backlog-age.mjs
- * `topLevelArrivals`' map; `nowSeconds` is the moment ages are measured to.
+ * folders, proposed } }`.  `arrivals` is lib/stage-arrivals.mjs
+ * `stageArrivals`' map for `backlog`; `nowSeconds` is the moment ages are measured to.
  */
 export function buildInventory(tickets, { releases, anchorFields, anchorsRequired, arrivals, nowSeconds, declineAfterDays }) {
 	let proposed = 0;

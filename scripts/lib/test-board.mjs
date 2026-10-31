@@ -3,6 +3,7 @@
  * `npm test` does not run this file as a suite of its own.
  */
 
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,7 +28,8 @@ export function withHeader(...lines) {
 
 /**
  * A tickets/ tree, removed once the importing test file finishes.  No git:
- * prereq resolution and the board check read files, nothing else.
+ * prereq resolution and the board check read files, nothing else.  A test
+ * that needs history runs `git init` in its parent and commits with `commitAt`.
  *
  * `places` maps a stage folder — or a path under one, such as `backlog/GA` —
  * to its files, each a filename (given `withHeader()` content) or a
@@ -52,4 +54,24 @@ export async function makeBoard(places = {}, { releases, tombstones = [] } = {})
 		await writeFile(join(ticketsDir, TOMBSTONE_FILE), tombstones.map(r => JSON.stringify(r) + '\n').join(''), 'utf-8');
 	}
 	return ticketsDir;
+}
+
+/** Run git in `cwd` with identity, signing, hooks and line endings forced to safe test values. */
+export function git(cwd, args, env = {}) {
+	return execFileSync('git', [
+		'-c', 'user.name=tess-test',
+		'-c', 'user.email=tess@example.invalid',
+		'-c', 'commit.gpgsign=false',
+		'-c', 'core.hooksPath=',
+		'-c', 'core.autocrlf=false',
+		...args,
+	], { cwd, encoding: 'utf-8', env: { ...process.env, ...env } });
+}
+
+/** Run `edits`, then commit everything in `repo` with author and committer time `epoch`. */
+export async function commitAt(repo, epoch, edits) {
+	await edits();
+	git(repo, ['add', '-A']);
+	const date = `${epoch} +0000`;
+	git(repo, ['commit', '-q', '-m', `at ${epoch}`], { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date });
 }
