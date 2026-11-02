@@ -100,10 +100,10 @@ node tess/scripts/run.mjs --dry-run
 node tess/scripts/run.mjs
 
 # Only specific stages
-node tess/scripts/run.mjs --stages fix,implement
+node tess/scripts/run.mjs --stages implement,fix
 
 # Cap each stage to its own max sequence (work only the earliest slots)
-node tess/scripts/run.mjs --stages fix:15,plan:15,implement:12,review:10
+node tess/scripts/run.mjs --stages review:10,implement:12,fix:15,plan:15
 
 # Include backlog for a promote-from-backlog pass (not in the default set)
 node tess/scripts/run.mjs --stages backlog:15
@@ -120,7 +120,8 @@ node tess/scripts/run.mjs --strategy chase
 | Option | Default | Description |
 |---|---|---|
 | `--max-sequence <n>` | _unlimited_ | Default sequence ceiling for all stages (sequences can include decimals). Unnumbered tickets are skipped whenever this is finite. |
-| `--stages <list>` | `review,implement,fix,plan` | Stages to process, with optional per-stage max (`implement:12,review:10`). The order is the cross-stage priority (earlier = higher). `backlog` is a valid target but excluded from the default set. |
+| `--stages <list>` | `review,implement,fix,plan` | Stages to process, with optional per-stage max (`review:10,implement:12`). The order is the cross-stage priority (earlier = higher). `backlog` is a valid target but excluded from the default set. A list that puts a stage ahead of one later in the pipeline — `plan` before `implement`, say — is refused at startup, since it would starve the later stage for as long as the runner runs; `fix` and `plan` may come in either order. The refusal is skipped with `--only`, whose fixed set of tickets cannot starve. |
+| `--allow-stage-order` | — | Accept a `--stages` list that is out of pipeline order, for a deliberate one-off. |
 | `--agent <name>` | `claude` | Agent adapter: `claude`, `cursor`, `auggie`, or `codex` |
 | `--strategy <name>` | `live` | Selection strategy: `live`, `batch`, or `chase`. See [Strategies](#strategies). |
 | `--max <n>` | _unlimited_ | Stop after processing at most n tickets (with `live`, caps stage transitions rather than snapshot size) |

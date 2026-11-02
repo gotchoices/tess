@@ -2,7 +2,7 @@
  * Command-line argument parsing and help output.
  */
 
-import { KNOWN_STAGES, PENDING_STAGES, stripSlugDecoration } from './tickets.mjs';
+import { KNOWN_STAGES, PENDING_STAGES, STAGE_RANK, stripSlugDecoration } from './tickets.mjs';
 import { KNOWN_STRATEGIES, DEFAULT_STRATEGY } from './strategies/index.mjs';
 import { DEFAULT_PRUNE_AGE_DAYS } from './prune-completed.mjs';
 import { DIRTY_TREE_MODES } from './git.mjs';
@@ -31,8 +31,11 @@ export function printHelp() {
 		'  --stages <list>      Comma-separated stages, optionally with per-stage max sequence',
 		'                       as  stage:n  (default: review,implement,fix,plan).  The order',
 		'                       is the cross-stage priority — earlier stages run first.',
+		'                       A list that puts a stage ahead of one later in the pipeline',
+		'                       (plan before implement, say) is refused, except with --only.',
 		'                       e.g.  --stages review:5,implement:3,fix',
 		'                             --stages backlog:2  (backlog is not in the default set)',
+		'  --allow-stage-order  Accept a --stages list that is out of pipeline order.',
 		'  --agent <name>       claude | auggie | cursor | codex      (default: claude)',
 		'  --strategy <name>    live | batch | chase                   (default: live)',
 		'                       live:  re-discover and re-prioritize the whole board after',
@@ -115,6 +118,32 @@ export function parseStages(raw, defaultMax) {
 	});
 }
 
+/**
+ * The first pair of `stages` listed against pipeline rank — a stage ahead of
+ * one that outranks it — or null.  The list's order is the cross-stage
+ * priority, so such a pair starves the outranking stage for as long as the
+ * runner runs.  `fix` and `plan` share a rank, so neither order of the two is
+ * a violation; a stage with no rank (`blocked`) is never compared.
+ */
+export function stageOrderViolation(stages) {
+	for (let i = 0; i < stages.length - 1; i++) {
+		for (let j = i + 1; j < stages.length; j++) {
+			const earlier = STAGE_RANK[stages[i].stage];
+			const later = STAGE_RANK[stages[j].stage];
+			if (earlier != null && later != null && earlier < later) {
+				return { earlier: stages[i].stage, later: stages[j].stage };
+			}
+		}
+	}
+	return null;
+}
+
+function formatStagesFlag(stages) {
+	return stages.map(({ stage, maxSequence }) =>
+		Number.isFinite(maxSequence) ? `${stage}:${maxSequence}` : stage
+	).join(',');
+}
+
 export function parseArgs(argv) {
 	const opts = {
 		maxSequence: Infinity,
@@ -132,6 +161,7 @@ export function parseArgs(argv) {
 		maxTickets: Infinity,
 		tokenBudget: Infinity,
 		stagesRaw: null,
+		allowStageOrder: false,
 		pruneCompleted: true,
 		pruneCompletedDays: DEFAULT_PRUNE_AGE_DAYS,
 	};
@@ -190,6 +220,9 @@ export function parseArgs(argv) {
 			case '--stages':
 				opts.stagesRaw = argv[++i];
 				break;
+			case '--allow-stage-order':
+				opts.allowStageOrder = true;
+				break;
 			case '--help':
 				printHelp();
 				process.exit(0);
@@ -204,6 +237,14 @@ export function parseArgs(argv) {
 			console.error(`Unknown stage: "${stage}". Valid stages: ${KNOWN_STAGES.join(', ')}`);
 			process.exit(1);
 		}
+	}
+
+	// An --only run works a fixed set of tickets and then ends, so no order can starve it.
+	const violation = !opts.allowStageOrder && opts.onlyRaw === null && stageOrderViolation(stages);
+	if (violation) {
+		const inRankOrder = [...stages].sort((a, b) => (STAGE_RANK[b.stage] ?? -1) - (STAGE_RANK[a.stage] ?? -1));
+		console.error(`--stages lists "${violation.earlier}" before "${violation.later}", which is later in the pipeline, so ${violation.later} tickets would wait behind every ${violation.earlier} ticket for as long as the runner runs. Use --stages ${formatStagesFlag(inRankOrder)}, or pass --allow-stage-order for a deliberate one-off.`);
+		process.exit(1);
 	}
 
 	if (!KNOWN_STRATEGIES.includes(opts.strategy)) {
