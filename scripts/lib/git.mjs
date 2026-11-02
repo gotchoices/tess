@@ -228,6 +228,70 @@ function refusedPinMoves(cwd, entries) {
 }
 
 /**
+ * Bring along each submodule checkout that was following its pin, after something other than a
+ * checkout moved the gitlinks from the ones `beforeRev` records to the ones HEAD records now — the
+ * per-ticket sync's rebase (`lib/sync.mjs`).  `git rebase` moves a gitlink in HEAD and the index
+ * but never checks the submodule out, so without this the checkout stays on the old commit, every
+ * later build and test in the run uses it, and `refusedPinMoves` warns about it on every commit.
+ *
+ * Only a checkout that is plainly following is moved: checked out, with a clean working tree
+ * (untracked files count as dirt), sitting exactly on `beforeRev`'s pin, and with the new pin
+ * present and descending from it.  Anything else may be there on purpose, and is left to the
+ * refused-pin warning exactly as before (`docs/DESIGN.md` § *The Clean-Tree Invariant*).  The
+ * checkout is detached, as `git submodule update` leaves it; that command is not used because it
+ * obeys a per-submodule `update` mode and checks out the *staged* gitlink, not the one verified here.
+ *
+ * Returns `[{ path, from, to, outcome, error? }]` for each declared submodule whose pin moved, with
+ * `outcome` one of 'followed' | 'not-checked-out' | 'dirty' | 'off-pin' | 'missing' | 'not-forward'
+ * | 'failed'.  Never throws: the sync has already decided to push by the time this runs, so a git
+ * error reads as 'failed' and leaves the checkout wherever it was.
+ */
+export function followSubmodulePins(cwd, beforeRev) {
+	const paths = declaredSubmodulePaths(cwd);
+	if (paths.length === 0) return [];
+
+	const before = readGitlinks(cwd, ['ls-tree', '-z', beforeRev, '--', ...paths]);
+	const after = readGitlinks(cwd, ['ls-tree', '-z', 'HEAD', '--', ...paths]);
+	const moves = [];
+	for (const path of paths) {
+		const from = before.get(path);
+		const to = after.get(path);
+		if (!from || !to || from === to) continue;
+		try {
+			moves.push({ path, from, to, outcome: followPin(cwd, path, from, to) });
+		} catch (err) {
+			moves.push({ path, from, to, outcome: 'failed', error: `${err.stderr ?? ''}`.trim() || err.message });
+		}
+	}
+	return moves;
+}
+
+/** One submodule's half of `followSubmodulePins`: why its checkout stays, or 'followed' once moved. */
+function followPin(cwd, path, from, to) {
+	if (!isCheckedOut(cwd, path)) return 'not-checked-out';
+	if (runGit(cwd, ['-C', path, 'status', '--porcelain']) !== '') return 'dirty';
+	if (checkoutHead(cwd, path) !== from) return 'off-pin';
+	// The superproject's own fetch already brought the new pin in (`fetch.recurseSubmodules`
+	// defaults to on-demand); this fetch covers a submodule remote that was unreachable then.
+	if (!hasCommit(cwd, path, to)) {
+		try { runGit(cwd, ['-C', path, 'fetch', '-q']); } catch { /* still missing: reported below */ }
+		if (!hasCommit(cwd, path, to)) return 'missing';
+	}
+	if (isAncestor(cwd, path, from, to) !== true) return 'not-forward';
+	runGit(cwd, ['-C', path, 'checkout', '-q', '--detach', to]);
+	return 'followed';
+}
+
+function hasCommit(cwd, path, sha) {
+	try {
+		runGit(cwd, ['-C', path, 'cat-file', '-e', `${sha}^{commit}`]);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Probe every submodule this repo declares for uncommitted *content* — the half of the working
  * tree `inspectWorkingTree` deliberately cannot see.
  *

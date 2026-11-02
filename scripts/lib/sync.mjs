@@ -20,6 +20,9 @@
  *      resolve that succeeds is committed as its own commit (the agent never commits). A resolve
  *      that fails resets the working tree to its pre-rebase HEAD, exactly as a `rebase --abort`
  *      would, since there is no in-progress rebase left to abort by the time this gate runs.
+ *      Once the gate passes, a submodule checkout that sat on the gitlink the rebase replaced is
+ *      checked out at the new one (`followSubmodulePins`, lib/git.mjs): `git rebase` moves the
+ *      gitlink and never the checkout.
  *   5. A resolve that fails (conflict or duplicate-slug) leaves the local commit(s) in place,
  *      unpushed, and counts toward MAX_CONSECUTIVE_SYNC_FAILURES. Once that budget is spent,
  *      `.sync-blocked` is written and the caller (run-ticket.mjs) reports a `stopped` outcome so
@@ -40,6 +43,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { followSubmodulePins } from './git.mjs';
 import { runAgent } from './process.mjs';
 import { findDuplicateSlugs } from './tickets.mjs';
 
@@ -310,7 +314,31 @@ async function rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner } = {
 		return { ok: false, reason: duplicateGate.reason, ourCommits, theirCommits, conflictedFiles: [] };
 	}
 
+	// Only now: the reset above puts the old gitlinks back, so a checkout moved before it would be
+	// left ahead of its pin.
+	bringSubmodulesAlong(repoRoot, preRebaseHead);
 	return { ok: true, ourCommits, theirCommits };
+}
+
+const LEFT_BECAUSE = {
+	dirty: 'its working tree has uncommitted changes',
+	'off-pin': 'it was not on the old pin',
+	missing: 'the new pin is not in its object store, even after a fetch',
+	'not-forward': 'the new pin does not descend from the old one',
+};
+
+/**
+ * Check out the new pin in each submodule that was following the one the rebase replaced
+ * (`followSubmodulePins`, lib/git.mjs), and say what happened to each pin that moved. A checkout
+ * left where it was gets one line here, and the commit-time pin guard treats it as it always has.
+ */
+function bringSubmodulesAlong(repoRoot, preRebaseHead) {
+	for (const { path, from, to, outcome, error } of followSubmodulePins(repoRoot, preRebaseHead)) {
+		const move = `${from.slice(0, 9)} → ${to.slice(0, 9)}`;
+		if (outcome === 'followed') console.log(`[runner] sync: ${path} followed its pin ${move}.`);
+		else if (outcome === 'failed') console.error(`[runner] sync: could not bring ${path} along to its new pin (${move}) — ${error}`);
+		else if (outcome !== 'not-checked-out') console.warn(`[runner] sync: ${path}'s pin moved ${move}; checkout left where it is, because ${LEFT_BECAUSE[outcome]}.`);
+	}
 }
 
 function pushUpstream(repoRoot, upstream) {

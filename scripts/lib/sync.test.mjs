@@ -294,6 +294,77 @@ test('syncAfterTicket resets to the pre-rebase commit when a duplicate slug cann
 	assert.ok(!existsSync(join(clone, '.git', 'rebase-merge')) && !existsSync(join(clone, '.git', 'rebase-apply')));
 });
 
+// ── submodule checkouts follow a pin the rebase moved ────────────────────────
+
+/** `git submodule` refuses a local-path remote unless told otherwise (CVE-2022-39253). */
+const FILE_PROTOCOL = '-c protocol.file.allow=always';
+
+/** A bare superproject origin whose `dev` records a bare submodule origin at `lib`. */
+function makeSubmoduleOrigin(t) {
+	const subOrigin = makeBareOrigin(t);
+	seedOrigin(t, subOrigin, { 'inner.txt': 'inner\n' });
+	const origin = makeBareOrigin(t);
+	const seed = makeClone(t, origin, 'seed-sub');
+	run(seed, `git ${FILE_PROTOCOL} submodule add -q "${subOrigin}" lib`);
+	commit(seed, 'add lib');
+	run(seed, 'git push -q origin dev');
+	return origin;
+}
+
+/** `makeClone` with `lib` checked out at its pin and able to commit. */
+function makeSubmoduleClone(t, origin, label) {
+	const clone = makeClone(t, origin, label);
+	run(clone, `git ${FILE_PROTOCOL} submodule update -q --init`);
+	const lib = join(clone, 'lib');
+	run(lib, 'git config user.email tess@example.invalid');
+	run(lib, 'git config user.name "tess test"');
+	run(lib, 'git config commit.gpgsign false');
+	return { clone, lib };
+}
+
+/** The other runner lands a lib commit and moves the pin to it while our ticket is in flight. */
+function movePinUpstream(t, origin) {
+	const theirs = makeSubmoduleClone(t, origin, 'other');
+	writeFile(theirs.lib, 'inner.txt', 'newer\n');
+	commit(theirs.lib, 'newer');
+	run(theirs.lib, 'git push -q origin HEAD:dev');
+	commit(theirs.clone, 'move lib forward');
+	run(theirs.clone, 'git push -q origin dev');
+}
+
+test('a sync whose rebase moves a submodule pin checks out the new pin where the checkout sat on the old one', async (t) => {
+	// regression: tess-per-ticket-sync-leaves-submodule-checkouts-behind-the-pin
+	const origin = makeSubmoduleOrigin(t);
+	const ours = makeSubmoduleClone(t, origin, 'a');
+	movePinUpstream(t, origin);
+	writeFile(ours.clone, 'b.txt', 'b\n');
+	commit(ours.clone, 'ticket(implement): example-ticket');
+
+	const result = await syncAfterTicket(makeCtx(ours.clone), { ticket: fakeTicket });
+
+	assert.equal(result.outcome, 'pushed');
+	assert.equal(headSha(ours.lib), run(ours.clone, 'git rev-parse HEAD:lib').trim(), 'checkout is on the pin HEAD records');
+	assert.equal(run(ours.clone, 'git status --porcelain'), '');
+});
+
+test('a sync leaves a submodule checkout that was off the old pin where it is', async (t) => {
+	// docs/DESIGN.md § The Clean-Tree Invariant: a checkout not on the pin may be there on purpose.
+	const origin = makeSubmoduleOrigin(t);
+	const ours = makeSubmoduleClone(t, origin, 'a');
+	movePinUpstream(t, origin);
+	writeFile(ours.lib, 'inner.txt', 'mid-edit\n');
+	commit(ours.lib, 'local lib work');
+	const localLib = headSha(ours.lib);
+	writeFile(ours.clone, 'b.txt', 'b\n');
+	run(ours.clone, 'git add b.txt'); // not `commit`: its `git add -A` would record the local lib commit as the pin
+	run(ours.clone, 'git commit -q -m "ticket(implement): example-ticket"');
+
+	const result = await syncAfterTicket(makeCtx(ours.clone), { ticket: fakeTicket });
+
+	assert.equal(result.outcome, 'pushed');
+	assert.equal(headSha(ours.lib), localLib);
+});
+
 // ── failure budget → .sync-blocked ───────────────────────────────────────────
 
 test('repeated failures write .sync-blocked only once the budget is spent, and never before', async (t) => {
