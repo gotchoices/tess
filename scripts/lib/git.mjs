@@ -258,7 +258,15 @@ export function followSubmodulePins(cwd, beforeRev) {
 		const to = after.get(path);
 		if (!from || !to || from === to) continue;
 		try {
-			moves.push({ path, from, to, outcome: followPin(cwd, path, from, to) });
+			const outcome = followPin(cwd, path, from, to);
+			moves.push({ path, from, to, outcome });
+			// The clean check covered this submodule's own submodules, so they sat on the pins `from`
+			// records; left there, they would read as uncommitted content in it from now on.  Not
+			// `checkout --recurse-submodules`: it fails, and leaves `git status` failing, on a nested
+			// submodule that is initialised but was never cloned.
+			if (outcome === 'followed') {
+				for (const nested of followSubmodulePins(resolve(cwd, path), from)) moves.push({ ...nested, path: `${path}/${nested.path}` });
+			}
 		} catch (err) {
 			moves.push({ path, from, to, outcome: 'failed', error: `${err.stderr ?? ''}`.trim() || err.message });
 		}
