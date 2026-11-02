@@ -10,7 +10,7 @@ Tickets are markdown files in stage folders. Moving a ticket to the next stage m
 
 ### 2. Agents own transitions
 
-The runner doesn't move tickets — agents do. An agent reads a ticket, does the work, creates the next-stage file(s), and deletes the source. The runner handles the git commit after the agent completes. This keeps commits out of interactive agent sessions while ensuring clean commit-per-ticket history when running the pipeline. Agents still have freedom to split tickets, adjust priorities, or redirect to `blocked/` when questions arise.
+The runner doesn't move tickets — agents do. An agent reads a ticket, does the work, creates the next-stage file(s), and deletes the source. The runner handles the git commit after the agent completes. This keeps commits out of interactive agent sessions while ensuring clean commit-per-ticket history when running the pipeline. Before that commit it checks one thing about the transition itself: that the ticket's slug is no further along than the stage the prompt named (`stageOverrunFor`, `scripts/lib/tickets.mjs`). The commit subject comes from the ticket as it was picked up, so an overrun — an implement agent writing `complete/` without `review: skip` — would otherwise land looking like an ordinary advance. The runner halts uncommitted instead, exits 1 so a supervisor does not restart into a salvage that commits it under no ticket's name, and skips the end-of-run triage sweep, whose whole-tree commit would do the same. Agents still have freedom to split tickets, adjust priorities, or redirect to `blocked/` when questions arise.
 
 ### 3. Selection is a pluggable policy
 

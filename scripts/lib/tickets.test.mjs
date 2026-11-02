@@ -23,6 +23,7 @@ import {
 	prereqNotes,
 	resolvePrereqs,
 	shardGuard,
+	stageOverrunFor,
 } from './tickets.mjs';
 import { TOMBSTONE_FILE } from './tombstones.mjs';
 import { topoSortAndCheck } from './topo.mjs';
@@ -520,6 +521,32 @@ test('review: skip is inert outside implement/, and a terminal stage still advan
 	assert.equal(nextStageFor(plan), 'implement');       // the field names one edge: implement → review
 	assert.equal(nextStageFor(review), 'complete');      // not re-read as "skip the complete stage"
 	assert.equal(nextStageFor(complete), null);
+});
+
+test('an implement ticket the agent wrote straight into complete/ is a stage overrun, reported with how to commit it by hand', async () => {
+	// regression: `ticket(implement): bug-lamina-autocommit-write-crash-leaves-cell-without-fact` skipped review/ unannounced
+	const ticketsDir = await makeBoard({ complete: ['x.md'] });
+
+	assert.equal(
+		await stageOverrunFor({ slug: 'x', stage: 'implement', review: null }, ticketsDir),
+		'x was directed implement → review, but the agent left it in complete/.  '
+			+ 'Move it to review/ and commit as "ticket(implement): x", or commit it where it is with a subject that names the skipped stage.',
+	);
+});
+
+test('a ticket left at its directed stage, parked in blocked/, or split away under new slugs is not a stage overrun', async () => {
+	const ran = { slug: 'x', stage: 'implement', review: null };
+	const rows = [
+		['advanced as directed', ran, { review: ['x.md'] }],
+		['review: skip directs it to complete/', { ...ran, review: 'skip' }, { complete: ['x.md'] }],
+		['parked sideways in blocked/', ran, { blocked: ['x.md'] }],
+		['split into new slugs', ran, { review: ['x-store.md', 'x-ui.md'] }],
+		['split away, its slug reused from an earlier pruned completion', ran, { review: ['x-store.md'] }, { tombstones: [{ ...TOMB, slug: 'x', file: 'x.md' }] }],
+	];
+
+	for (const [name, ticket, places, extra] of rows) {
+		assert.equal(await stageOverrunFor(ticket, await makeBoard(places, extra)), null, name);
+	}
 });
 
 test('shardGuard keeps a runner-shards: board inside its split: it refuses a start that leaves it and names the shard owning each --only slug', () => {

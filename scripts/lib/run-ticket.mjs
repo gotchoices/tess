@@ -17,7 +17,9 @@
  *                      continue with a working tree it could not salvage, or (unlike those
  *                      two) work WAS performed and committed but syncing it to the shared
  *                      remote spent its whole failure budget (lib/sync.mjs); `ctx.syncBlocked`
- *                      is set when it's the latter
+ *                      is set when it's the latter.  Also when the agent succeeded but left the
+ *                      ticket past the stage its prompt named: nothing is committed and
+ *                      `ctx.stageOverrun` holds the diagnostic
  *   - 'deferred'     : a cross-stage prereq is still behind (parked in
  *                      blocked/, or deferred to a later release); the strategy
  *                      adds the slug to its run-local deferred set so
@@ -30,7 +32,7 @@
 
 import { writeFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { deferralReason, firstUnsatisfied, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, transitionLabel } from './tickets.mjs';
+import { deferralReason, firstUnsatisfied, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, stageOverrunFor, transitionLabel } from './tickets.mjs';
 import { readBoardContext, ticketProblems } from './board-check.mjs';
 import { runAgent, MAX_TIMEOUT_RETRIES } from './process.mjs';
 import { commitAll, commitTicket, reconcileWorkingTree } from './git.mjs';
@@ -249,6 +251,15 @@ export async function runOneStage(ticket, ctx, { label }) {
 
 	if (success) {
 		await clearInProgress(ticketsDir);
+		// Halt rather than commit: `commitTicket` names the commit from the pre-run ticket, so a
+		// skipped stage would land looking like an ordinary advance.  The tree stays as the agent
+		// left it for a human — committing the overrun, or moving the ticket back, is their call.
+		const overrun = await stageOverrunFor(ticket, ticketsDir);
+		if (overrun) {
+			console.error(`\n⏹  ${overrun}\n   Halting before commit — nothing was committed.`);
+			ctx.stageOverrun = overrun;
+			return { kind: 'stopped' };
+		}
 		if (!opts.noCommit && commitTicket(ticket, repoRoot)) {
 			console.log(`  Committed.`);
 			// Land this ticket's commit on the shared remote now, rather than let drift accumulate

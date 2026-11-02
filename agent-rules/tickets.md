@@ -10,7 +10,7 @@ Tickets flow forward through stages:
 
 Each stage's job: advance ticket to next stage. Tickets only move sideways into `blocked/` (and back out once unblocked); never flow backward. `review/` is **after** `implement/` — a review ticket exists because code already written, now needs a code-review pass.
 
-One ticket may edit that graph for itself: an `implement/` ticket whose header says `review: skip` advances straight to `complete/`. The runner enforces this — it tells you the next stage, names the skip in the run output and in its commit message, and never sends the ticket to `review/`. You never decide this from the ticket's prose; if your prompt says `# Next stage: complete`, write the `complete/` ticket.
+One ticket may edit that graph for itself: an `implement/` ticket whose header says `review: skip` advances straight to `complete/`. The runner enforces this — it tells you the next stage, names the skip in the run output and in its commit message, and never sends the ticket to `review/`. You never decide this from the ticket's prose; if your prompt says `# Next stage: complete`, write the `complete/` ticket. The runner checks afterwards: a ticket left in any stage past `# Next stage` (`blocked/` aside) is not committed, and the run halts for a human.
 
 **Cross-stage gating automatic.** If a `prereq:` slug sits anywhere earlier in the pipeline (including `blocked/` or `backlog/`), runner defers the dependent this run and re-picks once the chain clears. Runner also cascades: errored, deferred, or blocked-prereq slugs transitively defer their downstream. Never mirror this by hand. `prereq:` is a hint to the runner, not an instruction to you.
 

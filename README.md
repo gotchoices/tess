@@ -465,6 +465,8 @@ backlog/ ─→ plan/ ─┐
 - **complete** — Archived summary of finished work
 - **blocked** — The human's inbox: proposed text where the specification or architecture is silent or contradictory, plus dependencies outside this repo. Not for "a sibling ticket isn't done" — that's `prereq:`.
 
+Before committing, the runner checks where the agent left the ticket. One left further along than the stage its prompt named — an `implement/` ticket written straight into `complete/` without `review: skip`, a `backlog/` ticket promoted past `plan/` — is not committed: the runner prints where it went, leaves the working tree as the agent made it, and exits 1. Move the ticket to the stage it was directed to and commit it as `ticket(<stage>): <slug>`, or commit it where it is with a subject that names the skipped stage, then re-run. A move sideways into `blocked/`, and a split into new slugs, are not overruns.
+
 ## Ticket Format
 
 ```markdown

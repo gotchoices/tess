@@ -342,8 +342,10 @@ async function main() {
 		// Per-ticket triage runs inside run-ticket.mjs catch the common case.
 		// This final sweep catches reports left when the last ticket errored or
 		// timed out — i.e. the runner is about to conclude with a report still
-		// sitting in tickets/.
-		await handlePreExistingError(runCtx);
+		// sitting in tickets/.  Not after a stage overrun: triage commits the whole tree, which
+		// would land the overrun under the triage subject; the git-ignored report waits for the
+		// next run instead.
+		if (!runCtx.stageOverrun) await handlePreExistingError(runCtx);
 	}
 
 	// Tess's own code moved under us: exit for the supervisor to restart the run on it.
@@ -357,6 +359,15 @@ async function main() {
 	if (runCtx.dirtyTreeHalt) {
 		console.error('\nHalted: the working tree could not be salvaged mid-run; remaining tickets were not processed.');
 		console.error('Inspect with `git status`, sort the tree out, then re-run.');
+		process.exit(1);
+	}
+
+	// An agent left its ticket past the stage its prompt named; nothing was committed.  Exit
+	// non-zero so a supervisor does not restart straight into a startup salvage, which would
+	// commit the overrun without the ticket's own subject — the one the review stage greps for.
+	if (runCtx.stageOverrun) {
+		console.error(`\nHalted: ${runCtx.stageOverrun}`);
+		console.error('Nothing was committed and remaining tickets were not processed; re-run once it is committed.');
 		process.exit(1);
 	}
 

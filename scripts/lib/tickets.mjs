@@ -109,6 +109,28 @@ export function isPrereqSatisfied(prereqStage, ticketStage) {
 	return pr > tr;
 }
 
+/**
+ * Null when the agent that just ran `ticket` left its slug no further along
+ * than `nextStageFor(ticket)` — the stage its prompt named — or parked it in
+ * `blocked/`, or split it away into new slugs.  Otherwise a diagnostic saying
+ * where the ticket went and how to commit it by hand.  The runner's commit
+ * subject is built from the pre-run ticket, so an `implement/` ticket written
+ * straight into `complete/` would otherwise land as an ordinary
+ * `ticket(implement): <slug>`, with nothing saying review was skipped.
+ */
+export async function stageOverrunFor(ticket, ticketsDir) {
+	const directed = nextStageFor(ticket);
+	if (directed == null) return null;
+	const found = (await indexAllTickets(ticketsDir)).get(ticket.slug);
+	// A tombstone is an earlier completion of a reused slug, not where this run left the file.
+	if (!found || found.pruned) return null;
+	const rank = STAGE_RANK[found.stage];  // undefined for blocked/: a sideways park, not an overrun
+	if (rank == null || rank <= STAGE_RANK[directed]) return null;
+	return `${ticket.slug} was directed ${transitionLabel(ticket)}, but the agent left it in ${boardLocation(found.stage, found.folder)}.  `
+		+ `Move it to ${directed}/ and commit as "ticket(${ticket.stage}): ${ticket.slug}", `
+		+ `or commit it where it is with a subject that names the skipped stage.`;
+}
+
 /** `stage/` or `stage/folder/` — where a ticket sits, as the runner prints it. */
 export function boardLocation(stage, folder) {
 	return folder ? `${stage}/${folder}/` : `${stage}/`;
