@@ -6,7 +6,10 @@
  * Flow per attempt:
  *   1. Fetch the upstream remote/branch, rebase onto it.
  *   2. Clean rebase → push. A push rejected by a racing pusher retries fetch+rebase+push a
- *      bounded number of times (MAX_PUSH_RACE_RETRIES) rather than force-pushing.
+ *      bounded number of times (MAX_PUSH_RACE_RETRIES) rather than force-pushing. A push refused
+ *      by a local pre-push hook is a verdict on the commits themselves, so it is not retried: it
+ *      writes `.sync-blocked` at once, with git's output as the reason. Any other push failure
+ *      (network, authentication, a server-side refusal) counts toward the failure budget below.
  *   3. A conflicted rebase hands the conflict to one bounded agent turn per conflicting commit
  *      (runResolveAgent): it resolves the files in place, verifies the repo's own build/tests,
  *      and stops — it never runs rebase/commit/push itself. The runner trusts the agent's verdict
@@ -341,6 +344,26 @@ function bringSubmodulesAlong(repoRoot, preRebaseHead) {
 	}
 }
 
+/** Cap on git's output carried into a `.sync-blocked` reason — a hook may print a lot. */
+const MAX_REFUSAL_OUTPUT_CHARS = 4000;
+
+/**
+ * Sort a failed `git push`'s combined output into 'race' (the remote moved on — refetch, rebase
+ * and retry), 'refused-locally' (a local pre-push hook said no before git contacted the remote
+ * for the update, so no ref status line is printed) or 'other'.
+ * NOTE: these are git's English messages; under another LANG every failure reads as 'other',
+ * which still prints the output and stops after the failure budget — no worse than before.
+ */
+function classifyPushFailure(output) {
+	if (/^ ! \[rejected\] .*\((fetch first|non-fast-forward)\)\s*$/m.test(output)) return 'race';
+	if (output.includes('failed to push some refs') && !/^ ! \[(remote )?rejected\] /m.test(output)) return 'refused-locally';
+	return 'other';
+}
+
+function firstLine(output) {
+	return output.split('\n').map(s => s.trim()).find(Boolean) ?? '(no output)';
+}
+
 function pushUpstream(repoRoot, upstream) {
 	const { remote, branch } = splitUpstream(upstream);
 	// Explicit refspec, never `git push` bare: this must never become a force-push, and spelling
@@ -432,8 +455,21 @@ export async function syncAfterTicket(ctx, { ticket = null, agentRunner } = {}) 
 			console.log(`[runner] sync: pushed ${rebased.ourCommits.length} commit(s) to ${upstream}.`);
 			return { outcome: 'pushed' };
 		}
+		const output = push.output.trim();
+		const kind = classifyPushFailure(output);
+		if (kind === 'refused-locally') {
+			console.error(`[runner] sync: a local pre-push hook refused the push to ${upstream}; not retrying — the refused commit has to be fixed by hand.\n${output}`);
+			// No failure budget: a hook verdict won't clear on its own, and every further ticket
+			// would stack another commit on the one that has to be rewritten.
+			const record = await writeSyncBlocked(ctx.ticketsDir, { upstream, ticket, reason: `push refused by a local pre-push hook\n${output.slice(0, MAX_REFUSAL_OUTPUT_CHARS)}`, ourCommits: commitSummaries(repoRoot, `${upstream}..HEAD`), theirCommits: [], conflictedFiles: [] });
+			return { outcome: 'blocked', record };
+		}
+		if (kind === 'other') {
+			console.error(`[runner] sync: push to ${upstream} failed:\n${output}`);
+			return await recordOrCountFailure(ctx, { upstream, ticket, reason: `push failed — ${firstLine(output)}`, ourCommits: commitSummaries(repoRoot, `${upstream}..HEAD`), theirCommits: [], conflictedFiles: [] });
+		}
 		if (attempt < MAX_PUSH_RACE_RETRIES) {
-			console.warn(`[runner] sync: push to ${upstream} rejected (attempt ${attempt + 1}/${MAX_PUSH_RACE_RETRIES + 1}) — another pusher won the race; retrying.`);
+			console.warn(`[runner] sync: push to ${upstream} rejected (attempt ${attempt + 1}/${MAX_PUSH_RACE_RETRIES + 1}) — another pusher won the race; retrying.\n${output}`);
 		}
 	}
 

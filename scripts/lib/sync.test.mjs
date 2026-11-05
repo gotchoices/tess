@@ -395,6 +395,27 @@ test('repeated failures write .sync-blocked only once the budget is spent, and n
 	assert.deepEqual(onDisk.ourCommits.length, 1);
 });
 
+test('a push refused by a local pre-push hook blocks at once, with the hook output as the reason', async (t) => {
+	const origin = makeBareOrigin(t);
+	seedOrigin(t, origin, { 'a.txt': 'a\n' });
+	const clone = makeClone(t, origin, 'a');
+	const hooks = mkdtempSync(join(tmpdir(), 'tess-sync-hooks-'));
+	t.after(() => rmSync(hooks, { recursive: true, force: true }));
+	writeFileSync(join(hooks, 'pre-push'), '#!/bin/sh\necho PIN-GUARD-MARKER >&2\nexit 1\n', { mode: 0o755 });
+	run(clone, `git config core.hooksPath "${hooks}"`);
+	writeFile(clone, 'b.txt', 'b\n');
+	commit(clone, 'ticket(implement): example-ticket');
+	const ctx = makeCtx(clone);
+
+	const result = await syncAfterTicket(ctx, { ticket: fakeTicket });
+
+	assert.equal(result.outcome, 'blocked');
+	const onDisk = await readSyncBlocked(ctx.ticketsDir);
+	assert.equal(onDisk.attempts, 1);
+	assert.match(onDisk.reason, /PIN-GUARD-MARKER/);
+	assert.deepEqual(originLog(origin), ['seed']);
+});
+
 // ── sweepSyncBlocked ──────────────────────────────────────────────────────────
 
 test('sweepSyncBlocked is a no-op when there is nothing to sweep', async (t) => {
