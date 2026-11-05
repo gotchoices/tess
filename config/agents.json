@@ -3,7 +3,7 @@
     "model": {
       "easy": "opus",
       "medium": "opus",
-      "hard": "fable"
+      "hard": "opus"
     },
     "effort": {
       "fix": "high",
