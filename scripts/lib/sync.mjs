@@ -208,11 +208,11 @@ const KEPT_BECAUSE_LANDED = 'it has a ticket in `review/` or `complete/`, so cod
 const KEPT_BECAUSE_PUSHED = 'neither split has code committed yet, and other checkouts can already see the one on the upstream and may have started working it, while this checkout\'s was never pushed';
 
 /**
- * Which split of a raced ticket survives: `{ keptSide, kept, discarded, why }`, or null when both
- * have landed work — removing either then means reverting code, which needs a person. The runner
- * decides rather than the resolve agent, so the outcome is predictable and checkable.
+ * Which split of a raced ticket survives: `{ parentPath, keptSide, kept, discarded, why }`, or null
+ * when both have landed work — removing either then means reverting code, which needs a person.
+ * The runner decides rather than the resolve agent, so the outcome is predictable and checkable.
  */
-function chooseSplit({ ours, theirs }) {
+function chooseSplit({ parentPath, ours, theirs }) {
 	if (ours.landed && theirs.landed) return null;
 	if (ours.landed) {
 		// NOTE: keeping ours discards children already pushed, which a third checkout may be
@@ -220,9 +220,9 @@ function chooseSplit({ ours, theirs }) {
 		// advanced on the other", which findSplitRaces does not report, and shows up as a review/
 		// ticket whose split was discarded. If that happens in practice, also report that shape
 		// when the deleting commit is a `sync: discard duplicate split` commit.
-		return { keptSide: 'ours', kept: ours, discarded: theirs, why: KEPT_BECAUSE_LANDED };
+		return { parentPath, keptSide: 'ours', kept: ours, discarded: theirs, why: KEPT_BECAUSE_LANDED };
 	}
-	return { keptSide: 'theirs', kept: theirs, discarded: ours, why: theirs.landed ? KEPT_BECAUSE_LANDED : KEPT_BECAUSE_PUSHED };
+	return { parentPath, keptSide: 'theirs', kept: theirs, discarded: ours, why: theirs.landed ? KEPT_BECAUSE_LANDED : KEPT_BECAUSE_PUSHED };
 }
 
 /** The `.sync-blocked` reason for split races neither side can give up without reverting code. */
@@ -479,13 +479,12 @@ async function splitResolveProblem(ticketsDir, decided, before) {
 }
 
 /**
- * Run the one bounded turn over the split races found before the rebase, then check the board
- * itself (`splitResolveProblem`) and commit, the same trust boundary as
- * `runDuplicateSlugResolveAgent`.
+ * Run the one bounded turn over the split races found (and `chooseSplit`-decided) before the
+ * rebase, then check the board itself (`splitResolveProblem`) and commit, the same trust boundary
+ * as `runDuplicateSlugResolveAgent`.
  */
-async function runSplitRaceResolveAgent(ctx, { ticket, upstream, splitRaces, ourCommits, theirCommits }, { agentRunner = runAgent } = {}) {
+async function runSplitRaceResolveAgent(ctx, { ticket, upstream, decided, ourCommits, theirCommits }, { agentRunner = runAgent } = {}) {
 	const { repoRoot, ticketsDir, opts } = ctx;
-	const decided = splitRaces.map(race => ({ parentPath: race.parentPath, ...chooseSplit(race) }));
 	const parents = [...new Set(decided.map(d => parseSlug(d.parentPath)))].join(', ');
 	const before = await indexAllTickets(ticketsDir);
 	const prompt = buildSplitRacePrompt({ ticket, upstream, prefix: ticketsPrefix(ctx), decided, board: before, ourCommits, theirCommits });
@@ -511,9 +510,9 @@ async function runSplitRaceResolveAgent(ctx, { ticket, upstream, splitRaces, our
 }
 
 /** Post-rebase gate for split races found before the rebase (module doc, step 4); none is a no-op. */
-async function gateSplitRaces(ctx, { ticket, upstream, splitRaces, ourCommits, theirCommits }, { agentRunner } = {}) {
-	if (splitRaces.length === 0) return { ok: true };
-	return await runSplitRaceResolveAgent(ctx, { ticket, upstream, splitRaces, ourCommits, theirCommits }, { agentRunner });
+async function gateSplitRaces(ctx, { ticket, upstream, decided, ourCommits, theirCommits }, { agentRunner } = {}) {
+	if (decided.length === 0) return { ok: true };
+	return await runSplitRaceResolveAgent(ctx, { ticket, upstream, decided, ourCommits, theirCommits }, { agentRunner });
 }
 
 /**
@@ -536,7 +535,8 @@ async function rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner } = {
 
 	// Read before the rebase: replaying ours rewrites it, and drops our copy of any commit theirs already holds.
 	const splitRaces = theirCommits.length === 0 ? [] : findSplitRaces(ticketChanges(ctx, `${upstream}..HEAD`), ticketChanges(ctx, `HEAD..${upstream}`));
-	const undecidable = splitRaces.filter(race => !chooseSplit(race));
+	const decided = splitRaces.map(chooseSplit);
+	const undecidable = splitRaces.filter((_, i) => !decided[i]);
 	if (undecidable.length > 0) {
 		return { ok: false, blockNow: true, reason: bothLandedReason(ctx, undecidable), ourCommits, theirCommits, conflictedFiles: [] };
 	}
@@ -570,7 +570,7 @@ async function rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner } = {
 	}
 
 	for (const gate of [gateDuplicateSlugs, gateSplitRaces]) {
-		const passed = await gate(ctx, { ticket, upstream, splitRaces, ourCommits, theirCommits }, { agentRunner });
+		const passed = await gate(ctx, { ticket, upstream, decided, ourCommits, theirCommits }, { agentRunner });
 		if (!passed.ok) {
 			tryGit(repoRoot, ['reset', '--hard', preRebaseHead]);
 			return { ok: false, reason: passed.reason, ourCommits, theirCommits, conflictedFiles: [] };
