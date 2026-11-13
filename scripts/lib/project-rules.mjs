@@ -9,8 +9,9 @@
  * then runs to the next fence, by the same fence rules as a ticket header, and
  * the body is everything after it.  With no opening fence the whole file is
  * body.  (A ticket's unfenced-header rule would read an addendum's leading
- * prose as fields.)  Tess reads two header fields, `anchor-fields:` and
- * `runner-shards:`; any other field is left to other tools.
+ * prose as fields.)  Tess reads three header fields, `anchor-fields:`,
+ * `runner-shards:` and `anchor-baseline:`; any other field is left to other
+ * tools.
  *
  * Anchors are opt-in.  A board requires every worked ticket to name one only
  * once some addendum lists at least one field under `anchor-fields:` — that
@@ -19,6 +20,18 @@
  * alone.  A project with no addenda, or none that lists a field, never sees
  * an anchor problem: `architecture:` is then just a header field agents may
  * fill.
+ *
+ * `anchor-baseline: <path>` names a JSON file, relative to the project root
+ * (the tickets directory's parent), that grandfathers a fixed set of tickets
+ * filed before the anchor rule existed: a top-level object keyed by ticket
+ * slug, in the shape a project's own static anchor check already ledgers
+ * (e.g. `check-ticket-anchors.mjs`'s baseline).  A ticket whose slug is a key
+ * in that object counts as anchored even with no anchor field — so the one
+ * ledger a project maintains for its static check also clears the ticket for
+ * pickup, instead of the two silently disagreeing. Opt-in and independent of
+ * `anchor-fields:`: with no declaration no ticket is grandfathered. A missing
+ * or unparsable file fails closed (grandfathers nothing) and is reported as a
+ * board error, the same as a malformed `runner-shards:`.
  *
  * `runner-shards: N` says N runners on separate clones share the board, each
  * started with `--shard k/N`; run.mjs refuses a start that would leave that
@@ -46,8 +59,9 @@ const FIELD_NAME_RE = /^[a-z][a-z0-9-]*$/;
 const RUNNER_SHARDS_RE = /^\d+$/;
 
 /**
- * Parse one addendum.  Returns `{ rule: { name, body, anchorFields, runnerShards }, errors }`,
- * `runnerShards` a number, or null when the header does not declare a valid one.
+ * Parse one addendum.  Returns `{ rule: { name, body, anchorFields, runnerShards, anchorBaseline }, errors }`,
+ * `runnerShards` a number or null, `anchorBaseline` a path string or null,
+ * each null when the header does not declare a valid one.
  * A rule with errors is still returned with what could be read; the board
  * check decides what the errors mean.  Line endings are normalised to LF and a
  * byte-order mark is dropped, so the fence on line 1 is found either way.
@@ -57,10 +71,10 @@ export function parseProjectRule(name, text) {
 	const normalized = text.replace(/^﻿/, '').replace(/\r\n/g, '\n');
 	const { lines, opened, start, end, closed } = headerBounds(normalized);
 
-	if (!opened) return { rule: { name, body: normalized, anchorFields: [], runnerShards: null }, errors: [] };
+	if (!opened) return { rule: { name, body: normalized, anchorFields: [], runnerShards: null, anchorBaseline: null }, errors: [] };
 	if (!closed) {
 		return {
-			rule: { name, body: '', anchorFields: [], runnerShards: null },
+			rule: { name, body: '', anchorFields: [], runnerShards: null, anchorBaseline: null },
 			errors: [`${path}: unterminated header — line 1 is a fence with no closing fence, so the file appends and declares nothing`],
 		};
 	}
@@ -85,7 +99,17 @@ export function parseProjectRule(name, text) {
 			errors.push(`${path}: runner-shards: "${shards}" is not a runner count — use a whole number of 2 or more`);
 		}
 	}
-	return { rule: { name, body: lines.slice(end + 1).join('\n'), anchorFields, runnerShards }, errors };
+
+	let anchorBaseline = null;
+	const baseline = headerField(header, 'anchor-baseline');
+	if (baseline !== null) {
+		if (baseline === '') {
+			errors.push(`${path}: anchor-baseline: is empty — name a path to the ledger, or drop the field`);
+		} else {
+			anchorBaseline = baseline;
+		}
+	}
+	return { rule: { name, body: lines.slice(end + 1).join('\n'), anchorFields, runnerShards, anchorBaseline }, errors };
 }
 
 /**
@@ -146,4 +170,23 @@ export function runnerShardsOf(rules) {
 		return { runnerShards: null, errors: [`runner-shards: ${said} — declare one count, or the same count everywhere`] };
 	}
 	return { runnerShards: { count: declaring[0].runnerShards, declaredIn: declaring.map(r => `${DISPLAY_DIR}/${r.name}`) }, errors: [] };
+}
+
+/**
+ * The board's declared anchor-baseline ledger path, as `{ anchorBaseline, errors }`.
+ * `anchorBaseline` is `{ path, declaredIn }` — `path` relative to the project
+ * root, `declaredIn` the addenda that declare it — or null when no addendum
+ * declares one. Addenda that agree are fine; addenda that disagree are an
+ * error and declare nothing, the same shape as `runnerShardsOf`. Loading the
+ * file the path names is the board check's job, not this function's: this
+ * only resolves which path the board agrees on.
+ */
+export function anchorBaselineOf(rules) {
+	const declaring = rules.filter(r => r.anchorBaseline !== null);
+	if (declaring.length === 0) return { anchorBaseline: null, errors: [] };
+	if (new Set(declaring.map(r => r.anchorBaseline)).size > 1) {
+		const said = declaring.map(r => `${DISPLAY_DIR}/${r.name} says ${r.anchorBaseline}`).join(', ');
+		return { anchorBaseline: null, errors: [`anchor-baseline: ${said} — declare one path, or the same path everywhere`] };
+	}
+	return { anchorBaseline: { path: declaring[0].anchorBaseline, declaredIn: declaring.map(r => `${DISPLAY_DIR}/${r.name}`) }, errors: [] };
 }

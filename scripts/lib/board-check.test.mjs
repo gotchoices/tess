@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
 import { checkBoard, readBoardContext, ticketProblems } from './board-check.mjs';
@@ -252,4 +254,51 @@ test('an unanchored ticket lists the project rules errors that may explain it; a
 		],
 		anchored: [],
 	});
+});
+
+test('anchor-baseline: grandfathers a ticket by slug even with no anchor field; a ticket outside the ledger still needs one', async () => {
+	const ticketsDir = await makeBoard({
+		implement: [
+			['3-old-ticket.md', 'description: x\n----\nbody\n'],
+			['new-ticket.md', 'description: x\n----\nbody\n'],
+		],
+		rules: [ARCHITECTURE_ONLY_RULES, ['baseline.md', '---\nanchor-baseline: baseline.json\n---\n']],
+	});
+	await writeFile(join(dirname(ticketsDir), 'baseline.json'), JSON.stringify({ 'old-ticket': { path: 'tickets/implement/3-old-ticket.md' } }), 'utf-8');
+
+	const context = await readBoardContext(ticketsDir);
+	assert.deepEqual(context.rules.errors, []);
+	const tickets = await discoverTickets(ticketsDir, 'implement', Infinity);
+	assert.deepEqual(Object.fromEntries(tickets.map(t => [t.slug, ticketProblems(t, context)])), {
+		'old-ticket': [],
+		'new-ticket': ['no anchor — add architecture: to the header'],
+	});
+});
+
+test('a missing or malformed anchor-baseline file is a board error and grandfathers nothing — failing closed, not open', async () => {
+	const missing = await makeBoard({
+		implement: [['x.md', 'description: x\n----\nbody\n']],
+		rules: [ARCHITECTURE_ONLY_RULES, ['baseline.md', '---\nanchor-baseline: missing.json\n---\n']],
+	});
+	const malformed = await makeBoard({
+		implement: [['x.md', 'description: x\n----\nbody\n']],
+		rules: [ARCHITECTURE_ONLY_RULES, ['baseline.md', '---\nanchor-baseline: bad.json\n---\n']],
+	});
+	await writeFile(join(dirname(malformed), 'bad.json'), 'not json', 'utf-8');
+
+	const missingContext = await readBoardContext(missing);
+	assert.deepEqual(missingContext.rules.errors, ['anchor-baseline: missing.json (declared in tickets/rules/baseline.md) does not exist']);
+	const missingTicket = (await discoverTickets(missing, 'implement', Infinity))[0];
+	assert.deepEqual(ticketProblems(missingTicket, missingContext), [
+		'no anchor — add architecture: to the header',
+		'project rules error, which may be why a field does not count: anchor-baseline: missing.json (declared in tickets/rules/baseline.md) does not exist',
+	]);
+
+	const malformedContext = await readBoardContext(malformed);
+	assert.deepEqual(malformedContext.rules.errors, ['anchor-baseline: bad.json is not valid JSON']);
+	const malformedTicket = (await discoverTickets(malformed, 'implement', Infinity))[0];
+	assert.deepEqual(ticketProblems(malformedTicket, malformedContext), [
+		'no anchor — add architecture: to the header',
+		'project rules error, which may be why a field does not count: anchor-baseline: bad.json is not valid JSON',
+	]);
 });

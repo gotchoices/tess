@@ -15,26 +15,69 @@
  * context rather than each caller re-reading files.
  */
 
-import { anchorFieldsOf, anchorsRequiredBy, readProjectRules, runnerShardsOf } from './project-rules.mjs';
+import { readFile } from 'node:fs/promises';
+import { dirname, join as joinPath } from 'node:path';
+import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, readProjectRules, runnerShardsOf } from './project-rules.mjs';
 import { RELEASES_FILE, currentRelease, rankOf, readReleases } from './releases.mjs';
 import { REVIEW_VALUES, boardLocation, deferralReason, parseListField, parseSlug, readBacklogLayout, resolvePrereqs } from './tickets.mjs';
 
 const RELEASES_PATH = `tickets/${RELEASES_FILE}`;
 
 /**
+ * Load the ledger a declared `anchor-baseline:` path names, as `{ slugs,
+ * errors }` — `slugs` the set of ticket slugs it grandfathers, `new Set()`
+ * with no declaration (opt-in, same as anchor-fields and runner-shards). A
+ * missing or unparsable file fails closed: it grandfathers nothing rather
+ * than silently exempting the whole board, and is reported as a board error.
+ */
+async function loadAnchorBaseline(ticketsDir, declared) {
+	if (!declared) return { slugs: new Set(), errors: [] };
+	const fullPath = joinPath(dirname(ticketsDir), declared.path);
+	let text;
+	try {
+		text = await readFile(fullPath, 'utf-8');
+	} catch (err) {
+		if (err.code === 'ENOENT') return { slugs: new Set(), errors: [`anchor-baseline: ${declared.path} (declared in ${declared.declaredIn.join(', ')}) does not exist`] };
+		throw err;
+	}
+	let parsed;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return { slugs: new Set(), errors: [`anchor-baseline: ${declared.path} is not valid JSON`] };
+	}
+	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+		return { slugs: new Set(), errors: [`anchor-baseline: ${declared.path} must be a JSON object keyed by ticket slug`] };
+	}
+	return { slugs: new Set(Object.keys(parsed)), errors: [] };
+}
+
+/**
  * Everything the board rules read: `{ releases, rules, anchorFields,
- * anchorsRequired, runnerShards }`.  `rules` is `readProjectRules`' `{ rules,
- * errors }`, its errors joined by any disagreement between addenda over
- * `runner-shards:`; `anchorFields` is every header field that counts as an
- * anchor; `anchorsRequired` says whether a worked ticket must name one (see
- * lib/project-rules.mjs `anchorsRequiredBy`); `runnerShards` is the declared
- * runner count, `{ count, declaredIn }` or null (`runnerShardsOf`).
+ * anchorsRequired, anchorBaseline, runnerShards }`.  `rules` is
+ * `readProjectRules`' `{ rules, errors }`, its errors joined by any
+ * disagreement between addenda over `runner-shards:` or `anchor-baseline:`
+ * and any problem loading the baseline file; `anchorFields` is every header
+ * field that counts as an anchor; `anchorsRequired` says whether a worked
+ * ticket must name one (see lib/project-rules.mjs `anchorsRequiredBy`);
+ * `anchorBaseline` is the set of slugs the declared ledger grandfathers,
+ * `new Set()` with no declaration; `runnerShards` is the declared runner
+ * count, `{ count, declaredIn }` or null (`runnerShardsOf`).
  */
 export async function readBoardContext(ticketsDir) {
 	const [releases, read] = await Promise.all([readReleases(ticketsDir), readProjectRules(ticketsDir)]);
 	const shards = runnerShardsOf(read.rules);
-	const rules = { rules: read.rules, errors: [...read.errors, ...shards.errors] };
-	return { releases, rules, anchorFields: anchorFieldsOf(rules.rules), anchorsRequired: anchorsRequiredBy(rules.rules), runnerShards: shards.runnerShards };
+	const baselineDecl = anchorBaselineOf(read.rules);
+	const baseline = await loadAnchorBaseline(ticketsDir, baselineDecl.anchorBaseline);
+	const rules = { rules: read.rules, errors: [...read.errors, ...shards.errors, ...baselineDecl.errors, ...baseline.errors] };
+	return {
+		releases,
+		rules,
+		anchorFields: anchorFieldsOf(rules.rules),
+		anchorsRequired: anchorsRequiredBy(rules.rules),
+		anchorBaseline: baseline.slugs,
+		runnerShards: shards.runnerShards,
+	};
 }
 
 const ticketCount = n => `${n} ticket${n === 1 ? '' : 's'}`;
@@ -164,9 +207,11 @@ export function hasAnchor(header, anchorFields) {
 
 /**
  * On a board that requires anchors, a ticket names at least one: a non-empty
- * `architecture:` or a field a project addendum declares.  Presence only —
- * whether an `architecture:` path or its `#section` exists is left to the
- * project's link checking, since resolving section slugs would mean
+ * `architecture:` or a field a project addendum declares, or its slug is a
+ * key in the declared `anchor-baseline:` ledger (a ticket filed before the
+ * rule existed, grandfathered there rather than retrofitted).  Presence
+ * only — whether an `architecture:` path or its `#section` exists is left to
+ * the project's link checking, since resolving section slugs would mean
  * re-implementing heading-slug rules.  A board with no addendum declaring
  * anchor fields never has this problem.
  *
@@ -174,8 +219,8 @@ export function hasAnchor(header, anchorFields) {
  * startup board check stops the run on such errors, but an addendum broken
  * mid-run is seen only here, so its errors are listed with the problem.
  */
-function anchorProblems({ header }, { anchorFields, anchorsRequired, rules }) {
-	if (!anchorsRequired || hasAnchor(header, anchorFields)) return [];
+function anchorProblems({ header, slug }, { anchorFields, anchorsRequired, rules, anchorBaseline }) {
+	if (!anchorsRequired || hasAnchor(header, anchorFields) || anchorBaseline.has(slug)) return [];
 	const named = anchorFields.map(field => `${field}:`);
 	return [
 		`no anchor — add ${named.length === 1 ? named[0] : `one of ${named.join(', ')}`} to the header`,

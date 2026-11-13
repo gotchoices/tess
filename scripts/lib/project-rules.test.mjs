@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { anchorFieldsOf, anchorsRequiredBy, parseProjectRule, readProjectRules, runnerShardsOf } from './project-rules.mjs';
+import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, parseProjectRule, readProjectRules, runnerShardsOf } from './project-rules.mjs';
 import { makeBoard } from './test-board.mjs';
 
 const BAD_NAME = 'is not a field name — use a lowercase letter followed by lowercase letters, digits or hyphens';
@@ -12,7 +12,7 @@ test('a fenced declaration header is parsed, and the body is everything after it
 	const text = '---\nanchor-fields: features, aspects\nowner: rubric\n---\nRule text.\n\nMore.\n';
 
 	assert.deepEqual(parseProjectRule('rubric.md', text), {
-		rule: { name: 'rubric.md', body: 'Rule text.\n\nMore.\n', anchorFields: ['features', 'aspects'], runnerShards: null },
+		rule: { name: 'rubric.md', body: 'Rule text.\n\nMore.\n', anchorFields: ['features', 'aspects'], runnerShards: null, anchorBaseline: null },
 		errors: [],
 	});
 });
@@ -21,14 +21,14 @@ test('anchor-fields: takes the bracket and list forms; a four-dash fence, CRLF e
 	const bracket = parseProjectRule('a.md', '﻿----\r\nanchor-fields: [features]\r\n----\r\nBody\r\n');
 	const list = parseProjectRule('b.md', '---\nanchor-fields:\n  - features\n  - aspects\n---\nBody\n');
 
-	assert.deepEqual(bracket, { rule: { name: 'a.md', body: 'Body\n', anchorFields: ['features'], runnerShards: null }, errors: [] });
+	assert.deepEqual(bracket, { rule: { name: 'a.md', body: 'Body\n', anchorFields: ['features'], runnerShards: null, anchorBaseline: null }, errors: [] });
 	assert.deepEqual(list.rule.anchorFields, ['features', 'aspects']);
 });
 
 test('a file whose first line is not a fence is all body and declares nothing', () => {
 	const text = 'anchor-fields: features\n\nProse that happens to start like a field.\n---\nMore prose.\n';
 
-	assert.deepEqual(parseProjectRule('plain.md', text), { rule: { name: 'plain.md', body: text, anchorFields: [], runnerShards: null }, errors: [] });
+	assert.deepEqual(parseProjectRule('plain.md', text), { rule: { name: 'plain.md', body: text, anchorFields: [], runnerShards: null, anchorBaseline: null }, errors: [] });
 });
 
 test('an invalid field name is an error naming the file; the valid names still count, tess\'s own architecture among them', () => {
@@ -44,7 +44,7 @@ test('an invalid field name is an error naming the file; the valid names still c
 test('an opening fence with no closing fence is an unterminated-header error, and the file appends and declares nothing', () => {
 	const { rule, errors } = parseProjectRule('open.md', '---\nanchor-fields: features\nRule text.\n');
 
-	assert.deepEqual(rule, { name: 'open.md', body: '', anchorFields: [], runnerShards: null });
+	assert.deepEqual(rule, { name: 'open.md', body: '', anchorFields: [], runnerShards: null, anchorBaseline: null });
 	assert.deepEqual(errors, ['tickets/rules/open.md: unterminated header — line 1 is a fence with no closing fence, so the file appends and declares nothing']);
 });
 
@@ -119,5 +119,33 @@ test('runner-shards: a whole number of 2 or more declares the count; anything el
 		const parsed = files.map(([name, text]) => parseProjectRule(name, text));
 		const folded = runnerShardsOf(parsed.map(p => p.rule));
 		assert.deepEqual({ runnerShards: folded.runnerShards, errors: [...parsed.flatMap(p => p.errors), ...folded.errors] }, { runnerShards, errors }, JSON.stringify(files));
+	}
+});
+
+test('anchor-baseline: a non-empty path declares it; an empty field, or two addenda disagreeing, is an error that declares nothing', () => {
+	const rows = [
+		{ files: [['a.md', 'Prose only.\n']], anchorBaseline: null, errors: [] },
+		{ files: [['a.md', '---\nanchor-baseline: scripts/ticket-anchor-baseline.json\n---\n']], anchorBaseline: { path: 'scripts/ticket-anchor-baseline.json', declaredIn: ['tickets/rules/a.md'] }, errors: [] },
+		{
+			files: [['a.md', '---\nanchor-baseline: ledger.json\n---\n'], ['b.md', '---\nanchor-fields: features\nanchor-baseline: ledger.json\n---\nBody\n']],
+			anchorBaseline: { path: 'ledger.json', declaredIn: ['tickets/rules/a.md', 'tickets/rules/b.md'] },
+			errors: [],
+		},
+		{
+			files: [['a.md', '---\nanchor-baseline:\n---\n']],
+			anchorBaseline: null,
+			errors: ['tickets/rules/a.md: anchor-baseline: is empty — name a path to the ledger, or drop the field'],
+		},
+		{
+			files: [['a.md', '---\nanchor-baseline: one.json\n---\n'], ['b.md', '---\nanchor-baseline: two.json\n---\n']],
+			anchorBaseline: null,
+			errors: ['anchor-baseline: tickets/rules/a.md says one.json, tickets/rules/b.md says two.json — declare one path, or the same path everywhere'],
+		},
+	];
+
+	for (const { files, anchorBaseline, errors } of rows) {
+		const parsed = files.map(([name, text]) => parseProjectRule(name, text));
+		const folded = anchorBaselineOf(parsed.map(p => p.rule));
+		assert.deepEqual({ anchorBaseline: folded.anchorBaseline, errors: [...parsed.flatMap(p => p.errors), ...folded.errors] }, { anchorBaseline, errors }, JSON.stringify(files));
 	}
 });
