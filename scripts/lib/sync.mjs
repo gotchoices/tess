@@ -23,14 +23,22 @@
  *      resolve that succeeds is committed as its own commit (the agent never commits). A resolve
  *      that fails resets the working tree to its pre-rebase HEAD, exactly as a `rebase --abort`
  *      would, since there is no in-progress rebase left to abort by the time this gate runs.
- *      Once the gate passes, a submodule checkout that sat on the gitlink the rebase replaced is
- *      checked out at the new one (`followSubmodulePins`, lib/git.mjs): `git rebase` moves the
- *      gitlink and never the checkout.
- *   5. A resolve that fails (conflict or duplicate-slug) leaves the local commit(s) in place,
- *      unpushed, and counts toward MAX_CONSECUTIVE_SYNC_FAILURES. Once that budget is spent,
- *      `.sync-blocked` is written and the caller (run-ticket.mjs) reports a `stopped` outcome so
- *      the run ends — a human (or a fresh restart, which re-attempts via `sweepSyncBlocked`) has
- *      to look at it.
+ *      A second gate catches two checkouts that each split the same ticket into different
+ *      successors: both delete the parent and add differently named files, so neither git nor the
+ *      board re-read sees anything. It is detected from history *before* the rebase
+ *      (`findSplitRaces`), since afterwards both sides' deletions look the same; the runner picks
+ *      which split to keep (`chooseSplit`), and after the duplicate-slug gate one bounded turn
+ *      (runSplitRaceResolveAgent) removes the other, verified against the board and committed the
+ *      same way. Once both gates pass, a submodule checkout that sat on the gitlink the rebase
+ *      replaced is checked out at the new one (`followSubmodulePins`, lib/git.mjs): `git rebase`
+ *      moves the gitlink and never the checkout.
+ *   5. A resolve that fails (conflict, duplicate-slug or split race) leaves the local commit(s) in
+ *      place, unpushed, and counts toward MAX_CONSECUTIVE_SYNC_FAILURES. Once that budget is
+ *      spent, `.sync-blocked` is written and the caller (run-ticket.mjs) reports a `stopped`
+ *      outcome so the run ends — a human (or a fresh restart, which re-attempts via
+ *      `sweepSyncBlocked`) has to look at it. A split race where both splits already have code
+ *      committed skips the budget: no rebase is attempted and `.sync-blocked` is written at once,
+ *      since retrying cannot choose between two sides' code.
  *
  * Hard rules carried over from the design: never force-push; never resolve a conflict by taking
  * one side wholesale (see buildResolvePrompt); push only commits a verification step passed.
@@ -45,10 +53,10 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, writeFile, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { followSubmodulePins } from './git.mjs';
 import { runAgent } from './process.mjs';
-import { findDuplicateSlugs } from './tickets.mjs';
+import { KNOWN_STAGES, boardLocation, byName, findDuplicateSlugs, indexAllTickets, parseSlug } from './tickets.mjs';
 
 export const SYNC_BLOCKED_FILE = '.sync-blocked';
 
@@ -106,6 +114,170 @@ function formatCommits(commits) {
 	return commits.length === 0 ? '  (none)' : commits.map(c => `  - ${c}`).join('\n');
 }
 
+/** The tickets folder as a repo-relative git pathspec — `tickets` unless a project moved it. */
+function ticketsPrefix(ctx) {
+	return relative(ctx.repoRoot, ctx.ticketsDir).replaceAll('\\', '/');
+}
+
+/** `<stage>/<file>.md` or `backlog/<folder>/<file>.md` relative to the tickets folder, or null for anything else under it. */
+function ticketPath(repoPath, prefix) {
+	if (!repoPath.startsWith(`${prefix}/`) || !repoPath.endsWith('.md')) return null;
+	const rel = repoPath.slice(prefix.length + 1);
+	const parts = rel.split('/');
+	if (parts.length === 2 && KNOWN_STAGES.includes(parts[0])) return rel;
+	if (parts.length === 3 && parts[0] === 'backlog' && !parts[1].startsWith('.')) return rel;
+	return null;
+}
+
+/**
+ * Every commit in `range` that touches the tickets folder, oldest first, as
+ * `{ summary: '<short-sha> <subject>', changes: [{ status: 'A'|'D'|'M', path }] }` with `path` a
+ * `ticketPath`. `--no-renames` matters: with rename detection a stage move reads as one `R` line
+ * and the delete `findSplitRaces` looks for disappears.
+ * NOTE: a merge commit lists no files without `--diff-merges`, so its changes are not attributed;
+ * tess's sync ranges are linear. If a range ever holds merges, add `--diff-merges=first-parent`.
+ */
+function ticketChanges(ctx, range) {
+	const prefix = ticketsPrefix(ctx);
+	const out = tryGit(ctx.repoRoot, ['-c', 'core.quotePath=false', 'log', '--reverse', '--no-renames', '--name-status', '--format=%x1e%h %s', range, '--', prefix]);
+	if (!out.ok) return [];
+	return out.output.split('\x1e').slice(1).map(chunk => {
+		const [summary, ...lines] = chunk.split('\n');
+		const changes = lines.flatMap(line => {
+			const match = line.match(/^([ADM])\t(.+)$/);
+			const path = match && ticketPath(match[2], prefix);
+			return path ? [{ status: match[1], path }] : [];
+		});
+		return { summary: summary.trim(), changes };
+	});
+}
+
+const LANDED_STAGES = ['review', 'complete'];
+
+/**
+ * One side's split of `parentPath`: the successor slugs (`closure`) — what the commit(s) deleting
+ * it added, then what any later commit deleting a successor added, so a split child that was
+ * itself split carries its grandchildren — the commits that made or touched them, and whether
+ * any successor was added under `review/` or `complete/` (`landed`: code was committed for it).
+ */
+function splitOf(side, parentPath) {
+	const closure = new Set();
+	const commits = [];
+	const inClosure = change => closure.has(parseSlug(change.path));
+	for (const { summary, changes } of side) {
+		const deletesParent = changes.some(c => c.status === 'D' && c.path === parentPath);
+		if (!deletesParent && !changes.some(inClosure)) continue;
+		commits.push(summary);
+		if (deletesParent || changes.some(c => c.status === 'D' && inClosure(c))) {
+			for (const c of changes) if (c.status === 'A') closure.add(parseSlug(c.path));
+		}
+	}
+	const landed = side.some(({ changes }) => changes.some(c => c.status === 'A' && LANDED_STAGES.includes(c.path.split('/')[0]) && inClosure(c)));
+	return { closure, commits, landed };
+}
+
+/**
+ * Ticket paths both sides deleted where each side wrote successors the other did not — two
+ * checkouts splitting the same ticket differently (docs/DESIGN.md § Per-Ticket Sync). Comparing
+ * successor sets, not just the shared deletion, keeps out the shapes that are not a race: the
+ * same stage move on both sides (equal sets), one side's move that also filed a ticket (one set
+ * contains the other), a prune on both (no successors), and a decline on one (none on that side).
+ * Takes `ticketChanges` output for our range and theirs; returns
+ * `[{ parentPath, ours: { closure, only, landed, commits }, theirs: { … } }]`, slug lists sorted.
+ */
+export function findSplitRaces(ourChanges, theirChanges) {
+	const deletedBy = side => new Set(side.flatMap(({ changes }) => changes.filter(c => c.status === 'D').map(c => c.path)));
+	const theirDeletes = deletedBy(theirChanges);
+	const races = [];
+	for (const parentPath of [...deletedBy(ourChanges)].filter(p => theirDeletes.has(p)).sort(byName)) {
+		const ours = splitOf(ourChanges, parentPath);
+		const theirs = splitOf(theirChanges, parentPath);
+		const report = (side, other) => ({
+			closure: [...side.closure].sort(byName),
+			only: [...side.closure].filter(s => !other.closure.has(s)).sort(byName),
+			landed: side.landed,
+			commits: side.commits,
+		});
+		const race = { parentPath, ours: report(ours, theirs), theirs: report(theirs, ours) };
+		if (race.ours.only.length > 0 && race.theirs.only.length > 0) races.push(race);
+	}
+	return races;
+}
+
+const KEPT_BECAUSE_LANDED = 'it has a ticket in `review/` or `complete/`, so code was committed for it, and the other split has none';
+const KEPT_BECAUSE_PUSHED = 'neither split has code committed yet, and other checkouts can already see the one on the upstream and may have started working it, while this checkout\'s was never pushed';
+
+/**
+ * Which split of a raced ticket survives: `{ keptSide, kept, discarded, why }`, or null when both
+ * have landed work — removing either then means reverting code, which needs a person. The runner
+ * decides rather than the resolve agent, so the outcome is predictable and checkable.
+ */
+function chooseSplit({ ours, theirs }) {
+	if (ours.landed && theirs.landed) return null;
+	if (ours.landed) {
+		// NOTE: keeping ours discards children already pushed, which a third checkout may be
+		// working; when it syncs, its move of a discarded child lands as "deleted on one side,
+		// advanced on the other", which findSplitRaces does not report, and shows up as a review/
+		// ticket whose split was discarded. If that happens in practice, also report that shape
+		// when the deleting commit is a `sync: discard duplicate split` commit.
+		return { keptSide: 'ours', kept: ours, discarded: theirs, why: KEPT_BECAUSE_LANDED };
+	}
+	return { keptSide: 'theirs', kept: theirs, discarded: ours, why: theirs.landed ? KEPT_BECAUSE_LANDED : KEPT_BECAUSE_PUSHED };
+}
+
+/** The `.sync-blocked` reason for split races neither side can give up without reverting code. */
+function bothLandedReason(ctx, races) {
+	const prefix = ticketsPrefix(ctx);
+	return [
+		'not rebased: the same ticket was split differently on this checkout and on the upstream, and both splits have a ticket in review/ or complete/, so code was committed on both sides. A person has to keep one split and revert the other\'s code and tickets.',
+		...races.flatMap(({ parentPath, ours, theirs }) => [
+			`${prefix}/${parentPath}`,
+			`  ours: ${ours.commits.join('; ')}`,
+			`  theirs: ${theirs.commits.join('; ')}`,
+		]),
+	].join('\n');
+}
+
+/** The ticket line and the our/their commit lists every resolve prompt opens with. */
+function commitContextLines({ ticket, upstream, ourCommits, theirCommits, ourHeading = 'Our commit(s) just replayed onto the upstream tip' }) {
+	return [
+		ticket ? `The ticket just completed on this checkout: **${ticket.stage}/${ticket.slug}** (${ticket.file}).` : 'No specific ticket is attributed to this sync attempt (this is a startup retry of a previously blocked sync).',
+		'',
+		`## ${ourHeading}`,
+		'',
+		formatCommits(ourCommits),
+		'',
+		`## Commit(s) already on ${upstream} that this checkout did not have`,
+		'',
+		formatCommits(theirCommits),
+	];
+}
+
+/** Create a resolve turn's log file under `logsDir`, headed by `headerLines`; `name(ts)` gives its file name. */
+async function startResolveLog(ctx, name, headerLines) {
+	const ts = new Date().toISOString().replace(/[:.]/g, '-');
+	const logFile = join(ctx.logsDir, name(ts));
+	await writeFile(logFile, [
+		...headerLines,
+		`Agent: ${ctx.opts.agent}`,
+		`Tess: ${ctx.tessVersion}`,
+		`Started: ${new Date().toISOString()}`,
+		'═'.repeat(72),
+		'',
+	].join('\n'));
+	return logFile;
+}
+
+/**
+ * Commit a post-rebase resolve, staging only the tickets folder: the rebase may have moved a
+ * submodule gitlink whose checkout has not followed yet, and `-A` over the whole tree would record
+ * that stale checkout as the pin.
+ */
+function commitTicketsResolve(ctx, subject, ticket) {
+	tryGit(ctx.repoRoot, ['add', '-A', '--', ticketsPrefix(ctx)]);
+	return tryGit(ctx.repoRoot, ['commit', '-m', `${subject}${ticket ? ` found after ${ticket.stage}/${ticket.slug}` : ''}`]);
+}
+
 /**
  * The prompt for one bounded resolve turn. Gives the agent everything it has to reconcile by
  * hand — it cannot `git log` its way to "our" commits mid-rebase, since HEAD is a synthetic
@@ -119,15 +291,7 @@ function buildResolvePrompt({ ticket, upstream, conflicts, ourCommits, theirComm
 		`# Sync conflict resolution (round ${round})`,
 		'',
 		`Rebasing this checkout's unpushed commit(s) onto \`${upstream}\` hit a conflict.`,
-		ticket ? `The ticket just completed on this checkout: **${ticket.stage}/${ticket.slug}** (${ticket.file}).` : 'No specific ticket is attributed to this sync attempt (this is a startup retry of a previously blocked sync).',
-		'',
-		'## Our commit(s) being replayed onto the upstream tip',
-		'',
-		formatCommits(ourCommits),
-		'',
-		`## Commit(s) already on ${upstream} that this checkout did not have`,
-		'',
-		formatCommits(theirCommits),
+		...commitContextLines({ ticket, upstream, ourCommits, theirCommits, ourHeading: 'Our commit(s) being replayed onto the upstream tip' }),
 		'',
 		'## Files currently in conflict',
 		'',
@@ -152,20 +316,13 @@ function buildResolvePrompt({ ticket, upstream, conflicts, ourCommits, theirComm
  * `runAgent` from lib/process.mjs).
  */
 async function runResolveAgent(ctx, { ticket, upstream, conflicts, ourCommits, theirCommits, round }, { agentRunner = runAgent } = {}) {
-	const { repoRoot, logsDir, opts, tessVersion } = ctx;
+	const { repoRoot, opts } = ctx;
 	const prompt = buildResolvePrompt({ ticket, upstream, conflicts, ourCommits, theirCommits, round });
-	const ts = new Date().toISOString().replace(/[:.]/g, '-');
-	const logFile = join(logsDir, `sync-resolve.${ts}.round${round}.log`);
-	await writeFile(logFile, [
+	const logFile = await startResolveLog(ctx, ts => `sync-resolve.${ts}.round${round}.log`, [
 		`Sync conflict resolve — round ${round}`,
 		`Upstream: ${upstream}`,
 		`Conflicted files: ${conflicts.join(', ') || '(none listed)'}`,
-		`Agent: ${opts.agent}`,
-		`Tess: ${tessVersion}`,
-		`Started: ${new Date().toISOString()}`,
-		'═'.repeat(72),
-		'',
-	].join('\n'));
+	]);
 
 	const result = await agentRunner(opts.agent, prompt, repoRoot, logFile, { stage: 'sync-resolve', difficulty: 'hard' });
 	const stillConflicted = conflictedFiles(repoRoot);
@@ -190,15 +347,7 @@ function buildDuplicateSlugPrompt({ ticket, upstream, duplicates, ourCommits, th
 		'# Sync duplicate-ticket-slug resolution',
 		'',
 		`Rebasing this checkout's unpushed commit(s) onto \`${upstream}\` reported success with no conflicts, but left ${duplicates.length} ticket slug(s) sitting at more than one path on the board — the shape a rebase produces when it replays an old add past a later delete with nothing to flag as a conflict.`,
-		ticket ? `The ticket just completed on this checkout: **${ticket.stage}/${ticket.slug}** (${ticket.file}).` : 'No specific ticket is attributed to this sync attempt (this is a startup retry of a previously blocked sync).',
-		'',
-		'## Our commit(s) just replayed onto the upstream tip',
-		'',
-		formatCommits(ourCommits),
-		'',
-		`## Commit(s) already on ${upstream} that this checkout did not have`,
-		'',
-		formatCommits(theirCommits),
+		...commitContextLines({ ticket, upstream, ourCommits, theirCommits }),
 		'',
 		'## Duplicate slugs',
 		'',
@@ -224,20 +373,13 @@ function buildDuplicateSlugPrompt({ ticket, upstream, duplicates, ourCommits, th
  * rebase step left here to fold the fix into.
  */
 async function runDuplicateSlugResolveAgent(ctx, { ticket, upstream, duplicates, ourCommits, theirCommits }, { agentRunner = runAgent } = {}) {
-	const { repoRoot, ticketsDir, logsDir, opts, tessVersion } = ctx;
+	const { repoRoot, ticketsDir, opts } = ctx;
 	const prompt = buildDuplicateSlugPrompt({ ticket, upstream, duplicates, ourCommits, theirCommits });
-	const ts = new Date().toISOString().replace(/[:.]/g, '-');
-	const logFile = join(logsDir, `sync-dedup.${ts}.log`);
-	await writeFile(logFile, [
+	const logFile = await startResolveLog(ctx, ts => `sync-dedup.${ts}.log`, [
 		'Sync duplicate-slug resolve',
 		`Upstream: ${upstream}`,
 		`Duplicate slugs: ${duplicates.map(d => d.slug).join(', ') || '(none listed)'}`,
-		`Agent: ${opts.agent}`,
-		`Tess: ${tessVersion}`,
-		`Started: ${new Date().toISOString()}`,
-		'═'.repeat(72),
-		'',
-	].join('\n'));
+	]);
 
 	const result = await agentRunner(opts.agent, prompt, repoRoot, logFile, { stage: 'sync-resolve', difficulty: 'hard' });
 	if (result.exitCode !== 0) {
@@ -247,8 +389,7 @@ async function runDuplicateSlugResolveAgent(ctx, { ticket, upstream, duplicates,
 	if (remaining.length > 0) {
 		return { ok: false, reason: `resolve agent exited 0 but ${remaining.length} duplicate slug(s) remain: ${remaining.map(d => d.slug).join(', ')}`, logFile };
 	}
-	tryGit(repoRoot, ['add', '-A', '--', 'tickets/']);
-	const committed = tryGit(repoRoot, ['commit', '-m', `sync: resolve duplicate ticket slug(s)${ticket ? ` found after ${ticket.stage}/${ticket.slug}` : ''}`]);
+	const committed = commitTicketsResolve(ctx, 'sync: resolve duplicate ticket slug(s)', ticket);
 	if (!committed.ok) {
 		return { ok: false, reason: `could not commit the duplicate-slug resolution — ${committed.output.trim()}`, logFile };
 	}
@@ -266,15 +407,125 @@ async function gateDuplicateSlugs(ctx, { ticket, upstream, ourCommits, theirComm
 	return await runDuplicateSlugResolveAgent(ctx, { ticket, upstream, duplicates, ourCommits, theirCommits }, { agentRunner });
 }
 
+const isOnBoard = (board, slug) => board.has(slug) && !board.get(slug).pruned;
+
+/**
+ * The prompt for the one bounded turn over split races found before the rebase. Each race has
+ * already been decided (`chooseSplit`), so the agent removes the discarded split, carries over
+ * anything only it said, and re-points `prereq:` lines; `board` is `indexAllTickets` read just
+ * before the turn, for where each successor sits now.
+ */
+function buildSplitRacePrompt({ ticket, upstream, prefix, decided, board, ourCommits, theirCommits }) {
+	const where = slug => {
+		const record = board.get(slug);
+		return isOnBoard(board, slug) ? `- \`${prefix}/${boardLocation(record.stage, record.folder)}${record.file}\`` : `- \`${slug}\` (no longer on the board)`;
+	};
+	const sideName = side => (side === 'ours' ? 'this checkout\'s split' : `the split already on ${upstream}`);
+	return [
+		'# Sync duplicate-split resolution',
+		'',
+		`Rebasing this checkout's unpushed commit(s) onto \`${upstream}\` reported success, but ${decided.length} ticket(s) were split differently on each side: this checkout and \`${upstream}\` each deleted the same ticket file and wrote their own follow-on tickets, under different names. Nothing conflicted and no slug repeats, so the board now holds both splits of the same work. The runner has already decided which split to keep for each ticket below.`,
+		...commitContextLines({ ticket, upstream, ourCommits, theirCommits }),
+		'',
+		'Commit hashes in this prompt are from before the rebase and still resolve: `git show <sha>` shows either split as it was written.',
+		'',
+		...decided.flatMap(({ parentPath, keptSide, kept, discarded, why }) => [
+			`## \`${prefix}/${parentPath}\``,
+			'',
+			`Keep ${sideName(keptSide)}: ${why}.`,
+			'',
+			'Kept split — its tickets now:',
+			...kept.closure.map(where),
+			'',
+			'Kept split — commits:',
+			formatCommits(kept.commits),
+			'',
+			'Discarded split — remove these tickets:',
+			...discarded.only.map(where),
+			'',
+			'Discarded split — commits:',
+			formatCommits(discarded.commits),
+			'',
+		]),
+		'## Your job',
+		'',
+		'1. `git rm` every ticket file listed under "Discarded split — remove these tickets".',
+		'2. Before deleting, read both splits. If a discarded ticket states a requirement, edge case or acceptance criterion that no kept ticket covers, add it to the body of the kept ticket it fits best, saying which discarded ticket it came from.',
+		'3. Rewrite every `prereq:` anywhere on the board that names a discarded slug to the kept slug that covers the same work, or remove it if none does.',
+		`4. Touch nothing outside \`${prefix}/\`, and \`git add\` what you change there. Do NOT run \`git commit\`, \`git rebase\` or \`git push\` — the runner commits the result once you are done.`,
+		'5. If the two splits turn out not to be the same work, or you cannot tell which kept ticket covers a discarded one, change nothing and say so plainly in your final message. Exit normally either way: the runner checks the board itself, not your narration, and treats this sync attempt as failed if a discarded ticket remains, a kept ticket is gone, or a `prereq:` still names a discarded slug.',
+		'',
+		'Work only inside this repository\'s working tree. Nothing else is expected of you this turn.',
+	].join('\n');
+}
+
+/**
+ * What is still wrong with the board after a split-race resolve turn, or null when it is
+ * resolved: every discarded successor gone, every kept one that was on the board (`before`) still
+ * there, no `prereq:` naming a discarded slug, and no duplicate slug.
+ */
+async function splitResolveProblem(ticketsDir, decided, before) {
+	const after = await indexAllTickets(ticketsDir, { withPrereqs: true });
+	const discarded = new Set(decided.flatMap(d => d.discarded.only));
+	const left = [...discarded].filter(slug => isOnBoard(after, slug));
+	if (left.length > 0) return `discarded ticket(s) still on the board: ${left.join(', ')}`;
+	const lost = decided.flatMap(d => d.kept.closure).filter(slug => isOnBoard(before, slug) && !isOnBoard(after, slug));
+	if (lost.length > 0) return `kept ticket(s) gone from the board: ${lost.join(', ')}`;
+	const dangling = [...after].flatMap(([slug, record]) => record.prereqs.filter(p => discarded.has(p)).map(p => `${slug} → ${p}`));
+	if (dangling.length > 0) return `prereq(s) still name a discarded ticket: ${dangling.join(', ')}`;
+	const duplicates = await findDuplicateSlugs(ticketsDir);
+	if (duplicates.length > 0) return `duplicate slug(s) on the board: ${duplicates.map(d => d.slug).join(', ')}`;
+	return null;
+}
+
+/**
+ * Run the one bounded turn over the split races found before the rebase, then check the board
+ * itself (`splitResolveProblem`) and commit, the same trust boundary as
+ * `runDuplicateSlugResolveAgent`.
+ */
+async function runSplitRaceResolveAgent(ctx, { ticket, upstream, splitRaces, ourCommits, theirCommits }, { agentRunner = runAgent } = {}) {
+	const { repoRoot, ticketsDir, opts } = ctx;
+	const decided = splitRaces.map(race => ({ parentPath: race.parentPath, ...chooseSplit(race) }));
+	const parents = [...new Set(decided.map(d => parseSlug(d.parentPath)))].join(', ');
+	const before = await indexAllTickets(ticketsDir);
+	const prompt = buildSplitRacePrompt({ ticket, upstream, prefix: ticketsPrefix(ctx), decided, board: before, ourCommits, theirCommits });
+	const logFile = await startResolveLog(ctx, ts => `sync-split.${ts}.log`, [
+		'Sync split-race resolve',
+		`Upstream: ${upstream}`,
+		`Split tickets: ${parents}`,
+	]);
+
+	const result = await agentRunner(opts.agent, prompt, repoRoot, logFile, { stage: 'sync-resolve', difficulty: 'hard' });
+	if (result.exitCode !== 0) {
+		return { ok: false, reason: `split-race resolve agent exited ${result.exitCode}`, logFile };
+	}
+	const problem = await splitResolveProblem(ticketsDir, decided, before);
+	if (problem) {
+		return { ok: false, reason: `split-race resolve agent exited 0 but ${problem}`, logFile };
+	}
+	const committed = commitTicketsResolve(ctx, `sync: discard duplicate split of ${parents}`, ticket);
+	if (!committed.ok) {
+		return { ok: false, reason: `could not commit the split-race resolution — ${committed.output.trim()}`, logFile };
+	}
+	return { ok: true, logFile };
+}
+
+/** Post-rebase gate for split races found before the rebase (module doc, step 4); none is a no-op. */
+async function gateSplitRaces(ctx, { ticket, upstream, splitRaces, ourCommits, theirCommits }, { agentRunner } = {}) {
+	if (splitRaces.length === 0) return { ok: true };
+	return await runSplitRaceResolveAgent(ctx, { ticket, upstream, splitRaces, ourCommits, theirCommits }, { agentRunner });
+}
+
 /**
  * Rebase onto `upstream`, driving the resolve agent through as many conflict rounds as the
  * replay needs (bounded by one more than the number of local commits — a well-formed rebase
- * never needs more rounds than commits being replayed), then the post-rebase duplicate-slug gate
- * (`gateDuplicateSlugs`). Returns `{ ok, ourCommits, theirCommits, conflictedFiles, reason? }`.
- * On any failure the working tree ends up exactly what it was before this call, local commits
- * included — a conflict aborts the in-progress rebase; a duplicate-slug finding that can't be
- * resolved resets back to the commit recorded before the rebase started, since by then the
- * rebase itself has already finished and left nothing to abort.
+ * never needs more rounds than commits being replayed), then the post-rebase gates
+ * (`gateDuplicateSlugs`, `gateSplitRaces`). Returns `{ ok, ourCommits, theirCommits,
+ * conflictedFiles, reason?, blockNow? }`. On any failure the working tree ends up exactly what it
+ * was before this call, local commits included — a conflict aborts the in-progress rebase; a gate
+ * finding that can't be resolved resets back to the commit recorded before the rebase started,
+ * since by then the rebase itself has already finished and left nothing to abort. A split race
+ * with code on both sides returns `blockNow` before the rebase starts.
  */
 async function rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner } = {}) {
 	const { repoRoot } = ctx;
@@ -282,6 +533,13 @@ async function rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner } = {
 	const theirCommits = commitSummaries(repoRoot, `HEAD..${upstream}`);
 
 	if (ourCommits.length === 0) return { ok: true, ourCommits, theirCommits }; // nothing of ours to replay
+
+	// Read before the rebase: replaying ours rewrites it, and drops our copy of any commit theirs already holds.
+	const splitRaces = theirCommits.length === 0 ? [] : findSplitRaces(ticketChanges(ctx, `${upstream}..HEAD`), ticketChanges(ctx, `HEAD..${upstream}`));
+	const undecidable = splitRaces.filter(race => !chooseSplit(race));
+	if (undecidable.length > 0) {
+		return { ok: false, blockNow: true, reason: bothLandedReason(ctx, undecidable), ourCommits, theirCommits, conflictedFiles: [] };
+	}
 
 	const preRebaseHead = runGit(repoRoot, ['rev-parse', 'HEAD']).trim();
 
@@ -311,10 +569,12 @@ async function rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner } = {
 		return { ok: false, reason: `rebase failed: ${rebase.output.trim()}`, ourCommits, theirCommits, conflictedFiles: [] };
 	}
 
-	const duplicateGate = await gateDuplicateSlugs(ctx, { ticket, upstream, ourCommits, theirCommits }, { agentRunner });
-	if (!duplicateGate.ok) {
-		tryGit(repoRoot, ['reset', '--hard', preRebaseHead]);
-		return { ok: false, reason: duplicateGate.reason, ourCommits, theirCommits, conflictedFiles: [] };
+	for (const gate of [gateDuplicateSlugs, gateSplitRaces]) {
+		const passed = await gate(ctx, { ticket, upstream, splitRaces, ourCommits, theirCommits }, { agentRunner });
+		if (!passed.ok) {
+			tryGit(repoRoot, ['reset', '--hard', preRebaseHead]);
+			return { ok: false, reason: passed.reason, ourCommits, theirCommits, conflictedFiles: [] };
+		}
 	}
 
 	// Only now: the reset above puts the old gitlinks back, so a checkout moved before it would be
@@ -412,8 +672,10 @@ export async function clearSyncBlocked(ticketsDir) {
  *   { outcome: 'no-upstream' }   — HEAD has no upstream branch; sync is a no-op for this checkout
  *   { outcome: 'nothing-to-sync' } — no unpushed commits
  *   { outcome: 'pushed' }        — landed; `ctx.syncConsecutiveFailures` reset to 0
- *   { outcome: 'blocked', record } — hit MAX_CONSECUTIVE_SYNC_FAILURES; `record` is the
- *                                   `.sync-blocked` content (also written to disk)
+ *   { outcome: 'blocked', record } — hit MAX_CONSECUTIVE_SYNC_FAILURES, or a failure no retry can
+ *                                   clear (a pre-push hook refusal, a split race with code on both
+ *                                   sides); `record` is the `.sync-blocked` content (also written
+ *                                   to disk)
  *   { outcome: 'failed' }        — this attempt failed but the budget isn't spent yet; local
  *                                   commit(s) kept, nothing pushed, try again after the next ticket
  *
@@ -444,6 +706,12 @@ export async function syncAfterTicket(ctx, { ticket = null, agentRunner } = {}) 
 		}
 
 		const rebased = await rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner });
+		if (rebased.blockNow) {
+			console.error(`[runner] sync: ${rebased.reason}`);
+			// No failure budget: retrying finds the same two splits, and every further ticket
+			// would stack another commit on the history a person has to untangle.
+			return await blockAtOnce(ctx, { upstream, ticket, ...rebased });
+		}
 		if (!rebased.ok) {
 			return await recordOrCountFailure(ctx, { upstream, ticket, ...rebased });
 		}
@@ -461,8 +729,7 @@ export async function syncAfterTicket(ctx, { ticket = null, agentRunner } = {}) 
 			console.error(`[runner] sync: a local pre-push hook refused the push to ${upstream}; not retrying — the refused commit has to be fixed by hand.\n${output}`);
 			// No failure budget: a hook verdict won't clear on its own, and every further ticket
 			// would stack another commit on the one that has to be rewritten.
-			const record = await writeSyncBlocked(ctx.ticketsDir, { upstream, ticket, reason: `push refused by a local pre-push hook\n${output.slice(0, MAX_REFUSAL_OUTPUT_CHARS)}`, ourCommits: commitSummaries(repoRoot, `${upstream}..HEAD`), theirCommits: [], conflictedFiles: [] });
-			return { outcome: 'blocked', record };
+			return await blockAtOnce(ctx, { upstream, ticket, reason: `push refused by a local pre-push hook\n${output.slice(0, MAX_REFUSAL_OUTPUT_CHARS)}`, ourCommits: commitSummaries(repoRoot, `${upstream}..HEAD`), theirCommits: [], conflictedFiles: [] });
 		}
 		if (kind === 'other') {
 			console.error(`[runner] sync: push to ${upstream} failed:\n${output}`);
@@ -474,6 +741,11 @@ export async function syncAfterTicket(ctx, { ticket = null, agentRunner } = {}) 
 	}
 
 	return await recordOrCountFailure(ctx, { upstream, ticket, reason: `push kept losing the race to another pusher past ${MAX_PUSH_RACE_RETRIES} retries`, ourCommits: commitSummaries(repoRoot, `${upstream}..HEAD`), theirCommits: [], conflictedFiles: [] });
+}
+
+/** Write `.sync-blocked` now, skipping the failure budget — for a failure no retry can clear. */
+async function blockAtOnce(ctx, info) {
+	return { outcome: 'blocked', record: await writeSyncBlocked(ctx.ticketsDir, info) };
 }
 
 /** Bump the in-memory streak; only touch disk once the budget is actually spent. */

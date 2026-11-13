@@ -12,13 +12,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
 	syncAfterTicket, sweepSyncBlocked, readSyncBlocked, upstreamRef, splitUpstream,
-	conflictedFiles, MAX_CONSECUTIVE_SYNC_FAILURES,
+	conflictedFiles, findSplitRaces, MAX_CONSECUTIVE_SYNC_FAILURES,
 } from './sync.mjs';
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ function makeClone(t, originDir, label) {
 /** Seed the bare origin with one commit on `dev`, via a throwaway seed clone. */
 function seedOrigin(t, originDir, files) {
 	const seed = makeClone(t, originDir, 'seed-tmp');
-	for (const [name, content] of Object.entries(files)) writeFileSync(join(seed, name), content);
+	for (const [name, content] of Object.entries(files)) writeFile(seed, name, content);
 	run(seed, 'git add -A');
 	run(seed, 'git commit -q -m seed');
 	run(seed, 'git push -q origin dev');
@@ -260,10 +260,10 @@ function makeDuplicateSlug(t, origin) {
 	return clone;
 }
 
-/** A fake `agentRunner` that resolves a duplicate-slug finding by deleting the stale copy at `path` — it does not commit; the runner does that once the board is confirmed clean. */
-function fakeDuplicateResolver(path) {
+/** A fake `agentRunner` that resolves a post-rebase gate finding by deleting the ticket files at `paths` — it does not commit; the runner does that once the board is confirmed clean. */
+function removingResolver(...paths) {
 	return async (_agent, _prompt, cwd) => {
-		run(cwd, `git rm -q -- "${path}"`);
+		run(cwd, `git rm -q -- ${paths.map(p => `"${p}"`).join(' ')}`);
 		return { exitCode: 0 };
 	};
 }
@@ -272,7 +272,7 @@ test('syncAfterTicket catches a clean-rebase duplicate slug, resolves it, and pu
 	const origin = makeBareOrigin(t);
 	const clone = makeDuplicateSlug(t, origin);
 
-	const result = await syncAfterTicket(makeCtx(clone), { ticket: fakeTicket, agentRunner: fakeDuplicateResolver('tickets/implement/foo.md') });
+	const result = await syncAfterTicket(makeCtx(clone), { ticket: fakeTicket, agentRunner: removingResolver('tickets/implement/foo.md') });
 
 	assert.equal(result.outcome, 'pushed');
 	assert.ok(!existsSync(join(clone, 'tickets', 'implement', 'foo.md')), 'stale copy removed');
@@ -292,6 +292,148 @@ test('syncAfterTicket resets to the pre-rebase commit when a duplicate slug cann
 	assert.deepEqual(originLog(origin), ['seed', 'ticket(complete): foo'], 'nothing pushed');
 	assert.ok(existsSync(join(clone, 'tickets', 'implement', 'foo.md')), 'working tree restored, not left mid-resolve');
 	assert.ok(!existsSync(join(clone, '.git', 'rebase-merge')) && !existsSync(join(clone, '.git', 'rebase-apply')));
+});
+
+// ── split race: two checkouts splitting the same ticket differently ─────────
+
+/** One commit of `ticketChanges` output: `changeset('ab12 subject', 'D plan/p.md', 'A implement/c.md')`. */
+function changeset(summary, ...changes) {
+	return { summary, changes: changes.map(c => { const [status, path] = c.split(' '); return { status, path }; }) };
+}
+
+test('findSplitRaces reports a ticket only when each side wrote successors the other did not', () => {
+	// docs/DESIGN.md § Per-Ticket Sync: the split-race detection rule and its non-race shapes.
+	const rows = [
+		{
+			name: 'different splits; one side split a child again and implemented a grandchild',
+			ours: [changeset('o1 ticket(plan): p', 'D plan/p.md', 'A implement/a1.md', 'A implement/a2.md')],
+			theirs: [
+				changeset('t1 ticket(plan): p', 'D plan/p.md', 'A plan/b1.md', 'A implement/2-b2.md'),
+				changeset('t2 ticket(implement): other', 'D implement/other.md', 'A review/other.md'),
+				changeset('t3 ticket(plan): b1', 'D plan/b1.md', 'A implement/b1x.md', 'A implement/b1y.md'),
+				changeset('t4 ticket(implement): b1x', 'D implement/b1x.md', 'A review/b1x.md'),
+			],
+			expected: [{
+				parentPath: 'plan/p.md',
+				ours: { only: ['a1', 'a2'], landed: false, commits: ['o1 ticket(plan): p'] },
+				theirs: { only: ['b1', 'b1x', 'b1y', 'b2'], landed: true, commits: ['t1 ticket(plan): p', 't3 ticket(plan): b1', 't4 ticket(implement): b1x'] },
+			}],
+		},
+		{
+			name: 'partly overlapping splits, the shared child under different sequence prefixes',
+			ours: [changeset('o1 ticket(plan): p', 'D plan/p.md', 'A implement/c.md', 'A implement/a1.md')],
+			theirs: [changeset('t1 ticket(plan): p', 'D plan/p.md', 'A implement/3-c.md', 'A implement/b1.md')],
+			expected: [{
+				parentPath: 'plan/p.md',
+				ours: { only: ['a1'], landed: false, commits: ['o1 ticket(plan): p'] },
+				theirs: { only: ['b1'], landed: false, commits: ['t1 ticket(plan): p'] },
+			}],
+		},
+		{
+			name: 'the same stage move on both sides',
+			ours: [changeset('o1 ticket(implement): x', 'D implement/x.md', 'A review/x.md')],
+			theirs: [changeset('t1 ticket(implement): x', 'D implement/x.md', 'A review/x.md')],
+			expected: [],
+		},
+		{
+			name: 'the same move, one side also filing a backlog ticket',
+			ours: [changeset('o1 ticket(implement): x', 'D implement/x.md', 'A review/x.md', 'A backlog/feat-y.md')],
+			theirs: [changeset('t1 ticket(implement): x', 'D implement/x.md', 'A review/x.md')],
+			expected: [],
+		},
+		{
+			name: 'both prune sweeps deleting the same completed ticket',
+			ours: [changeset('o1 tess: prune', 'D complete/old.md')],
+			theirs: [changeset('t1 tess: prune', 'D complete/old.md')],
+			expected: [],
+		},
+		{
+			name: 'one side declined the ticket, the other worked it',
+			ours: [changeset('o1 decline p', 'D plan/p.md')],
+			theirs: [changeset('t1 ticket(plan): p', 'D plan/p.md', 'A implement/p1.md')],
+			expected: [],
+		},
+	];
+	const pick = ({ only, landed, commits }) => ({ only, landed, commits });
+	for (const { name, ours, theirs, expected } of rows) {
+		const races = findSplitRaces(ours, theirs).map(r => ({ parentPath: r.parentPath, ours: pick(r.ours), theirs: pick(r.theirs) }));
+		assert.deepEqual(races, expected, name);
+	}
+});
+
+/** Delete `tickets/plan/parent.md` and add one implement ticket per child, as a plan stage commit. */
+function splitParent(dir, children) {
+	rmSync(join(dir, 'tickets', 'plan', 'parent.md'));
+	for (const child of children) writeFile(dir, `tickets/implement/${child}.md`, `description: ${child}\n----\nbody\n`);
+	commit(dir, 'ticket(plan): parent');
+}
+
+/**
+ * The 2026-11-13 incident: another checkout has pushed its split of `plan/parent.md` into
+ * `b1..b3`, and ours split the same ticket into `a1..a4`. Both delete the same file and add
+ * differently named ones, so the rebase is clean and the board repeats no slug.
+ */
+function makeSplitRace(t, origin) {
+	seedOrigin(t, origin, { 'tickets/plan/parent.md': 'description: parent\n----\nbody\n' });
+	const clone = makeClone(t, origin, 'a');
+	const other = makeClone(t, origin, 'other');
+	splitParent(other, ['b1', 'b2', 'b3']);
+	run(other, 'git push -q origin dev');
+	splitParent(clone, ['a1', 'a2', 'a3', 'a4']);
+	return clone;
+}
+
+const implementFiles = clone => readdirSync(join(clone, 'tickets', 'implement')).sort();
+
+test('syncAfterTicket discards our split when the upstream already holds a different split of the same ticket', async (t) => {
+	// regression: self-sync-cant-see-two-checkouts-splitting-the-same-ticket-differently. Neither
+	// split has code, so the one already pushed is kept.
+	const origin = makeBareOrigin(t);
+	const clone = makeSplitRace(t, origin);
+	const ours = ['a1', 'a2', 'a3', 'a4'].map(s => `tickets/implement/${s}.md`);
+
+	const result = await syncAfterTicket(makeCtx(clone), { ticket: fakeTicket, agentRunner: removingResolver(...ours) });
+
+	assert.equal(result.outcome, 'pushed');
+	assert.deepEqual(originLog(origin), ['seed', 'ticket(plan): parent', 'ticket(plan): parent', 'sync: discard duplicate split of parent found after implement/example-ticket']);
+	assert.deepEqual(implementFiles(clone), ['b1.md', 'b2.md', 'b3.md']);
+});
+
+test('syncAfterTicket resets to the pre-rebase commit when a split race is left unresolved', async (t) => {
+	// A resolve agent that cannot tell the splits apart changes nothing and exits 0 (its prompt
+	// says so), so the board check, not the exit code, has to catch it.
+	const origin = makeBareOrigin(t);
+	const clone = makeSplitRace(t, origin);
+	const localHead = headSha(clone);
+
+	const result = await syncAfterTicket(makeCtx(clone), { ticket: fakeTicket, agentRunner: lyingResolver });
+
+	assert.equal(result.outcome, 'failed');
+	assert.equal(headSha(clone), localHead, 'local commit preserved, not rewritten');
+	assert.deepEqual(originLog(origin), ['seed', 'ticket(plan): parent'], 'nothing pushed');
+	assert.deepEqual(implementFiles(clone), ['a1.md', 'a2.md', 'a3.md', 'a4.md'], 'working tree restored');
+});
+
+test('a stage move and a prune made identically on both sides are not taken for a split race', async (t) => {
+	const origin = makeBareOrigin(t);
+	seedOrigin(t, origin, { 'tickets/implement/x.md': 'description: x\n----\nbody\n', 'tickets/complete/old.md': 'description: old\n----\ndone\n' });
+	const clone = makeClone(t, origin, 'a');
+	const other = makeClone(t, origin, 'other');
+	for (const [dir, work] of [[other, 'their work'], [clone, 'our work']]) {
+		writeFile(dir, 'tickets/review/x.md', 'description: x\n----\nbody\n');
+		rmSync(join(dir, 'tickets', 'implement', 'x.md'));
+		commit(dir, 'ticket(implement): x');
+		rmSync(join(dir, 'tickets', 'complete', 'old.md'));
+		commit(dir, 'tess: prune');
+		writeFile(dir, `${work.replace(' ', '-')}.txt`, `${work}\n`);
+		commit(dir, work);
+	}
+	run(other, 'git push -q origin dev');
+
+	const result = await syncAfterTicket(makeCtx(clone), { ticket: fakeTicket, agentRunner: givingUpResolver });
+
+	assert.equal(result.outcome, 'pushed', 'no resolve turn ran');
+	assert.deepEqual(originLog(origin), ['seed', 'ticket(implement): x', 'tess: prune', 'their work', 'our work']);
 });
 
 // ── submodule checkouts follow a pin the rebase moved ────────────────────────
