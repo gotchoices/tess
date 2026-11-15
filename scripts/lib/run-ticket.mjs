@@ -19,7 +19,9 @@
  *                      remote spent its whole failure budget (lib/sync.mjs); `ctx.syncBlocked`
  *                      is set when it's the latter.  Also when the agent succeeded but left the
  *                      ticket past the stage its prompt named: nothing is committed and
- *                      `ctx.stageOverrun` holds the diagnostic
+ *                      `ctx.stageOverrun` holds the diagnostic.  Also when the board declares a
+ *                      `gate-command:` (lib/project-rules.mjs) and it exits non-zero: nothing is
+ *                      committed and `ctx.gateCommandFailed` holds the diagnostic
  *   - 'deferred'     : a cross-stage prereq is still behind (parked in
  *                      blocked/, or deferred to a later release); the strategy
  *                      adds the slug to its run-local deferred set so
@@ -32,7 +34,7 @@
 
 import { writeFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { deferralReason, firstUnsatisfied, formatSeq, indexAllTickets, prereqNotes, resolvePrereqs, stageOverrunFor, transitionLabel } from './tickets.mjs';
+import { deferralReason, firstUnsatisfied, formatSeq, indexAllTickets, nextStageFor, prereqNotes, resolvePrereqs, stageOverrunFor, transitionLabel } from './tickets.mjs';
 import { readBoardContext, ticketProblems } from './board-check.mjs';
 import { runAgent, MAX_TIMEOUT_RETRIES } from './process.mjs';
 import { commitAll, commitTicket, reconcileWorkingTree } from './git.mjs';
@@ -42,6 +44,7 @@ import { buildPrompt } from './prompt.mjs';
 import { maybeRefreshIndex } from './refresh-index.mjs';
 import { handlePreExistingError } from './pre-existing-error.mjs';
 import { syncAfterTicket } from './sync.mjs';
+import { runGateCommand } from './gate-command.mjs';
 
 /**
  * Persist a resume note onto a ticket that did not complete cleanly, and
@@ -92,7 +95,10 @@ export async function runOneStage(ticket, ctx, { label }) {
 	// contradicts the board gets no agent and no commit, and stays where it is so its dependents
 	// defer behind it.  Ahead of the index refresh and the prereq gate: neither matters for a ticket
 	// that will not run, and the reason it cannot run is the more useful thing to print.
-	const problems = ticketProblems(ticket, await readBoardContext(ticketsDir));
+	// Read once and kept for the gate-command check below too, rather than re-read after the agent
+	// runs — consistent with every other board rule here, which binds at the start of the stage.
+	const boardContext = await readBoardContext(ticketsDir);
+	const problems = ticketProblems(ticket, boardContext);
 	if (problems.length > 0) {
 		console.log(`\n  ${label} Not runnable ${ticket.stage}/${ticket.file}:`);
 		for (const problem of problems) console.log(`    - ${problem}`);
@@ -259,6 +265,28 @@ export async function runOneStage(ticket, ctx, { label }) {
 			console.error(`\n⏹  ${overrun}\n   Halting before commit — nothing was committed.`);
 			ctx.stageOverrun = overrun;
 			return { kind: 'stopped' };
+		}
+		// The board's own post-agent, pre-commit hook (lib/project-rules.mjs `gate-command:`).
+		// Gated on `!opts.noCommit` like the commit itself: with nothing about to be committed
+		// there is nothing for the hook to gate. The transition rides in the environment so a
+		// project that only wants a heavy check at one stage can no-op at the others — tess has
+		// no notion of which stage deserves which check.
+		if (!opts.noCommit && boardContext.gateCommand) {
+			const gate = runGateCommand(boardContext.gateCommand.command, {
+				cwd: repoRoot,
+				env: {
+					...process.env,
+					TESS_TICKET_SLUG: ticket.slug,
+					TESS_TICKET_FROM_STAGE: ticket.stage,
+					TESS_TICKET_TO_STAGE: nextStageFor(ticket),
+				},
+			});
+			if (!gate.ok) {
+				console.error(`\n⏹  gate-command "${boardContext.gateCommand.command}" failed for ${ticket.slug} (${transitionLabel(ticket)}).\n   Halting before commit — nothing was committed.`);
+				if (gate.output) console.error(gate.output);
+				ctx.gateCommandFailed = { command: boardContext.gateCommand.command, ticket: ticket.slug, output: gate.output };
+				return { kind: 'stopped' };
+			}
 		}
 		if (!opts.noCommit && commitTicket(ticket, repoRoot)) {
 			console.log(`  Committed.`);

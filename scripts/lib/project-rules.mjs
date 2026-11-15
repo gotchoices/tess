@@ -38,6 +38,20 @@
  * split (lib/tickets.mjs `shardGuard`).  Also opt-in: with no declaration a
  * runner may start sharded any way, or not at all.
  *
+ * `gate-command: <command>` names a shell command tess runs after an agent
+ * succeeds and before it commits that ticket's stage transition — a generic
+ * post-agent, pre-commit hook, the one place every project sharing tess can
+ * plug its own check into, same enforcement site as the stage-overrun halt
+ * (lib/run-ticket.mjs).  A non-zero exit blocks the commit: the tree is left
+ * as the agent left it, for a human, exactly like an unsalvageable dirty tree
+ * or a stage overrun.  The command runs once per ticket, every stage, with
+ * the transition in its environment (`TESS_TICKET_SLUG`, `TESS_TICKET_FROM_STAGE`,
+ * `TESS_TICKET_TO_STAGE`) so a project that only wants a heavy check at one
+ * stage reads those and no-ops elsewhere — tess itself has no notion of which
+ * stage deserves which check. Opt-in and independent of the other fields: with
+ * no declaration nothing runs. Two addenda may declare the same command;
+ * different commands are an error.
+ *
  * A body may carry the same `<!-- stage:NAME -->` blocks as
  * agent-rules/tickets.md; the prompt builders filter them
  * (lib/prompt.mjs `projectRuleSections`).
@@ -59,9 +73,9 @@ const FIELD_NAME_RE = /^[a-z][a-z0-9-]*$/;
 const RUNNER_SHARDS_RE = /^\d+$/;
 
 /**
- * Parse one addendum.  Returns `{ rule: { name, body, anchorFields, runnerShards, anchorBaseline }, errors }`,
- * `runnerShards` a number or null, `anchorBaseline` a path string or null,
- * each null when the header does not declare a valid one.
+ * Parse one addendum.  Returns `{ rule: { name, body, anchorFields, runnerShards, anchorBaseline, gateCommand }, errors }`,
+ * `runnerShards` a number or null, `anchorBaseline` and `gateCommand` each a
+ * string or null, each null when the header does not declare a valid one.
  * A rule with errors is still returned with what could be read; the board
  * check decides what the errors mean.  Line endings are normalised to LF and a
  * byte-order mark is dropped, so the fence on line 1 is found either way.
@@ -71,10 +85,10 @@ export function parseProjectRule(name, text) {
 	const normalized = text.replace(/^﻿/, '').replace(/\r\n/g, '\n');
 	const { lines, opened, start, end, closed } = headerBounds(normalized);
 
-	if (!opened) return { rule: { name, body: normalized, anchorFields: [], runnerShards: null, anchorBaseline: null }, errors: [] };
+	if (!opened) return { rule: { name, body: normalized, anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null }, errors: [] };
 	if (!closed) {
 		return {
-			rule: { name, body: '', anchorFields: [], runnerShards: null, anchorBaseline: null },
+			rule: { name, body: '', anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null },
 			errors: [`${path}: unterminated header — line 1 is a fence with no closing fence, so the file appends and declares nothing`],
 		};
 	}
@@ -109,7 +123,17 @@ export function parseProjectRule(name, text) {
 			anchorBaseline = baseline;
 		}
 	}
-	return { rule: { name, body: lines.slice(end + 1).join('\n'), anchorFields, runnerShards, anchorBaseline }, errors };
+
+	let gateCommand = null;
+	const gate = headerField(header, 'gate-command');
+	if (gate !== null) {
+		if (gate === '') {
+			errors.push(`${path}: gate-command: is empty — name a command to run, or drop the field`);
+		} else {
+			gateCommand = gate;
+		}
+	}
+	return { rule: { name, body: lines.slice(end + 1).join('\n'), anchorFields, runnerShards, anchorBaseline, gateCommand }, errors };
 }
 
 /**
@@ -189,4 +213,23 @@ export function anchorBaselineOf(rules) {
 		return { anchorBaseline: null, errors: [`anchor-baseline: ${said} — declare one path, or the same path everywhere`] };
 	}
 	return { anchorBaseline: { path: declaring[0].anchorBaseline, declaredIn: declaring.map(r => `${DISPLAY_DIR}/${r.name}`) }, errors: [] };
+}
+
+/**
+ * The board's declared `gate-command:`, as `{ gateCommand, errors }`.
+ * `gateCommand` is `{ command, declaredIn }` — `declaredIn` the addenda that
+ * declare it — or null when no addendum declares one. Addenda that agree are
+ * fine; addenda that disagree are an error and declare nothing, the same
+ * shape as `runnerShardsOf`/`anchorBaselineOf`. Running the command is
+ * lib/run-ticket.mjs's job, not this function's: this only resolves which
+ * command the board agrees on.
+ */
+export function gateCommandOf(rules) {
+	const declaring = rules.filter(r => r.gateCommand !== null);
+	if (declaring.length === 0) return { gateCommand: null, errors: [] };
+	if (new Set(declaring.map(r => r.gateCommand)).size > 1) {
+		const said = declaring.map(r => `${DISPLAY_DIR}/${r.name} says "${r.gateCommand}"`).join(', ');
+		return { gateCommand: null, errors: [`gate-command: ${said} — declare one command, or the same command everywhere`] };
+	}
+	return { gateCommand: { command: declaring[0].gateCommand, declaredIn: declaring.map(r => `${DISPLAY_DIR}/${r.name}`) }, errors: [] };
 }

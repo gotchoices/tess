@@ -17,7 +17,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { dirname, join as joinPath } from 'node:path';
-import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, readProjectRules, runnerShardsOf } from './project-rules.mjs';
+import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, gateCommandOf, readProjectRules, runnerShardsOf } from './project-rules.mjs';
 import { RELEASES_FILE, currentRelease, rankOf, readReleases } from './releases.mjs';
 import { REVIEW_VALUES, boardLocation, deferralReason, parseListField, parseSlug, readBacklogLayout, resolvePrereqs } from './tickets.mjs';
 
@@ -54,22 +54,25 @@ async function loadAnchorBaseline(ticketsDir, declared) {
 
 /**
  * Everything the board rules read: `{ releases, rules, anchorFields,
- * anchorsRequired, anchorBaseline, runnerShards }`.  `rules` is
+ * anchorsRequired, anchorBaseline, runnerShards, gateCommand }`.  `rules` is
  * `readProjectRules`' `{ rules, errors }`, its errors joined by any
- * disagreement between addenda over `runner-shards:` or `anchor-baseline:`
- * and any problem loading the baseline file; `anchorFields` is every header
- * field that counts as an anchor; `anchorsRequired` says whether a worked
- * ticket must name one (see lib/project-rules.mjs `anchorsRequiredBy`);
- * `anchorBaseline` is the set of slugs the declared ledger grandfathers,
- * `new Set()` with no declaration; `runnerShards` is the declared runner
- * count, `{ count, declaredIn }` or null (`runnerShardsOf`).
+ * disagreement between addenda over `runner-shards:`, `anchor-baseline:` or
+ * `gate-command:` and any problem loading the baseline file; `anchorFields`
+ * is every header field that counts as an anchor; `anchorsRequired` says
+ * whether a worked ticket must name one (see lib/project-rules.mjs
+ * `anchorsRequiredBy`); `anchorBaseline` is the set of slugs the declared
+ * ledger grandfathers, `new Set()` with no declaration; `runnerShards` is the
+ * declared runner count, `{ count, declaredIn }` or null (`runnerShardsOf`);
+ * `gateCommand` is the declared post-agent, pre-commit hook, `{ command,
+ * declaredIn }` or null (`gateCommandOf`).
  */
 export async function readBoardContext(ticketsDir) {
 	const [releases, read] = await Promise.all([readReleases(ticketsDir), readProjectRules(ticketsDir)]);
 	const shards = runnerShardsOf(read.rules);
 	const baselineDecl = anchorBaselineOf(read.rules);
 	const baseline = await loadAnchorBaseline(ticketsDir, baselineDecl.anchorBaseline);
-	const rules = { rules: read.rules, errors: [...read.errors, ...shards.errors, ...baselineDecl.errors, ...baseline.errors] };
+	const gate = gateCommandOf(read.rules);
+	const rules = { rules: read.rules, errors: [...read.errors, ...shards.errors, ...baselineDecl.errors, ...baseline.errors, ...gate.errors] };
 	return {
 		releases,
 		rules,
@@ -77,6 +80,7 @@ export async function readBoardContext(ticketsDir) {
 		anchorsRequired: anchorsRequiredBy(rules.rules),
 		anchorBaseline: baseline.slugs,
 		runnerShards: shards.runnerShards,
+		gateCommand: gate.gateCommand,
 	};
 }
 
