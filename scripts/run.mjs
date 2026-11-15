@@ -371,6 +371,17 @@ async function main() {
 		process.exit(1);
 	}
 
+	// A board-declared `gate-command:` (lib/gate-command.mjs) rejected a ticket's work even after
+	// the retries `run-ticket.mjs` grants it; nothing was committed.  Same failure-not-halt
+	// treatment as a stage overrun: exit non-zero so an unattended caller does not read this as a
+	// clean drain.
+	if (runCtx.gateCommandFailed) {
+		const { command, ticket, attempts } = runCtx.gateCommandFailed;
+		console.error(`\nHalted: gate-command "${command}" failed for ${ticket} after ${attempts} attempt(s).`);
+		console.error('Nothing was committed and remaining tickets were not processed; re-run once it passes.');
+		process.exit(1);
+	}
+
 	// A ticket landed and committed, but syncing it to the shared remote spent its whole
 	// failure budget (lib/sync.mjs) — `tickets/.sync-blocked` is written.  Also a `stopped`
 	// outcome, also a failure rather than a requested halt: exit non-zero, non-75 (that code

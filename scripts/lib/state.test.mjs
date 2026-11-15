@@ -43,6 +43,14 @@ const FENCE_SHAPES = {
 
 const PRIOR_RUN_1 = { startedAt: '2026-09-15T05:49:13.784Z', agent: 'claude', logFile: 'tickets/.logs/a.log' };
 const PRIOR_RUN_2 = { startedAt: '2026-09-15T09:00:00.000Z', agent: 'claude', logFile: 'tickets/.logs/b.log' };
+const PRIOR_RUN_GATE = {
+	startedAt: '2026-09-15T05:49:13.784Z',
+	agent: 'claude',
+	logFile: 'tickets/.logs/a.log',
+	reason: 'gate-failed',
+	gateCommand: 'yarn gate',
+	gateOutput: 'FAIL packages/foo/src/bar.test.ts\nline two',
+};
 
 /** The fields a misplaced note has, historically, corrupted: the parsed header, `prereq:`/`difficulty:`, and runnability. */
 async function readFields(ticketsDir) {
@@ -91,3 +99,32 @@ for (const [shape, content] of Object.entries(FENCE_SHAPES)) {
 		assert.deepEqual(after, before);
 	});
 }
+
+test('addResumeNote renders a gate-failure note with the command and its output, leaving the header readable', async () => {
+	const ticketsDir = await makeBoard({ implement: [['t.md', FENCE_SHAPES['opened and closed (--- … ---)']]], rules: [['rubric-anchors.md', RULES]] });
+	const before = await readFields(ticketsDir);
+
+	await addResumeNote(before.path, PRIOR_RUN_GATE);
+	const raw = await readFile(before.path, 'utf-8');
+
+	assert.match(raw, /Gate command: yarn gate/);
+	assert.match(raw, /FAIL packages\/foo\/src\/bar\.test\.ts/);
+	assert.match(raw, /line two/);
+	assert.doesNotMatch(raw, /did not complete/, 'the generic wording belongs to the other reason only');
+
+	const after = await readFields(ticketsDir);
+	assert.deepEqual(after, before);
+});
+
+test('a gate-failure note replaces an earlier generic resume note rather than stacking', async () => {
+	const ticketsDir = await makeBoard({ implement: [['t.md', FENCE_SHAPES['opened and closed (--- … ---)']]], rules: [['rubric-anchors.md', RULES]] });
+	const before = await readFields(ticketsDir);
+
+	await addResumeNote(before.path, PRIOR_RUN_1);
+	await addResumeNote(before.path, PRIOR_RUN_GATE);
+
+	const raw = await readFile(before.path, 'utf-8');
+	assert.equal(raw.split('<!-- resume-note -->').length - 1, 1, 'exactly one note, not stacked');
+	assert.match(raw, /Gate command: yarn gate/);
+	assert.doesNotMatch(raw, /did not complete/);
+});

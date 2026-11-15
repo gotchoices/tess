@@ -93,17 +93,34 @@ export async function clearInProgress(ticketsDir) {
 	await unlink(inProgressPath(ticketsDir)).catch(() => {});
 }
 
-/** The resume note as an array of lines (no trailing blank line — see `addResumeNote`). */
+/** The resume note as an array of lines (no trailing blank line — see `addResumeNote`).
+ *  `priorRun.reason === 'gate-failed'` names the one other shape: the agent finished and moved
+ *  the ticket, but the board's `gate-command:` (lib/gate-command.mjs) rejected it before the
+ *  commit, so the note carries the command and its output instead of a generic "did not
+ *  complete". */
 function buildResumeNoteLines(priorRun) {
-	return [
-		RESUME_MARKER_START,
-		'RESUME: A prior agent run on this ticket did not complete.',
-		`  Prior run: ${priorRun.startedAt} (agent: ${priorRun.agent})`,
-		`  Log file: ${priorRun.logFile}`,
-		'Read the log to see what was done. Resume where it left off.',
-		'If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.',
-		RESUME_MARKER_END,
-	];
+	const lines = [RESUME_MARKER_START];
+	if (priorRun.reason === 'gate-failed') {
+		lines.push(
+			'RESUME: A prior agent run on this ticket finished, but the project\'s gate-command rejected it before the commit.',
+			`  Prior run: ${priorRun.startedAt} (agent: ${priorRun.agent})`,
+			`  Log file: ${priorRun.logFile}`,
+			`  Gate command: ${priorRun.gateCommand}`,
+			'Gate output:',
+			...String(priorRun.gateOutput ?? '').split('\n').map(line => `    ${line}`),
+			'Fix what the gate command reports, then finish the ticket again.',
+		);
+	} else {
+		lines.push(
+			'RESUME: A prior agent run on this ticket did not complete.',
+			`  Prior run: ${priorRun.startedAt} (agent: ${priorRun.agent})`,
+			`  Log file: ${priorRun.logFile}`,
+			'Read the log to see what was done. Resume where it left off.',
+			'If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.',
+		);
+	}
+	lines.push(RESUME_MARKER_END);
+	return lines;
 }
 
 /**

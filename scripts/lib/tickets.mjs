@@ -10,7 +10,7 @@
  * `headerField*`, `parseListField`, the `parse*` fields) into its own module.
  */
 
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile, rename } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { readTombstones } from './tombstones.mjs';
 import { readReleases, releasePlacement } from './releases.mjs';
@@ -131,6 +131,21 @@ export async function stageOverrunFor(ticket, ticketsDir) {
 		+ `or commit it where it is with a subject that names the skipped stage.`;
 }
 
+/**
+ * Undo an agent's own (uncommitted) stage-folder move, so a retry starts from the same place the
+ * first attempt did. Used when a post-agent check (`gate-command:`) rejects an otherwise-complete
+ * attempt: the move already happened in the working tree, but nothing is committed yet, so moving
+ * it back costs nothing and lets the retried agent see the same ticket, in the same stage, that it
+ * saw the first time. No-op (returns false) if the ticket is already at `ticket.path` — including
+ * when it is no longer found at all, a racy removal the caller's own error handling covers.
+ */
+export async function restoreTicketPath(ticketsDir, ticket) {
+	const found = (await indexAllTickets(ticketsDir)).get(ticket.slug);
+	if (!found || found.pruned || found.path === ticket.path) return false;
+	await rename(found.path, ticket.path);
+	return true;
+}
+
 /** `stage/` or `stage/folder/` — where a ticket sits, as the runner prints it. */
 export function boardLocation(stage, folder) {
 	return folder ? `${stage}/${folder}/` : `${stage}/`;
@@ -237,7 +252,7 @@ export async function indexAllTickets(ticketsDir, { withPrereqs = false } = {}) 
 		for (const { entry, folder, path } of await stageFiles(ticketsDir, stage, true)) {
 			const slug = parseSlug(entry);
 			if (index.has(slug)) continue;
-			const record = { stage, file: entry, folder, ...releasePlacement(releases, folder) };
+			const record = { stage, file: entry, folder, path, ...releasePlacement(releases, folder) };
 			if (withPrereqs) {
 				const content = await readTicketFile(path);
 				if (content == null) continue;

@@ -57,6 +57,15 @@ test('run.mjs exits non-zero when a mid-run dirty tree halted the run', () => {
 	);
 });
 
+test('run.mjs exits non-zero when a gate-command failure halted the run', () => {
+	const src = read('../run.mjs');
+	assert.match(
+		src,
+		/if \(runCtx\.gateCommandFailed\)[\s\S]{0,400}process\.exit\(1\)/,
+		'a gate-command rejection must not conclude with a clean exit 0 (ctx.gateCommandFailed is set but silently unread without this)',
+	);
+});
+
 test('run.mjs hands the strategy the same context the final triage sweep reads', () => {
 	const src = read('../run.mjs');
 	// Two separate context objects would silently drop the per-run flags `runOneStage` sets.

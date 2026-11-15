@@ -9,6 +9,8 @@
 
 import { execSync } from 'node:child_process';
 
+export const MAX_GATE_RETRIES = 1; // resume the agent once to fix a gate-command failure before halting
+
 /**
  * Run `command` in `cwd` with `env`.  Returns `{ ok: true }` on a zero exit,
  * `{ ok: false, output }` otherwise — `output` is the command's combined

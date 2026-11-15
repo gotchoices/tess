@@ -20,8 +20,11 @@
  *                      is set when it's the latter.  Also when the agent succeeded but left the
  *                      ticket past the stage its prompt named: nothing is committed and
  *                      `ctx.stageOverrun` holds the diagnostic.  Also when the board declares a
- *                      `gate-command:` (lib/project-rules.mjs) and it exits non-zero: nothing is
- *                      committed and `ctx.gateCommandFailed` holds the diagnostic
+ *                      `gate-command:` (lib/gate-command.mjs) and it exits non-zero: the ticket
+ *                      is moved back to its source stage, a resume note is added, and the agent
+ *                      is resumed (lib/gate-command.mjs `MAX_GATE_RETRIES`) before giving up; once
+ *                      retries are exhausted, nothing is committed and `ctx.gateCommandFailed`
+ *                      holds the diagnostic
  *   - 'deferred'     : a cross-stage prereq is still behind (parked in
  *                      blocked/, or deferred to a later release); the strategy
  *                      adds the slug to its run-local deferred set so
@@ -34,7 +37,7 @@
 
 import { writeFile, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { deferralReason, firstUnsatisfied, formatSeq, indexAllTickets, nextStageFor, prereqNotes, resolvePrereqs, stageOverrunFor, transitionLabel } from './tickets.mjs';
+import { deferralReason, firstUnsatisfied, formatSeq, indexAllTickets, nextStageFor, prereqNotes, resolvePrereqs, restoreTicketPath, stageOverrunFor, transitionLabel } from './tickets.mjs';
 import { readBoardContext, ticketProblems } from './board-check.mjs';
 import { runAgent, MAX_TIMEOUT_RETRIES } from './process.mjs';
 import { commitAll, commitTicket, reconcileWorkingTree } from './git.mjs';
@@ -44,7 +47,7 @@ import { buildPrompt } from './prompt.mjs';
 import { maybeRefreshIndex } from './refresh-index.mjs';
 import { handlePreExistingError } from './pre-existing-error.mjs';
 import { syncAfterTicket } from './sync.mjs';
-import { runGateCommand } from './gate-command.mjs';
+import { runGateCommand, MAX_GATE_RETRIES } from './gate-command.mjs';
 
 /**
  * Persist a resume note onto a ticket that did not complete cleanly, and
@@ -160,102 +163,111 @@ export async function runOneStage(ticket, ctx, { label }) {
 	let lastLogFile = null;
 	let lastStartedAt = null;
 	let success = false;
+	let gateAttempt = 0;
 
-	while (attempt <= MAX_TIMEOUT_RETRIES) {
-		// On retry, prepend a resume note pointing at the prior attempt's log so
-		// the agent can read what it had been doing and resume rather than restart.
-		if (attempt > 0) {
+	// A retryable gate-command failure (below) `continue`s this loop with `attempt` reset to 0.
+	// By then the ticket has been moved back to its source stage and carries a fresh resume note,
+	// so the inner loop is a faithful fresh attempt, not a continuation of the rejected one.
+	for (;;) {
+		attempt = 0;
+		success = false;
+
+		while (attempt <= MAX_TIMEOUT_RETRIES) {
+			// On retry, prepend a resume note pointing at the prior attempt's log so
+			// the agent can read what it had been doing and resume rather than restart.
+			if (attempt > 0) {
+				try {
+					await access(ticket.path, constants.R_OK);
+				} catch {
+					console.log(`  Ticket no longer present — not retrying.`);
+					break;
+				}
+				try {
+					await addResumeNote(ticket.path, {
+						startedAt: lastStartedAt,
+						agent: opts.agent,
+						logFile: lastLogFile,
+					});
+					console.log(`\n  Retrying after timeout (attempt ${attempt + 1}/${MAX_TIMEOUT_RETRIES + 1}) — resume note added.`);
+				} catch (err) {
+					console.warn(`  Failed to add resume note: ${err.message}`);
+				}
+				if (await checkStop(ticketsDir)) {
+					console.log('\n⏹  Stop file detected — halting before retry.');
+					return { kind: 'stopped' };
+				}
+			}
+
+			const currentLog = logPath(logsDir, ticket);
+			const startedAt = new Date().toISOString();
+			lastLogFile = currentLog;
+			lastStartedAt = startedAt;
+
+			const attemptLabel = attempt > 0 ? `  (retry ${attempt})` : '';
+			const ticketBanner = [
+				`${'─'.repeat(72)}`,
+				`  ${label} ${ticket.file}${attemptLabel}`,
+				`  Stage: ${transitionLabel(ticket)}  |  Sequence: ${formatSeq(ticket.sequence)}`,
+				`  Log: ${currentLog}`,
+				`${'─'.repeat(72)}`,
+			].join('\n');
+			console.log(ticketBanner);
+
+			await writeFile(currentLog, [
+				`Ticket: ${ticket.file}`,
+				`Stage: ${transitionLabel(ticket)}`,
+				`Sequence: ${formatSeq(ticket.sequence)}`,
+				`Agent: ${opts.agent}`,
+				`Tess: ${tessVersion}`,
+				`Started: ${startedAt}`,
+				`Attempt: ${attempt + 1}${attempt > 0 ? ' (retry after timeout)' : ''}`,
+				'═'.repeat(72),
+				'',
+			].join('\n'));
+
+			await writeInProgress(ticketsDir, ticket, currentLog, opts.agent);
+
+			let prompt;
 			try {
-				await access(ticket.path, constants.R_OK);
-			} catch {
-				console.log(`  Ticket no longer present — not retrying.`);
+				prompt = await buildPrompt(ticket, tessRoot, repoRoot, notes);
+			} catch (err) {
+				if (err.code === 'ENOENT') {
+					await clearInProgress(ticketsDir);
+					console.log(`\n  ${label} Skipped (removed mid-processing): ${ticket.file}\n`);
+					return { kind: 'skipped' };
+				}
+				throw err;
+			}
+			// From here on, an agent has touched the tree, so any dirt the *next* ticket finds is
+			// most plausibly this ticket's.  Set before the call, not after: an agent that errors or
+			// times out has still had the chance to edit files.
+			// NOTE: if a human edits the tree between two tickets, that edit is credited to this
+			// ticket instead.  Accepted: a loud, wrong-by-one attribution beats a silent sweep into
+			// whichever ticket happens to finish next.
+			ctx.lastRanTicket = ticket;
+
+			lastResult = await runAgent(opts.agent, prompt, repoRoot, currentLog, {
+				stage: ticket.stage,
+				tokenBudget: opts.tokenBudget,
+				difficulty: ticket.difficulty,
+			});
+
+			if (lastResult.exitCode === 0) {
+				success = true;
 				break;
 			}
-			try {
-				await addResumeNote(ticket.path, {
-					startedAt: lastStartedAt,
-					agent: opts.agent,
-					logFile: lastLogFile,
-				});
-				console.log(`\n  Retrying after timeout (attempt ${attempt + 1}/${MAX_TIMEOUT_RETRIES + 1}) — resume note added.`);
-			} catch (err) {
-				console.warn(`  Failed to add resume note: ${err.message}`);
+
+			if (lastResult.timedOut && attempt < MAX_TIMEOUT_RETRIES) {
+				console.error(`\n  Ticket timed out — will retry with resume note.`);
+				attempt++;
+				continue;
 			}
-			if (await checkStop(ticketsDir)) {
-				console.log('\n⏹  Stop file detected — halting before retry.');
-				return { kind: 'stopped' };
-			}
-		}
 
-		const currentLog = logPath(logsDir, ticket);
-		const startedAt = new Date().toISOString();
-		lastLogFile = currentLog;
-		lastStartedAt = startedAt;
-
-		const attemptLabel = attempt > 0 ? `  (retry ${attempt})` : '';
-		const ticketBanner = [
-			`${'─'.repeat(72)}`,
-			`  ${label} ${ticket.file}${attemptLabel}`,
-			`  Stage: ${transitionLabel(ticket)}  |  Sequence: ${formatSeq(ticket.sequence)}`,
-			`  Log: ${currentLog}`,
-			`${'─'.repeat(72)}`,
-		].join('\n');
-		console.log(ticketBanner);
-
-		await writeFile(currentLog, [
-			`Ticket: ${ticket.file}`,
-			`Stage: ${transitionLabel(ticket)}`,
-			`Sequence: ${formatSeq(ticket.sequence)}`,
-			`Agent: ${opts.agent}`,
-			`Tess: ${tessVersion}`,
-			`Started: ${startedAt}`,
-			`Attempt: ${attempt + 1}${attempt > 0 ? ' (retry after timeout)' : ''}`,
-			'═'.repeat(72),
-			'',
-		].join('\n'));
-
-		await writeInProgress(ticketsDir, ticket, currentLog, opts.agent);
-
-		let prompt;
-		try {
-			prompt = await buildPrompt(ticket, tessRoot, repoRoot, notes);
-		} catch (err) {
-			if (err.code === 'ENOENT') {
-				await clearInProgress(ticketsDir);
-				console.log(`\n  ${label} Skipped (removed mid-processing): ${ticket.file}\n`);
-				return { kind: 'skipped' };
-			}
-			throw err;
-		}
-		// From here on, an agent has touched the tree, so any dirt the *next* ticket finds is
-		// most plausibly this ticket's.  Set before the call, not after: an agent that errors or
-		// times out has still had the chance to edit files.
-		// NOTE: if a human edits the tree between two tickets, that edit is credited to this
-		// ticket instead.  Accepted: a loud, wrong-by-one attribution beats a silent sweep into
-		// whichever ticket happens to finish next.
-		ctx.lastRanTicket = ticket;
-
-		lastResult = await runAgent(opts.agent, prompt, repoRoot, currentLog, {
-			stage: ticket.stage,
-			tokenBudget: opts.tokenBudget,
-			difficulty: ticket.difficulty,
-		});
-
-		if (lastResult.exitCode === 0) {
-			success = true;
 			break;
 		}
 
-		if (lastResult.timedOut && attempt < MAX_TIMEOUT_RETRIES) {
-			console.error(`\n  Ticket timed out — will retry with resume note.`);
-			attempt++;
-			continue;
-		}
+		if (!success) break;
 
-		break;
-	}
-
-	if (success) {
 		await clearInProgress(ticketsDir);
 		// Halt rather than commit: `commitTicket` names the commit from the pre-run ticket, so a
 		// skipped stage would land looking like an ordinary advance.  The tree stays as the agent
@@ -282,9 +294,37 @@ export async function runOneStage(ticket, ctx, { label }) {
 				},
 			});
 			if (!gate.ok) {
-				console.error(`\n⏹  gate-command "${boardContext.gateCommand.command}" failed for ${ticket.slug} (${transitionLabel(ticket)}).\n   Halting before commit — nothing was committed.`);
+				// Resume rather than halt outright, up to MAX_GATE_RETRIES: the agent's work is
+				// otherwise done, and most gate failures (a lint error, a broken test) are things
+				// the same agent can fix given the command's own output.  Move the ticket back to
+				// its source stage first — the agent moved it on the way out, uncommitted, and a
+				// retry must see the same stage its prompt will describe.
+				if (gateAttempt < MAX_GATE_RETRIES) {
+					gateAttempt++;
+					console.error(`\n  gate-command "${boardContext.gateCommand.command}" failed for ${ticket.slug} (${transitionLabel(ticket)}) — resuming the agent to fix it (attempt ${gateAttempt + 1}/${MAX_GATE_RETRIES + 1}).`);
+					if (gate.output) console.error(gate.output);
+					try {
+						await restoreTicketPath(ticketsDir, ticket);
+						await addResumeNote(ticket.path, {
+							startedAt: lastStartedAt,
+							agent: opts.agent,
+							logFile: lastLogFile,
+							reason: 'gate-failed',
+							gateCommand: boardContext.gateCommand.command,
+							gateOutput: gate.output,
+						});
+					} catch (err) {
+						console.warn(`  Failed to prepare gate-command retry: ${err.message}`);
+					}
+					if (await checkStop(ticketsDir)) {
+						console.log('\n⏹  Stop file detected — halting before retry.');
+						return { kind: 'stopped' };
+					}
+					continue;
+				}
+				console.error(`\n⏹  gate-command "${boardContext.gateCommand.command}" failed for ${ticket.slug} (${transitionLabel(ticket)}) after ${gateAttempt + 1} attempt(s).\n   Halting before commit — nothing was committed.`);
 				if (gate.output) console.error(gate.output);
-				ctx.gateCommandFailed = { command: boardContext.gateCommand.command, ticket: ticket.slug, output: gate.output };
+				ctx.gateCommandFailed = { command: boardContext.gateCommand.command, ticket: ticket.slug, output: gate.output, attempts: gateAttempt + 1 };
 				return { kind: 'stopped' };
 			}
 		}

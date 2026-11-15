@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 
@@ -22,6 +22,7 @@ import {
 	transitionLabel,
 	prereqNotes,
 	resolvePrereqs,
+	restoreTicketPath,
 	shardGuard,
 	stageOverrunFor,
 } from './tickets.mjs';
@@ -547,6 +548,42 @@ test('a ticket left at its directed stage, parked in blocked/, or split away und
 	for (const [name, ticket, places, extra] of rows) {
 		assert.equal(await stageOverrunFor(ticket, await makeBoard(places, extra)), null, name);
 	}
+});
+
+test('indexAllTickets records each ticket\'s resolved path, top-level and inside a backlog folder', async () => {
+	const ticketsDir = await makeBoard({ implement: ['a.md'], 'backlog/GA': ['b.md'] }, { releases: RELEASES });
+	const index = await indexAllTickets(ticketsDir);
+
+	assert.equal(index.get('a').path, join(ticketsDir, 'implement', 'a.md'));
+	assert.equal(index.get('b').path, join(ticketsDir, 'backlog', 'GA', 'b.md'));
+});
+
+test('restoreTicketPath moves a ticket back to its original stage, undoing an agent\'s own uncommitted move', async () => {
+	// Simulates what a gate-command retry needs: the agent moved x.md on to review/ as its last
+	// step, uncommitted, before the gate rejected the attempt. `implement: []` just pre-creates
+	// the source folder the real runner always has standing (`run.mjs` re-creates every known
+	// stage folder after each run) — `restoreTicketPath` is not itself responsible for that.
+	const ticketsDir = await makeBoard({ review: ['x.md'], implement: [] });
+	const ticket = { slug: 'x', path: join(ticketsDir, 'implement', 'x.md') };
+
+	assert.equal(await restoreTicketPath(ticketsDir, ticket), true);
+	assert.equal(await readFile(ticket.path, 'utf-8'), withHeader());
+	await assert.rejects(readFile(join(ticketsDir, 'review', 'x.md'), 'utf-8'), { code: 'ENOENT' });
+});
+
+test('restoreTicketPath is a no-op when the ticket already sits at the given path', async () => {
+	const ticketsDir = await makeBoard({ implement: ['x.md'] });
+	const ticket = { slug: 'x', path: join(ticketsDir, 'implement', 'x.md') };
+
+	assert.equal(await restoreTicketPath(ticketsDir, ticket), false);
+	assert.equal(await readFile(ticket.path, 'utf-8'), withHeader());
+});
+
+test('restoreTicketPath is a no-op when the ticket is no longer found on the board at all', async () => {
+	const ticketsDir = await makeBoard({}, { tombstones: [{ ...TOMB, slug: 'x', file: 'x.md' }] });
+	const ticket = { slug: 'x', path: join(ticketsDir, 'implement', 'x.md') };
+
+	assert.equal(await restoreTicketPath(ticketsDir, ticket), false);
 });
 
 test('shardGuard keeps a runner-shards: board inside its split: it refuses a start that leaves it and names the shard owning each --only slug', () => {
