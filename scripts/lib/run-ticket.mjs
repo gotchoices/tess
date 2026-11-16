@@ -299,12 +299,21 @@ export async function runOneStage(ticket, ctx, { label }) {
 				// the same agent can fix given the command's own output.  Move the ticket back to
 				// its source stage first — the agent moved it on the way out, uncommitted, and a
 				// retry must see the same stage its prompt will describe.
+				let retryPrepared = false;
+				let prepFailure = null;
 				if (gateAttempt < MAX_GATE_RETRIES) {
-					gateAttempt++;
-					console.error(`\n  gate-command "${boardContext.gateCommand.command}" failed for ${ticket.slug} (${transitionLabel(ticket)}) — resuming the agent to fix it (attempt ${gateAttempt + 1}/${MAX_GATE_RETRIES + 1}).`);
+					console.error(`\n  gate-command "${boardContext.gateCommand.command}" failed for ${ticket.slug} (${transitionLabel(ticket)}) — resuming the agent to fix it (attempt ${gateAttempt + 2}/${MAX_GATE_RETRIES + 1}).`);
 					if (gate.output) console.error(gate.output);
 					try {
 						await restoreTicketPath(ticketsDir, ticket);
+						// restoreTicketPath can't relocate a ticket the agent renamed, split, or
+						// removed as part of the same work that failed the gate — slug continuity
+						// isn't guaranteed (AGENTS.md's ticket workflow allows all three). Confirm
+						// the ticket actually landed back at `ticket.path` before trusting the
+						// retry, rather than discard the signal and resume an agent against a
+						// ticket it can no longer find — which previously surfaced as a plain
+						// 'skipped' outcome on the next loop, silently dropping the gate failure.
+						await access(ticket.path, constants.R_OK);
 						await addResumeNote(ticket.path, {
 							startedAt: lastStartedAt,
 							agent: opts.agent,
@@ -313,16 +322,24 @@ export async function runOneStage(ticket, ctx, { label }) {
 							gateCommand: boardContext.gateCommand.command,
 							gateOutput: gate.output,
 						});
+						retryPrepared = true;
+						gateAttempt++;
 					} catch (err) {
+						prepFailure = err.message;
 						console.warn(`  Failed to prepare gate-command retry: ${err.message}`);
 					}
+				}
+				if (retryPrepared) {
 					if (await checkStop(ticketsDir)) {
 						console.log('\n⏹  Stop file detected — halting before retry.');
 						return { kind: 'stopped' };
 					}
 					continue;
 				}
-				console.error(`\n⏹  gate-command "${boardContext.gateCommand.command}" failed for ${ticket.slug} (${transitionLabel(ticket)}) after ${gateAttempt + 1} attempt(s).\n   Halting before commit — nothing was committed.`);
+				const halted = prepFailure
+					? `could not prepare a retry for ${ticket.slug} (${transitionLabel(ticket)}) after its gate-command failed: ${prepFailure}.  The ticket likely no longer sits at its pre-run path (renamed, split, or moved by the agent).`
+					: `gate-command "${boardContext.gateCommand.command}" failed for ${ticket.slug} (${transitionLabel(ticket)}) after ${gateAttempt + 1} attempt(s).`;
+				console.error(`\n⏹  ${halted}\n   Halting before commit — nothing was committed.`);
 				if (gate.output) console.error(gate.output);
 				ctx.gateCommandFailed = { command: boardContext.gateCommand.command, ticket: ticket.slug, output: gate.output, attempts: gateAttempt + 1 };
 				return { kind: 'stopped' };

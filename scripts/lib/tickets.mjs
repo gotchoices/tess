@@ -136,8 +136,12 @@ export async function stageOverrunFor(ticket, ticketsDir) {
  * first attempt did. Used when a post-agent check (`gate-command:`) rejects an otherwise-complete
  * attempt: the move already happened in the working tree, but nothing is committed yet, so moving
  * it back costs nothing and lets the retried agent see the same ticket, in the same stage, that it
- * saw the first time. No-op (returns false) if the ticket is already at `ticket.path` — including
- * when it is no longer found at all, a racy removal the caller's own error handling covers.
+ * saw the first time. No-op (returns false) if the ticket is already at `ticket.path`, or if its
+ * slug can no longer be found on the board at all — e.g. the agent renamed, split, or removed the
+ * ticket as part of the same work that failed the gate; slug continuity across a stage transition
+ * is not guaranteed. The two no-op cases look identical to this function; `lib/run-ticket.mjs`
+ * distinguishes them by checking `ticket.path` is actually readable afterward, and halts instead
+ * of resuming a doomed retry when it is not.
  */
 export async function restoreTicketPath(ticketsDir, ticket) {
 	const found = (await indexAllTickets(ticketsDir)).get(ticket.slug);
