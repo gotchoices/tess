@@ -49,3 +49,32 @@ test('win32 shellCmd quotes --name and its value as separate arguments', async t
 		() => claude(INSTRUCTION_FILE, '', { stage: 'implement' }));
 	assert.match(shellCmd, new RegExp(`"--name" "tess:sitecad-a:${RUN_LABEL.replace(/\./g, '\\.')}" "--append-system-prompt-file"`));
 });
+
+const ISO_PREFIX_RE = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] /;
+
+test('formatStream prefixes a tool_use block with an ISO timestamp', async t => {
+	const { formatStream } = await withEnv(t, { platform: 'linux', prefix: 'sitecad-a' },
+		() => claude(INSTRUCTION_FILE, '', { stage: 'implement' }));
+	const line = JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'x.ts' } }] } });
+	const { text } = formatStream(line);
+	assert.match(text.trimStart(), ISO_PREFIX_RE);
+	assert.match(text, /\[TOOL:Read\]/);
+});
+
+test('formatStream prefixes the final result block with an ISO timestamp', async t => {
+	const { formatStream } = await withEnv(t, { platform: 'linux', prefix: 'sitecad-a' },
+		() => claude(INSTRUCTION_FILE, '', { stage: 'implement' }));
+	const line = JSON.stringify({ type: 'result', is_error: false, duration_ms: 1500, result: 'done' });
+	const { text, done } = formatStream(line);
+	assert.equal(done, true);
+	assert.match(text.trimStart(), ISO_PREFIX_RE);
+	assert.match(text, /\[RESULT ✓ DONE/);
+});
+
+test('formatStream leaves the thinking heartbeat as a bare dot, no timestamp', async t => {
+	const { formatStream } = await withEnv(t, { platform: 'linux', prefix: 'sitecad-a' },
+		() => claude(INSTRUCTION_FILE, '', { stage: 'implement' }));
+	const line = JSON.stringify({ type: 'system', subtype: 'thinking_tokens' });
+	const { text } = formatStream(line);
+	assert.equal(text, '.');
+});

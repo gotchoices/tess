@@ -83,8 +83,18 @@ function formatToolInput(name, input) {
  * Returns { text, done?, usage? } — when done is true the agent has emitted
  * its final result and the runner should stop waiting for a clean exit;
  * `usage` (when present) is the per-turn context-window size in tokens.
+ *
+ * Every block below (`[session ...]`, `[ASSISTANT]`, `[TOOL:...]`, a tool
+ * result's `✓`, `[USER]`, `[RESULT ...]`) carries a leading ISO timestamp —
+ * the stage log otherwise has only its own `Started:` header and the CLI's
+ * final `[RESULT ... | Ns]` total, so no individual call's wall time is
+ * computable (tickets/plan/tess-logs-tool-call-timing-per-ticket.md). Diffing
+ * consecutive timestamps gives any call's duration. The heartbeat dot for a
+ * bare progress event is exempt — it builds one continuous line of dots with
+ * no block structure of its own to timestamp.
  */
 function formatStream(line) {
+	const ts = () => `[${new Date().toISOString()}] `;
 	try {
 		const obj = JSON.parse(line);
 		if (obj.type === 'system') {
@@ -93,7 +103,7 @@ function formatStream(line) {
 				// (the runner pins --model from the ticket's difficulty + config, but
 				// this confirms the CLI accepted it).
 				const model = obj.model ? `  model=${obj.model}` : '';
-				return { text: `[session ${obj.session_id ?? '?'}]${model}\n` };
+				return { text: `${ts()}[session ${obj.session_id ?? '?'}]${model}\n` };
 			}
 			// thinking_tokens (and any future progress-only system event):
 			// collapse to a single dot so the log shows a thinking heartbeat
@@ -105,10 +115,10 @@ function formatStream(line) {
 			const parts = [];
 			for (const block of content) {
 				if (block.type === 'text' && block.text) {
-					parts.push(`\n[ASSISTANT]\n${block.text}\n`);
+					parts.push(`\n${ts()}[ASSISTANT]\n${block.text}\n`);
 				} else if (block.type === 'tool_use') {
 					const inputStr = formatToolInput(block.name, block.input);
-					parts.push(`\n[TOOL:${block.name}]\n${inputStr}\n`);
+					parts.push(`\n${ts()}[TOOL:${block.name}]\n${inputStr}\n`);
 				}
 			}
 			const usage = obj.message?.usage;
@@ -126,9 +136,9 @@ function formatStream(line) {
 					const shown = text.length > cap
 						? `${text.slice(0, cap)}\n… [+${text.length - cap} more chars truncated]`
 						: text;
-					parts.push(`  ✓ ${shown}\n`);
+					parts.push(`  ${ts()}✓ ${shown}\n`);
 				} else if (block.type === 'text' && block.text) {
-					parts.push(`\n[USER]\n${block.text}\n`);
+					parts.push(`\n${ts()}[USER]\n${block.text}\n`);
 				}
 			}
 			return { text: parts.join('') || '' };
@@ -138,7 +148,7 @@ function formatStream(line) {
 			const cost = obj.total_cost_usd != null ? ` | cost $${obj.total_cost_usd.toFixed(4)}` : '';
 			const dur = obj.duration_ms != null ? ` | ${(obj.duration_ms / 1000).toFixed(1)}s` : '';
 			return {
-				text: `\n[RESULT ${status}${dur}${cost}]\n${obj.result ?? ''}\n`,
+				text: `\n${ts()}[RESULT ${status}${dur}${cost}]\n${obj.result ?? ''}\n`,
 				done: true,
 				exitCode: obj.is_error ? 1 : 0,
 			};

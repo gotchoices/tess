@@ -595,6 +595,8 @@ The agent sees this note as part of the ticket content and can read the log to u
 
 The resume note is committed to the ticket file itself, so it carries across runs regardless of strategy. Under `batch` and `chase`, when the resumed ticket is present in the new run's snapshot it is also hoisted to the front of the queue so it runs first — even if it sits in a later stage than other queued tickets (in `chase`, it becomes the first root and is chased forward from its current stage). Under `live` there is no frozen queue to hoist within; the ticket is re-discovered with its note in place and selected by normal cross-stage priority.
 
+The Claude adapter's log carries one more thing worth knowing when reading it by hand: every `[session ...]`, `[ASSISTANT]`, `[TOOL:...]`, tool-result `✓` and `[RESULT ...]` block it writes opens with an ISO timestamp (`[2026-11-17T20:30:00.123Z] [TOOL:Read]\n...`). The stage log otherwise carries only its own `Started:` header and the CLI's own final `[RESULT ... | Ns]` total, from which no individual call's duration is computable — diffing two consecutive block timestamps gives that. The thinking heartbeat (a run of bare `.` characters) is exempt: it has no block structure of its own to timestamp.
+
 If the incomplete ticket is no longer present (e.g., it was manually moved), the runner simply clears the stale state and proceeds normally.
 
 ### Idle-timeout retries
