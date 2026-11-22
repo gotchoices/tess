@@ -115,7 +115,7 @@ function runGit(cwd, args) {
 /** Every submodule path `.gitmodules` declares, checked out or not.  Read from there rather than
  *  a list in this file: tess is itself a submodule of several different host projects, and each
  *  has its own set.  A repo with no `.gitmodules` declares none. */
-function declaredSubmodulePaths(cwd) {
+export function declaredSubmodulePaths(cwd) {
 	let declared;
 	try {
 		// `-z` is load-bearing rather than tidiness.  Without it a record reads

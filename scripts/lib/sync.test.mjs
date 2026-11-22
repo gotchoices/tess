@@ -515,6 +515,116 @@ test('a sync whose rebase moves a submodule pin checks out the new pin, nested s
 	assert.equal(run(ours.lib, 'git status --porcelain'), '', 'nested checkout is on the pin lib records');
 });
 
+// ── post-rebase sync-verify-command ──────────────────────────────────────────
+
+const VERIFY_RULE = '---\nsync-verify-command: node verify.mjs\n---\n';
+
+/** Logs each run's ranges to `.git/verify-runs` (outside the working tree), then fails when `caller.txt` uses a name `api.txt` no longer has. */
+const VERIFY_SCRIPT = [
+	'import { appendFileSync, existsSync, readFileSync } from \'node:fs\';',
+	'appendFileSync(\'.git/verify-runs\', `${process.env.TESS_SYNC_OURS} ${process.env.TESS_SYNC_THEIRS}\\n`);',
+	'const read = file => readFileSync(file, \'utf-8\').trim();',
+	'if (existsSync(\'caller.txt\') && read(\'caller.txt\') !== read(\'api.txt\')) {',
+	'\tconsole.log(`caller.txt uses ${read(\'caller.txt\')}, api.txt has ${read(\'api.txt\')}`);',
+	'\tprocess.exit(1);',
+	'}',
+].join('\n') + '\n';
+
+const verifyRuns = clone => (existsSync(join(clone, '.git', 'verify-runs')) ? readFileSync(join(clone, '.git', 'verify-runs'), 'utf-8').trim().split('\n') : []);
+
+/** A board declaring `node verify.mjs`, the other side's commit of `theirs` pushed, and our ticket commit of `ours` in flight. */
+function makeVerifyRace(t, origin, { theirs, ours }) {
+	seedOrigin(t, origin, { 'tickets/rules/verify.md': VERIFY_RULE, 'verify.mjs': VERIFY_SCRIPT, 'api.txt': 'old\n' });
+	const clone = makeClone(t, origin, 'a');
+	const other = makeClone(t, origin, 'other');
+	for (const [name, content] of Object.entries(theirs)) writeFile(other, name, content);
+	commit(other, 'their change');
+	run(other, 'git push -q origin dev');
+	for (const [name, content] of Object.entries(ours)) writeFile(clone, name, content);
+	commit(clone, 'ticket(implement): example-ticket');
+	return clone;
+}
+
+test('sync-verify-command does not run when one side changed only tickets', async (t) => {
+	const origin = makeBareOrigin(t);
+	const clone = makeVerifyRace(t, origin, { theirs: { 'api.txt': 'new\n' }, ours: { 'tickets/implement/foo.md': 'description: x\n----\nbody\n' } });
+
+	const result = await syncAfterTicket(makeCtx(clone), { ticket: fakeTicket });
+
+	assert.equal(result.outcome, 'pushed');
+	assert.deepEqual(verifyRuns(clone), []);
+});
+
+test('sync-verify-command runs on a rebase that replayed code onto new code, given both ranges, and a pass pushes', async (t) => {
+	const origin = makeBareOrigin(t);
+	const clone = makeVerifyRace(t, origin, { theirs: { 'other.txt': 'x\n' }, ours: { 'caller.txt': 'old\n' } });
+
+	const result = await syncAfterTicket(makeCtx(clone), { ticket: fakeTicket });
+
+	assert.equal(result.outcome, 'pushed');
+	const sha = rev => run(clone, `git rev-parse ${rev}`).trim();
+	assert.deepEqual(verifyRuns(clone), [`${sha('HEAD~1')}..${sha('HEAD')} ${sha('HEAD~2')}..${sha('HEAD~1')}`]);
+});
+
+test('a sync-verify-command failure gets one resolve turn, whose fix is committed as its own commit and pushed', async (t) => {
+	// regression: 2026-11-22, SiteCAD — two clean rebases each replayed a test using a shape the
+	// other side had just changed, and pushed a dev that did not build.
+	const origin = makeBareOrigin(t);
+	const clone = makeVerifyRace(t, origin, { theirs: { 'api.txt': 'new\n' }, ours: { 'caller.txt': 'old\n' } });
+	let prompt = '';
+	const fixingResolver = async (_agent, p, cwd) => {
+		prompt = p;
+		writeFileSync(join(cwd, 'caller.txt'), 'new\n');
+		return { exitCode: 0 };
+	};
+
+	const result = await syncAfterTicket(makeCtx(clone), { ticket: fakeTicket, agentRunner: fixingResolver });
+
+	assert.equal(result.outcome, 'pushed');
+	assert.match(prompt, /caller\.txt uses old, api\.txt has new/);
+	assert.deepEqual(originLog(origin), ['seed', 'their change', 'ticket(implement): example-ticket', 'sync: fix the build the rebase onto origin/dev broke found after implement/example-ticket']);
+	assert.equal(verifyRuns(clone).length, 2);
+});
+
+test('a sync-verify-command that still fails after the resolve turn resets to the pre-rebase commit and counts a failure', async (t) => {
+	const origin = makeBareOrigin(t);
+	const clone = makeVerifyRace(t, origin, { theirs: { 'api.txt': 'new\n' }, ours: { 'caller.txt': 'old\n' } });
+	const localHead = headSha(clone);
+	const ctx = makeCtx(clone);
+	const scratchingResolver = async (_agent, _prompt, cwd) => {
+		writeFileSync(join(cwd, 'scratch.txt'), 'notes\n');
+		return { exitCode: 0 };
+	};
+
+	const result = await syncAfterTicket(ctx, { ticket: fakeTicket, agentRunner: scratchingResolver });
+
+	assert.equal(result.outcome, 'failed');
+	assert.equal(ctx.syncConsecutiveFailures, 1);
+	assert.equal(headSha(clone), localHead, 'local commit preserved, not rewritten');
+	assert.deepEqual(originLog(origin), ['seed', 'their change'], 'nothing pushed');
+	assert.equal(run(clone, 'git status --porcelain'), '', 'the turn\'s new file is gone too');
+});
+
+test('a sync-verify-command failure that cannot be resolved puts the submodule checkouts it moved back on their old pins', async (t) => {
+	const origin = makeSubmoduleOrigin(t);
+	const setup = makeClone(t, origin, 'setup');
+	writeFile(setup, 'tickets/rules/verify.md', VERIFY_RULE);
+	writeFile(setup, 'verify.mjs', 'import { readFileSync } from \'node:fs\';\nprocess.exit(readFileSync(\'lib/inner.txt\', \'utf-8\').trim() === \'inner\' ? 0 : 1);\n');
+	commit(setup, 'declare verify');
+	run(setup, 'git push -q origin dev');
+	const ours = makeSubmoduleClone(t, origin, 'a');
+	const oldPin = headSha(ours.lib);
+	movePinUpstream(t, origin);
+	writeFile(ours.clone, 'b.txt', 'b\n');
+	commit(ours.clone, 'ticket(implement): example-ticket');
+
+	const result = await syncAfterTicket(makeCtx(ours.clone), { ticket: fakeTicket, agentRunner: givingUpResolver });
+
+	assert.equal(result.outcome, 'failed');
+	assert.equal(headSha(ours.lib), oldPin, 'the verify ran against the followed pin, then the checkout went back');
+	assert.equal(run(ours.clone, 'git status --porcelain'), '');
+});
+
 // ── failure budget → .sync-blocked ───────────────────────────────────────────
 
 test('repeated failures write .sync-blocked only once the budget is spent, and never before', async (t) => {

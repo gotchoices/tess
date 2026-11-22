@@ -9,9 +9,9 @@
  * then runs to the next fence, by the same fence rules as a ticket header, and
  * the body is everything after it.  With no opening fence the whole file is
  * body.  (A ticket's unfenced-header rule would read an addendum's leading
- * prose as fields.)  Tess reads three header fields, `anchor-fields:`,
- * `runner-shards:` and `anchor-baseline:`; any other field is left to other
- * tools.
+ * prose as fields.)  Tess reads five header fields, `anchor-fields:`,
+ * `runner-shards:`, `anchor-baseline:`, `gate-command:` and
+ * `sync-verify-command:`; any other field is left to other tools.
  *
  * Anchors are opt-in.  A board requires every worked ticket to name one only
  * once some addendum lists at least one field under `anchor-fields:` — that
@@ -52,6 +52,12 @@
  * no declaration nothing runs. Two addenda may declare the same command;
  * different commands are an error.
  *
+ * `sync-verify-command: <command>` names a shell command the per-ticket sync
+ * (lib/sync.mjs) runs after a rebase that replayed this checkout's code onto
+ * new upstream code: a clean rebase can still break the build, when one side
+ * changed a shape the other side's new code uses.  Same declaration rules as
+ * `gate-command:`; what it runs and when is lib/sync.mjs's to say.
+ *
  * A body may carry the same `<!-- stage:NAME -->` blocks as
  * agent-rules/tickets.md; the prompt builders filter them
  * (lib/prompt.mjs `projectRuleSections`).
@@ -73,9 +79,10 @@ const FIELD_NAME_RE = /^[a-z][a-z0-9-]*$/;
 const RUNNER_SHARDS_RE = /^\d+$/;
 
 /**
- * Parse one addendum.  Returns `{ rule: { name, body, anchorFields, runnerShards, anchorBaseline, gateCommand }, errors }`,
- * `runnerShards` a number or null, `anchorBaseline` and `gateCommand` each a
- * string or null, each null when the header does not declare a valid one.
+ * Parse one addendum.  Returns `{ rule: { name, body, anchorFields, runnerShards, anchorBaseline, gateCommand, syncVerifyCommand }, errors }`,
+ * `runnerShards` a number or null, `anchorBaseline`, `gateCommand` and
+ * `syncVerifyCommand` each a string or null, each null when the header does
+ * not declare a valid one.
  * A rule with errors is still returned with what could be read; the board
  * check decides what the errors mean.  Line endings are normalised to LF and a
  * byte-order mark is dropped, so the fence on line 1 is found either way.
@@ -84,11 +91,12 @@ export function parseProjectRule(name, text) {
 	const path = `${DISPLAY_DIR}/${name}`;
 	const normalized = text.replace(/^﻿/, '').replace(/\r\n/g, '\n');
 	const { lines, opened, start, end, closed } = headerBounds(normalized);
+	const declaresNothing = { anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null };
 
-	if (!opened) return { rule: { name, body: normalized, anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null }, errors: [] };
+	if (!opened) return { rule: { name, body: normalized, ...declaresNothing }, errors: [] };
 	if (!closed) {
 		return {
-			rule: { name, body: '', anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null },
+			rule: { name, body: '', ...declaresNothing },
 			errors: [`${path}: unterminated header — line 1 is a fence with no closing fence, so the file appends and declares nothing`],
 		};
 	}
@@ -124,16 +132,16 @@ export function parseProjectRule(name, text) {
 		}
 	}
 
-	let gateCommand = null;
-	const gate = headerField(header, 'gate-command');
-	if (gate !== null) {
-		if (gate === '') {
-			errors.push(`${path}: gate-command: is empty — name a command to run, or drop the field`);
-		} else {
-			gateCommand = gate;
-		}
-	}
-	return { rule: { name, body: lines.slice(end + 1).join('\n'), anchorFields, runnerShards, anchorBaseline, gateCommand }, errors };
+	const gateCommand = commandField(header, 'gate-command', path, errors);
+	const syncVerifyCommand = commandField(header, 'sync-verify-command', path, errors);
+	return { rule: { name, body: lines.slice(end + 1).join('\n'), anchorFields, runnerShards, anchorBaseline, gateCommand, syncVerifyCommand }, errors };
+}
+
+/** A header field naming a shell command: the command, or null when absent or empty (an empty one is also an error). */
+function commandField(header, field, path, errors) {
+	const command = headerField(header, field);
+	if (command === '') errors.push(`${path}: ${field}: is empty — name a command to run, or drop the field`);
+	return command || null;
 }
 
 /**
@@ -225,11 +233,26 @@ export function anchorBaselineOf(rules) {
  * command the board agrees on.
  */
 export function gateCommandOf(rules) {
-	const declaring = rules.filter(r => r.gateCommand !== null);
-	if (declaring.length === 0) return { gateCommand: null, errors: [] };
-	if (new Set(declaring.map(r => r.gateCommand)).size > 1) {
-		const said = declaring.map(r => `${DISPLAY_DIR}/${r.name} says "${r.gateCommand}"`).join(', ');
-		return { gateCommand: null, errors: [`gate-command: ${said} — declare one command, or the same command everywhere`] };
+	const { command, errors } = agreedCommand(rules, 'gateCommand', 'gate-command');
+	return { gateCommand: command, errors };
+}
+
+/**
+ * The board's declared `sync-verify-command:`, as `{ syncVerifyCommand, errors }`,
+ * in `gateCommandOf`'s shape. Running it is lib/sync.mjs's job.
+ */
+export function syncVerifyCommandOf(rules) {
+	const { command, errors } = agreedCommand(rules, 'syncVerifyCommand', 'sync-verify-command');
+	return { syncVerifyCommand: command, errors };
+}
+
+/** `{ command: { command, declaredIn } | null, errors }` for the command field `prop` (`field:` in a header) every declaring addendum agrees on. */
+function agreedCommand(rules, prop, field) {
+	const declaring = rules.filter(r => r[prop] !== null);
+	if (declaring.length === 0) return { command: null, errors: [] };
+	if (new Set(declaring.map(r => r[prop])).size > 1) {
+		const said = declaring.map(r => `${DISPLAY_DIR}/${r.name} says "${r[prop]}"`).join(', ');
+		return { command: null, errors: [`${field}: ${said} — declare one command, or the same command everywhere`] };
 	}
-	return { gateCommand: { command: declaring[0].gateCommand, declaredIn: declaring.map(r => `${DISPLAY_DIR}/${r.name}`) }, errors: [] };
+	return { command: { command: declaring[0][prop], declaredIn: declaring.map(r => `${DISPLAY_DIR}/${r.name}`) }, errors: [] };
 }

@@ -31,8 +31,14 @@
  *      (runSplitRaceResolveAgent) removes the other, verified against the board and committed the
  *      same way. Once both gates pass, a submodule checkout that sat on the gitlink the rebase
  *      replaced is checked out at the new one (`followSubmodulePins`, lib/git.mjs): `git rebase`
- *      moves the gitlink and never the checkout.
- *   5. A resolve that fails (conflict, duplicate-slug or split race) leaves the local commit(s) in
+ *      moves the gitlink and never the checkout. Last, a project that declares
+ *      `sync-verify-command:` has it run when the rebase replayed code onto new upstream code
+ *      (`gateSyncVerify`): a clean rebase can still break the build, when one side changed a shape
+ *      the other side's new code uses. A failure gets one bounded resolve turn
+ *      (buildSyncVerifyPrompt), the command is rerun, and the turn's changes are committed as
+ *      their own commit; a failure that remains resets to the pre-rebase HEAD and puts the
+ *      submodule checkouts just moved back on their old pins.
+ *   5. A resolve that fails (conflict, duplicate-slug, split race or verify) leaves the local commit(s) in
  *      place, unpushed, and counts toward MAX_CONSECUTIVE_SYNC_FAILURES. Once that budget is
  *      spent, `.sync-blocked` is written and the caller (run-ticket.mjs) reports a `stopped`
  *      outcome so the run ends — a human (or a fresh restart, which re-attempts via
@@ -51,11 +57,13 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { readFile, writeFile, unlink } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { followSubmodulePins } from './git.mjs';
+import { runGateCommand } from './gate-command.mjs';
+import { declaredSubmodulePaths, followSubmodulePins } from './git.mjs';
 import { runAgent } from './process.mjs';
+import { readProjectRules, syncVerifyCommandOf } from './project-rules.mjs';
 import { KNOWN_STAGES, boardLocation, byName, findDuplicateSlugs, indexAllTickets, parseSlug } from './tickets.mjs';
 
 export const SYNC_BLOCKED_FILE = '.sync-blocked';
@@ -516,10 +524,151 @@ async function gateSplitRaces(ctx, { ticket, upstream, decided, ourCommits, thei
 }
 
 /**
+ * Wall-time cap on one run of a project's `sync-verify-command:`; a run past it fails.
+ * NOTE: `execSync` kills the shell, not its children, so a timed-out command's own processes can
+ * outlive it. If that shows up, run the command in its own process group and kill the group.
+ */
+export const SYNC_VERIFY_TIMEOUT_MS = 20 * 60 * 1000;
+
+/** How much of a failed verify's output the resolve prompt carries: the tail, where a compiler's summary is. */
+const MAX_VERIFY_OUTPUT_CHARS = 12000;
+
+/** Paths `from..to` changed outside the tickets folder, as `git diff` names them. */
+function changedOutsideTickets(ctx, from, to) {
+	const out = tryGit(ctx.repoRoot, ['-c', 'core.quotePath=false', 'diff', '--name-only', '--no-renames', from, to, '--', '.', `:(exclude)${ticketsPrefix(ctx)}`]);
+	return out.ok ? out.output.split('\n').filter(Boolean) : [];
+}
+
+function runSyncVerify(command, env, repoRoot) {
+	const started = Date.now();
+	const result = runGateCommand(command, { cwd: repoRoot, env, timeoutMs: SYNC_VERIFY_TIMEOUT_MS });
+	console.log(`[runner] sync: sync-verify-command ${result.ok ? 'passed' : 'failed'} in ${((Date.now() - started) / 1000).toFixed(1)} s.`);
+	return result;
+}
+
+/** `git status` as a set of `XY path` records, untracked files listed one by one. */
+function statusRecords(repoRoot) {
+	const out = tryGit(repoRoot, ['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all']);
+	return new Set(out.ok ? out.output.split('\0').filter(Boolean) : []);
+}
+
+/** The records in `after` that `before` lacks: what a resolve turn changed. */
+const newRecords = (before, after) => [...after].filter(r => !before.has(r)).map(r => ({ code: r.slice(0, 2), path: r.slice(3) }));
+
+/**
+ * The prompt for the one bounded turn over a failed `sync-verify-command:`. The rebase reported
+ * no conflict, so the agent is given the command, the tail of its output and the two ranges it
+ * checked, and is told what this failure usually is.
+ */
+function buildSyncVerifyPrompt({ ticket, upstream, command, output, env, ourCommits, theirCommits, submodules }) {
+	const tail = output.length > MAX_VERIFY_OUTPUT_CHARS ? `…\n${output.slice(-MAX_VERIFY_OUTPUT_CHARS)}` : output;
+	const rerun = `TESS_SYNC_OURS=${env.TESS_SYNC_OURS} TESS_SYNC_THEIRS=${env.TESS_SYNC_THEIRS} ${command}`;
+	return [
+		'# Sync build-break resolution',
+		'',
+		`Rebasing this checkout's unpushed commit(s) onto \`${upstream}\` reported no conflict, but the project's sync-verify-command failed on the result. A clean rebase can still break the build: one side changed a shape (a type, a signature, a column, a test helper) that code the other side added still uses.`,
+		...commitContextLines({ ticket, upstream, ourCommits, theirCommits }),
+		'',
+		'## The failed check',
+		'',
+		`\`${rerun}\``,
+		'',
+		`\`TESS_SYNC_OURS\` is our commits as replayed and \`TESS_SYNC_THEIRS\` the upstream commits this checkout did not have; \`git diff <range>\` shows either side. The end of the command's output:`,
+		'',
+		'```',
+		tail,
+		'```',
+		'',
+		'## Your job',
+		'',
+		'1. Read what each side changed and why, then fix the break so the result keeps both: usually that means updating code from one side to the shape the other side changed on purpose. Never revert either side\'s change to make the check pass.',
+		`2. Rerun the check above until it passes.`,
+		`3. Change only the files the fix needs. Do not create, move or delete ticket files, and do not edit inside a submodule${submodules.length > 0 ? ` (${submodules.map(p => `\`${p}\``).join(', ')})` : ''}: if the fix needs one, change nothing and say so.`,
+		'4. Do NOT run `git commit`, `git rebase`, `git reset` or `git push`. The runner reruns the check itself and, if it passes, commits your fix as its own commit.',
+		'5. If you cannot fix it, say so plainly in your final message. Exit normally either way: the runner checks the result, not your narration.',
+		'',
+		'Work only inside this repository\'s working tree. Nothing else is expected of you this turn.',
+	].join('\n');
+}
+
+/**
+ * Post-rebase gate: a project's `sync-verify-command:` (lib/project-rules.mjs), run only when the
+ * rebase replayed code onto new upstream code — the upstream had commits this checkout lacked,
+ * and both our replayed range and theirs changed something outside the tickets folder. A rebase
+ * that replayed only ticket moves, or onto only ticket moves, cannot break the build, and skipping
+ * those keeps the check off most syncs. A failure gets one bounded resolve turn; the runner then
+ * reruns the command and commits the turn's changes as their own commit. Anything else fails.
+ */
+async function gateSyncVerify(ctx, { ticket, upstream, upstreamSha, mergeBase, ourCommits, theirCommits }, { agentRunner = runAgent } = {}) {
+	const { repoRoot, ticketsDir, opts } = ctx;
+	if (theirCommits.length === 0 || !mergeBase) return { ok: true };
+	const { rules } = await readProjectRules(ticketsDir);
+	const declared = syncVerifyCommandOf(rules);
+	for (const error of declared.errors) console.warn(`[runner] sync: ${error} — not verifying this rebase.`);
+	if (!declared.syncVerifyCommand) return { ok: true };
+
+	const head = runGit(repoRoot, ['rev-parse', 'HEAD']).trim();
+	if (changedOutsideTickets(ctx, upstreamSha, head).length === 0 || changedOutsideTickets(ctx, mergeBase, upstreamSha).length === 0) return { ok: true };
+
+	const { command } = declared.syncVerifyCommand;
+	const env = {
+		...process.env,
+		TESS_SYNC_OURS: `${upstreamSha}..${head}`,
+		TESS_SYNC_THEIRS: `${mergeBase}..${upstreamSha}`,
+		...(ticket ? { TESS_TICKET_SLUG: ticket.slug, TESS_TICKET_FROM_STAGE: ticket.stage } : {}),
+	};
+	const first = runSyncVerify(command, env, repoRoot);
+	if (first.ok) return { ok: true };
+
+	const before = statusRecords(repoRoot);
+	const submodules = declaredSubmodulePaths(repoRoot);
+	const prompt = buildSyncVerifyPrompt({ ticket, upstream, command, output: first.output, env, ourCommits, theirCommits, submodules });
+	const logFile = await startResolveLog(ctx, ts => `sync-verify.${ts}.log`, [
+		'Sync verify resolve',
+		`Upstream: ${upstream}`,
+		`Command: ${command}`,
+	]);
+	const result = await agentRunner(opts.agent, prompt, repoRoot, logFile, { stage: 'sync-resolve', difficulty: 'hard' });
+	const changes = newRecords(before, statusRecords(repoRoot));
+	const fail = reason => {
+		// The caller's reset puts tracked files back; files the turn created are removed here, or the
+		// next ticket's commit would sweep them up under its own name.
+		for (const { code, path } of changes) if (code === '??') rmSync(join(repoRoot, path), { force: true });
+		return { ok: false, reason, logFile };
+	};
+	if (result.exitCode !== 0) return fail(`sync-verify resolve agent exited ${result.exitCode}`);
+	const touched = changes.filter(c => submodules.includes(c.path)).map(c => c.path);
+	if (touched.length > 0) return fail(`sync-verify resolve agent changed submodule(s) ${touched.join(', ')}, which a sync commit cannot carry`);
+	const second = runSyncVerify(command, env, repoRoot);
+	if (!second.ok) return fail(`sync-verify-command "${command}" still fails after the resolve turn: ${firstLine(second.output)}`);
+	if (changes.length === 0) {
+		console.log('[runner] sync: sync-verify-command passed on its rerun with nothing changed; the first failure did not repeat.');
+		return { ok: true, logFile };
+	}
+	tryGit(repoRoot, ['add', '-A', '--', ...changes.map(c => c.path)]);
+	const committed = tryGit(repoRoot, ['commit', '-m', `sync: fix the build the rebase onto ${upstream} broke${ticket ? ` found after ${ticket.stage}/${ticket.slug}` : ''}`]);
+	if (!committed.ok) return fail(`could not commit the sync-verify fix — ${committed.output.trim()}`);
+	return { ok: true, logFile };
+}
+
+/**
+ * Undo `bringSubmodulesAlong` after a failed sync verify has reset the branch to its old gitlinks:
+ * each checkout it moved goes back to the pin it left, parents before their nested submodules.
+ */
+function putSubmodulesBack(repoRoot, moves) {
+	for (const { path, from, outcome } of moves) {
+		if (outcome !== 'followed') continue;
+		const back = tryGit(repoRoot, ['-C', path, 'checkout', '-q', '--detach', from]);
+		if (!back.ok) console.error(`[runner] sync: could not put ${path} back on its old pin ${from.slice(0, 9)} — ${back.output.trim()}`);
+	}
+}
+
+/**
  * Rebase onto `upstream`, driving the resolve agent through as many conflict rounds as the
  * replay needs (bounded by one more than the number of local commits — a well-formed rebase
  * never needs more rounds than commits being replayed), then the post-rebase gates
- * (`gateDuplicateSlugs`, `gateSplitRaces`). Returns `{ ok, ourCommits, theirCommits,
+ * (`gateDuplicateSlugs`, `gateSplitRaces`, then `gateSyncVerify` once the submodules have
+ * followed their pins). Returns `{ ok, ourCommits, theirCommits,
  * conflictedFiles, reason?, blockNow? }`. On any failure the working tree ends up exactly what it
  * was before this call, local commits included — a conflict aborts the in-progress rebase; a gate
  * finding that can't be resolved resets back to the commit recorded before the rebase started,
@@ -542,6 +691,9 @@ async function rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner } = {
 	}
 
 	const preRebaseHead = runGit(repoRoot, ['rev-parse', 'HEAD']).trim();
+	const upstreamSha = runGit(repoRoot, ['rev-parse', upstream]).trim();
+	const base = tryGit(repoRoot, ['merge-base', preRebaseHead, upstreamSha]);
+	const mergeBase = base.ok ? base.output.trim() : null;
 
 	let rebase = tryGit(repoRoot, ['rebase', upstream]);
 	let round = 0;
@@ -578,8 +730,14 @@ async function rebaseOntoUpstream(ctx, { upstream, ticket }, { agentRunner } = {
 	}
 
 	// Only now: the reset above puts the old gitlinks back, so a checkout moved before it would be
-	// left ahead of its pin.
-	bringSubmodulesAlong(repoRoot, preRebaseHead);
+	// left ahead of its pin. The verify below needs them moved, so its failure moves them back.
+	const moves = bringSubmodulesAlong(repoRoot, preRebaseHead);
+	const verified = await gateSyncVerify(ctx, { ticket, upstream, upstreamSha, mergeBase, ourCommits, theirCommits }, { agentRunner });
+	if (!verified.ok) {
+		tryGit(repoRoot, ['reset', '--hard', preRebaseHead]);
+		putSubmodulesBack(repoRoot, moves);
+		return { ok: false, reason: verified.reason, ourCommits, theirCommits, conflictedFiles: [] };
+	}
 	return { ok: true, ourCommits, theirCommits };
 }
 
@@ -594,14 +752,17 @@ const LEFT_BECAUSE = {
  * Check out the new pin in each submodule that was following the one the rebase replaced
  * (`followSubmodulePins`, lib/git.mjs), and say what happened to each pin that moved. A checkout
  * left where it was gets one line here, and the commit-time pin guard treats it as it always has.
+ * Returns the moves, for `putSubmodulesBack`.
  */
 function bringSubmodulesAlong(repoRoot, preRebaseHead) {
-	for (const { path, from, to, outcome, error } of followSubmodulePins(repoRoot, preRebaseHead)) {
+	const moves = followSubmodulePins(repoRoot, preRebaseHead);
+	for (const { path, from, to, outcome, error } of moves) {
 		const move = `${from.slice(0, 9)} → ${to.slice(0, 9)}`;
 		if (outcome === 'followed') console.log(`[runner] sync: ${path} followed its pin ${move}.`);
 		else if (outcome === 'failed') console.error(`[runner] sync: could not bring ${path} along to its new pin (${move}) — ${error}`);
 		else if (outcome !== 'not-checked-out') console.warn(`[runner] sync: ${path}'s pin moved ${move}; checkout left where it is, because ${LEFT_BECAUSE[outcome]}.`);
 	}
+	return moves;
 }
 
 /** Cap on git's output carried into a `.sync-blocked` reason — a hook may print a lot. */

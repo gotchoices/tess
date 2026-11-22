@@ -17,7 +17,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { dirname, join as joinPath } from 'node:path';
-import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, gateCommandOf, readProjectRules, runnerShardsOf } from './project-rules.mjs';
+import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, gateCommandOf, readProjectRules, runnerShardsOf, syncVerifyCommandOf } from './project-rules.mjs';
 import { RELEASES_FILE, currentRelease, rankOf, readReleases } from './releases.mjs';
 import { REVIEW_VALUES, boardLocation, deferralReason, parseListField, parseSlug, readBacklogLayout, resolvePrereqs } from './tickets.mjs';
 
@@ -54,17 +54,20 @@ async function loadAnchorBaseline(ticketsDir, declared) {
 
 /**
  * Everything the board rules read: `{ releases, rules, anchorFields,
- * anchorsRequired, anchorBaseline, runnerShards, gateCommand }`.  `rules` is
+ * anchorsRequired, anchorBaseline, runnerShards, gateCommand,
+ * syncVerifyCommand }`.  `rules` is
  * `readProjectRules`' `{ rules, errors }`, its errors joined by any
- * disagreement between addenda over `runner-shards:`, `anchor-baseline:` or
- * `gate-command:` and any problem loading the baseline file; `anchorFields`
+ * disagreement between addenda over `runner-shards:`, `anchor-baseline:`,
+ * `gate-command:` or `sync-verify-command:` and any problem loading the
+ * baseline file; `anchorFields`
  * is every header field that counts as an anchor; `anchorsRequired` says
  * whether a worked ticket must name one (see lib/project-rules.mjs
  * `anchorsRequiredBy`); `anchorBaseline` is the set of slugs the declared
  * ledger grandfathers, `new Set()` with no declaration; `runnerShards` is the
  * declared runner count, `{ count, declaredIn }` or null (`runnerShardsOf`);
  * `gateCommand` is the declared post-agent, pre-commit hook, `{ command,
- * declaredIn }` or null (`gateCommandOf`).
+ * declaredIn }` or null (`gateCommandOf`); `syncVerifyCommand` the declared
+ * post-rebase check, in the same shape (`syncVerifyCommandOf`).
  */
 export async function readBoardContext(ticketsDir) {
 	const [releases, read] = await Promise.all([readReleases(ticketsDir), readProjectRules(ticketsDir)]);
@@ -72,7 +75,8 @@ export async function readBoardContext(ticketsDir) {
 	const baselineDecl = anchorBaselineOf(read.rules);
 	const baseline = await loadAnchorBaseline(ticketsDir, baselineDecl.anchorBaseline);
 	const gate = gateCommandOf(read.rules);
-	const rules = { rules: read.rules, errors: [...read.errors, ...shards.errors, ...baselineDecl.errors, ...baseline.errors, ...gate.errors] };
+	const syncVerify = syncVerifyCommandOf(read.rules);
+	const rules = { rules: read.rules, errors: [...read.errors, ...shards.errors, ...baselineDecl.errors, ...baseline.errors, ...gate.errors, ...syncVerify.errors] };
 	return {
 		releases,
 		rules,
@@ -81,6 +85,7 @@ export async function readBoardContext(ticketsDir) {
 		anchorBaseline: baseline.slugs,
 		runnerShards: shards.runnerShards,
 		gateCommand: gate.gateCommand,
+		syncVerifyCommand: syncVerify.syncVerifyCommand,
 	};
 }
 

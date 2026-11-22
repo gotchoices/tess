@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, gateCommandOf, parseProjectRule, readProjectRules, runnerShardsOf } from './project-rules.mjs';
+import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, gateCommandOf, parseProjectRule, readProjectRules, runnerShardsOf, syncVerifyCommandOf } from './project-rules.mjs';
 import { makeBoard } from './test-board.mjs';
 
 const BAD_NAME = 'is not a field name — use a lowercase letter followed by lowercase letters, digits or hyphens';
@@ -12,7 +12,7 @@ test('a fenced declaration header is parsed, and the body is everything after it
 	const text = '---\nanchor-fields: features, aspects\nowner: rubric\n---\nRule text.\n\nMore.\n';
 
 	assert.deepEqual(parseProjectRule('rubric.md', text), {
-		rule: { name: 'rubric.md', body: 'Rule text.\n\nMore.\n', anchorFields: ['features', 'aspects'], runnerShards: null, anchorBaseline: null, gateCommand: null },
+		rule: { name: 'rubric.md', body: 'Rule text.\n\nMore.\n', anchorFields: ['features', 'aspects'], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null },
 		errors: [],
 	});
 });
@@ -21,14 +21,14 @@ test('anchor-fields: takes the bracket and list forms; a four-dash fence, CRLF e
 	const bracket = parseProjectRule('a.md', '﻿----\r\nanchor-fields: [features]\r\n----\r\nBody\r\n');
 	const list = parseProjectRule('b.md', '---\nanchor-fields:\n  - features\n  - aspects\n---\nBody\n');
 
-	assert.deepEqual(bracket, { rule: { name: 'a.md', body: 'Body\n', anchorFields: ['features'], runnerShards: null, anchorBaseline: null, gateCommand: null }, errors: [] });
+	assert.deepEqual(bracket, { rule: { name: 'a.md', body: 'Body\n', anchorFields: ['features'], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null }, errors: [] });
 	assert.deepEqual(list.rule.anchorFields, ['features', 'aspects']);
 });
 
 test('a file whose first line is not a fence is all body and declares nothing', () => {
 	const text = 'anchor-fields: features\n\nProse that happens to start like a field.\n---\nMore prose.\n';
 
-	assert.deepEqual(parseProjectRule('plain.md', text), { rule: { name: 'plain.md', body: text, anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null }, errors: [] });
+	assert.deepEqual(parseProjectRule('plain.md', text), { rule: { name: 'plain.md', body: text, anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null }, errors: [] });
 });
 
 test('an invalid field name is an error naming the file; the valid names still count, tess\'s own architecture among them', () => {
@@ -44,7 +44,7 @@ test('an invalid field name is an error naming the file; the valid names still c
 test('an opening fence with no closing fence is an unterminated-header error, and the file appends and declares nothing', () => {
 	const { rule, errors } = parseProjectRule('open.md', '---\nanchor-fields: features\nRule text.\n');
 
-	assert.deepEqual(rule, { name: 'open.md', body: '', anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null });
+	assert.deepEqual(rule, { name: 'open.md', body: '', anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null });
 	assert.deepEqual(errors, ['tickets/rules/open.md: unterminated header — line 1 is a fence with no closing fence, so the file appends and declares nothing']);
 });
 
@@ -150,30 +150,32 @@ test('anchor-baseline: a non-empty path declares it; an empty field, or two adde
 	}
 });
 
-test('gate-command: a non-empty command declares it; an empty field, or two addenda disagreeing, is an error that declares nothing', () => {
-	const rows = [
-		{ files: [['a.md', 'Prose only.\n']], gateCommand: null, errors: [] },
-		{ files: [['a.md', '---\ngate-command: yarn gate\n---\n']], gateCommand: { command: 'yarn gate', declaredIn: ['tickets/rules/a.md'] }, errors: [] },
-		{
-			files: [['a.md', '---\ngate-command: yarn gate\n---\n'], ['b.md', '---\nanchor-fields: features\ngate-command: yarn gate\n---\nBody\n']],
-			gateCommand: { command: 'yarn gate', declaredIn: ['tickets/rules/a.md', 'tickets/rules/b.md'] },
-			errors: [],
-		},
-		{
-			files: [['a.md', '---\ngate-command:\n---\n']],
-			gateCommand: null,
-			errors: ['tickets/rules/a.md: gate-command: is empty — name a command to run, or drop the field'],
-		},
-		{
-			files: [['a.md', '---\ngate-command: yarn gate\n---\n'], ['b.md', '---\ngate-command: npm run gate\n---\n']],
-			gateCommand: null,
-			errors: ['gate-command: tickets/rules/a.md says "yarn gate", tickets/rules/b.md says "npm run gate" — declare one command, or the same command everywhere'],
-		},
-	];
+test('gate-command and sync-verify-command: a non-empty command declares it; an empty field, or two addenda disagreeing, is an error that declares nothing', () => {
+	for (const [field, commandOf, prop] of [['gate-command', gateCommandOf, 'gateCommand'], ['sync-verify-command', syncVerifyCommandOf, 'syncVerifyCommand']]) {
+		const rows = [
+			{ files: [['a.md', 'Prose only.\n']], command: null, errors: [] },
+			{ files: [['a.md', `---\n${field}: yarn gate\n---\n`]], command: { command: 'yarn gate', declaredIn: ['tickets/rules/a.md'] }, errors: [] },
+			{
+				files: [['a.md', `---\n${field}: yarn gate\n---\n`], ['b.md', `---\nanchor-fields: features\n${field}: yarn gate\n---\nBody\n`]],
+				command: { command: 'yarn gate', declaredIn: ['tickets/rules/a.md', 'tickets/rules/b.md'] },
+				errors: [],
+			},
+			{
+				files: [['a.md', `---\n${field}:\n---\n`]],
+				command: null,
+				errors: [`tickets/rules/a.md: ${field}: is empty — name a command to run, or drop the field`],
+			},
+			{
+				files: [['a.md', `---\n${field}: yarn gate\n---\n`], ['b.md', `---\n${field}: npm run gate\n---\n`]],
+				command: null,
+				errors: [`${field}: tickets/rules/a.md says "yarn gate", tickets/rules/b.md says "npm run gate" — declare one command, or the same command everywhere`],
+			},
+		];
 
-	for (const { files, gateCommand, errors } of rows) {
-		const parsed = files.map(([name, text]) => parseProjectRule(name, text));
-		const folded = gateCommandOf(parsed.map(p => p.rule));
-		assert.deepEqual({ gateCommand: folded.gateCommand, errors: [...parsed.flatMap(p => p.errors), ...folded.errors] }, { gateCommand, errors }, JSON.stringify(files));
+		for (const { files, command, errors } of rows) {
+			const parsed = files.map(([name, text]) => parseProjectRule(name, text));
+			const folded = commandOf(parsed.map(p => p.rule));
+			assert.deepEqual({ command: folded[prop], errors: [...parsed.flatMap(p => p.errors), ...folded.errors] }, { command, errors }, `${field} ${JSON.stringify(files)}`);
+		}
 	}
 });
