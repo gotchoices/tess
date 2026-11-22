@@ -104,10 +104,9 @@ async function buildQueue(ticketsDir, stages) {
  * The highest-priority runnable ticket in the live queue, or null when nothing
  * is runnable.
  *
- * Holding is the same-stage arm of the deferral cascade. A slug this runner
- * passed over *while it was this runner's to pick* — excluded for the run, or
- * failing any gate below other than --shard/--only — stays in its stage, so a
- * dependent in a *later* stage is already gated by rank; but a dependent in
+ * Holding is the same-stage arm of the deferral cascade. A slug this pass
+ * passed over — excluded for the run, or failing any gate below — stays in
+ * its stage, so a dependent in a *later* stage is already gated by rank; but a dependent in
  * the *same* stage passes the rank gate (in-stage order is the topo sort's
  * job) and would run ahead of work that has not landed. So a same-stage
  * dependent of such a slug is passed over too; the queue is topo-sorted within
@@ -115,13 +114,14 @@ async function buildQueue(ticketsDir, stages) {
  * in an *earlier* stage is left to the rank gate: the stages its prereq has
  * already passed through have landed.
  *
- * A slug outside this runner's --shard/--only is excluded from that cascading
- * set entirely: it was never this runner's to advance regardless of its own
- * state, so it carries no information about *this runner's* forward progress.
- * Letting it cascade-hold a same-stage dependent that IS this runner's to run
- * means a same-stage prereq chain that happens to cross a shard boundary empties
- * every shard but the one that owns the chain's root — the chain's own runner
- * may be advancing that prereq concurrently, in a separate process, right now.
+ * A slug outside this runner's --shard/--only holds its same-stage dependents
+ * too.  Runners on separate clones order nothing between them, so the other
+ * runner may not have started it, may be working it right now, or may be unable
+ * to (its own prereq sits in an earlier stage); in every case it has not landed.
+ * Running the dependent anyway builds it on work that does not exist yet, and
+ * the two meet only at sync.  The cost is that a runner whose remaining work all
+ * waits on another runner's chain finds nothing runnable and stops;
+ * `heldByOtherRunners` names what it is waiting on.
  */
 export async function pickNext(queue, { ticketsDir, index, blockIndex = null, shard = null, only = null, excluded, transitions }) {
 	const passedOver = new Set(excluded);
@@ -138,9 +138,27 @@ export async function pickNext(queue, { ticketsDir, index, blockIndex = null, sh
 	};
 	for (const t of queue) {
 		if (await isRunnable(t)) return t;
-		if (inOnly(t.slug, only) && inShard(t.slug, shard)) passedOver.add(t.slug);     // cascade only on this runner's own skipped work
+		passedOver.add(t.slug);
 	}
 	return null;
+}
+
+/**
+ * This runner's tickets that wait directly on a same-stage prereq outside its
+ * --shard/--only, as `{ slug, prereq }` in queue order: work only another
+ * runner (or a human) can land.  Printed when nothing is runnable, so a runner
+ * that stops on another runner's chain says so instead of ending on a bare
+ * "Done." that reads like a crash.
+ */
+export function heldByOtherRunners(queue, { index, shard = null, only = null }) {
+	const mine = slug => inOnly(slug, only) && inShard(slug, shard);
+	const held = [];
+	for (const t of queue) {
+		if (!mine(t.slug)) continue;
+		const prereq = t.prereqs.find(p => !mine(p) && index.get(p)?.stage === t.stage);
+		if (prereq) held.push({ slug: t.slug, prereq });
+	}
+	return held;
 }
 
 export async function run(ctx) {
@@ -172,7 +190,14 @@ export async function run(ctx) {
 
 		// Pick the highest-priority runnable ticket given the live board.
 		const pick = await pickNext(queue, { ticketsDir, index, blockIndex, shard: opts.shard, only: opts.only, excluded, transitions });
-		if (!pick) break;  // board drained, or every remaining ticket is gated/blocked
+		if (!pick) {  // board drained, or every remaining ticket is gated/blocked
+			const held = heldByOtherRunners(queue, { index, shard: opts.shard, only: opts.only });
+			if (held.length > 0) {
+				console.log(`  Live: nothing runnable; ${held.length} ticket(s) wait on a same-stage prereq outside this runner's --shard/--only:`);
+				for (const { slug, prereq } of held) console.log(`    ${slug} ← ${prereq}`);
+			}
+			break;
+		}
 
 		const label = `[live ${runs + 1}]`;
 		const outcome = await runOneStage(pick, ctx, { label });

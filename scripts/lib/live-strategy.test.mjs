@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { pickNext } from './strategies/live.mjs';
+import { heldByOtherRunners, pickNext } from './strategies/live.mjs';
 import { discoverTickets, inShard, indexAllTickets, nextStageFor } from './tickets.mjs';
 import { topoSortAndCheck } from './topo.mjs';
 import { makeBoard, withHeader } from './test-board.mjs';
@@ -73,26 +73,38 @@ test('--only skips a higher-priority ticket that was not named', async () => {
 	assert.equal(pick?.slug, 'b');
 });
 
-test('a same-stage prereq owned by another shard does not cascade-hold its dependent', async () => {
-	// 'p' hashes to shard 1, 'dependent' hashes to shard 0 (count 2) — picked so the test exercises
-	// a real cross-shard split rather than asserting on a coincidence. Running as shard 0, 'p' is
-	// never this runner's to advance either way, so it must not hold 'dependent' hostage: shard 1's
-	// own runner may be working 'p' concurrently, in a separate process, right now.
-	const ticketsDir = await makeBoard({
-		plan: ['1-p.md', ['2-dependent.md', withHeader('prereq: p')]],
-	});
-	const queue = await liveQueue(ticketsDir, ['plan']);
+// 'p' hashes to shard 1 and 'dependent' and 'q' to shard 0 (count 2), so these exercise a real
+// cross-shard split rather than a coincidence.
+const SHARD_0 = { index: 0, count: 2 };
+
+async function pickAsShard0(ticketsDir, stages) {
+	const queue = await liveQueue(ticketsDir, stages);
 	const index = await indexAllTickets(ticketsDir);
+	const pick = await pickNext(queue, { ticketsDir, index, excluded: new Set(), transitions: new Map(), shard: SHARD_0 });
+	return { pick, held: heldByOtherRunners(queue, { index, shard: SHARD_0 }) };
+}
 
-	const pick = await pickNext(queue, {
-		ticketsDir,
-		index,
-		excluded: new Set(),
-		transitions: new Map(),
-		shard: { index: 0, count: 2 },
+test('a same-stage prereq owned by another shard holds its dependent until it leaves the stage', async () => {
+	// Shard 1's runner may not have started 'p', or may be working it right now; either way it has
+	// not landed, and nothing orders the two runners.
+	const waiting = await makeBoard({ plan: ['1-p.md', ['2-dependent.md', withHeader('prereq: p')]] });
+	const { pick, held } = await pickAsShard0(waiting, ['plan']);
+	assert.equal(pick, null);
+	assert.deepEqual(held, [{ slug: 'dependent', prereq: 'p' }]);
+
+	const landed = await makeBoard({ implement: ['p.md'], plan: [['dependent.md', withHeader('prereq: p')]] });
+	assert.equal((await pickAsShard0(landed, ['implement', 'plan'])).pick?.slug, 'dependent');
+});
+
+test('a dependent is not picked ahead of another shard\'s prereq that waits on an earlier stage', async () => {
+	// The 2026-11-22 incident: implement/p waits on fix/q, so no runner can advance p, yet shard 0
+	// implemented 'dependent' ahead of it.
+	const ticketsDir = await makeBoard({
+		implement: [['1-p.md', withHeader('prereq: q')], ['2-dependent.md', withHeader('prereq: p')]],
+		fix: ['q.md'],
 	});
 
-	assert.equal(pick?.slug, 'dependent');
+	assert.equal((await pickAsShard0(ticketsDir, ['implement', 'fix'])).pick?.slug, 'q');
 });
 
 test('a ticket whose prereq is deferred to a later release is never picked', async () => {
