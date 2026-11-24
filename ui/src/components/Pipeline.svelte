@@ -5,15 +5,25 @@
 	let counts: PipelineCounts | null = $state(null);
 	let loading = $state(true);
 
-	const stages = [
+	interface Stage {
+		key: keyof PipelineCounts;
+		label: string;
+		color: string;
+		desc: string;
+		/** Where the stage's card leads, when not to its ticket list. */
+		href?: string;
+	}
+
+	const stages: Stage[] = [
 		{ key: 'backlog', label: 'Backlog', color: 'var(--text-muted)', desc: 'Parked specs' },
 		{ key: 'fix', label: 'Fix', color: 'var(--danger)', desc: 'Bug triage' },
 		{ key: 'plan', label: 'Plan', color: 'var(--warning)', desc: 'Feature design' },
 		{ key: 'implement', label: 'Implement', color: 'var(--primary)', desc: 'Build & test' },
 		{ key: 'review', label: 'Review', color: 'var(--info)', desc: 'Code review' },
-		{ key: 'blocked', label: 'Blocked', color: 'var(--danger)', desc: 'Unresolved' },
+		// blocked/ is the human's inbox: its card opens the Decisions page, which links on to the plain list.
+		{ key: 'blocked', label: 'Your inbox', color: 'var(--danger)', desc: 'Blocked — waiting on you', href: '#/decisions' },
 		{ key: 'complete', label: 'Complete', color: 'var(--success)', desc: 'Archived' },
-	] as const;
+	];
 
 	const sideKeys = new Set(['backlog', 'blocked', 'complete']);
 	const sideOrder = ['backlog', 'blocked', 'complete'];
@@ -57,7 +67,7 @@
 	<div class="side-stages">
 		{#each sideStages as stage}
 			{@const count = counts[stage.key] ?? 0}
-			<a class="side-card" href="#/stage/{stage.key}" class:has-items={count > 0}>
+			<a class="side-card" href={stage.href ?? `#/stage/${stage.key}`} class:has-items={count > 0}>
 				<div class="side-count" style:color={count > 0 ? stage.color : 'var(--text-light)'}>
 					{count}
 				</div>

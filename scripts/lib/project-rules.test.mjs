@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, gateCommandOf, parseProjectRule, readProjectRules, runnerShardsOf, syncVerifyCommandOf } from './project-rules.mjs';
+import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, doneFieldOf, gateCommandOf, parseProjectRule, readProjectRules, runnerShardsOf, syncVerifyCommandOf } from './project-rules.mjs';
 import { makeBoard } from './test-board.mjs';
 
 const BAD_NAME = 'is not a field name — use a lowercase letter followed by lowercase letters, digits or hyphens';
@@ -12,7 +12,7 @@ test('a fenced declaration header is parsed, and the body is everything after it
 	const text = '---\nanchor-fields: features, aspects\nowner: rubric\n---\nRule text.\n\nMore.\n';
 
 	assert.deepEqual(parseProjectRule('rubric.md', text), {
-		rule: { name: 'rubric.md', body: 'Rule text.\n\nMore.\n', anchorFields: ['features', 'aspects'], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null },
+		rule: { name: 'rubric.md', body: 'Rule text.\n\nMore.\n', anchorFields: ['features', 'aspects'], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null, doneField: null },
 		errors: [],
 	});
 });
@@ -21,14 +21,14 @@ test('anchor-fields: takes the bracket and list forms; a four-dash fence, CRLF e
 	const bracket = parseProjectRule('a.md', '﻿----\r\nanchor-fields: [features]\r\n----\r\nBody\r\n');
 	const list = parseProjectRule('b.md', '---\nanchor-fields:\n  - features\n  - aspects\n---\nBody\n');
 
-	assert.deepEqual(bracket, { rule: { name: 'a.md', body: 'Body\n', anchorFields: ['features'], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null }, errors: [] });
+	assert.deepEqual(bracket, { rule: { name: 'a.md', body: 'Body\n', anchorFields: ['features'], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null, doneField: null }, errors: [] });
 	assert.deepEqual(list.rule.anchorFields, ['features', 'aspects']);
 });
 
 test('a file whose first line is not a fence is all body and declares nothing', () => {
 	const text = 'anchor-fields: features\n\nProse that happens to start like a field.\n---\nMore prose.\n';
 
-	assert.deepEqual(parseProjectRule('plain.md', text), { rule: { name: 'plain.md', body: text, anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null }, errors: [] });
+	assert.deepEqual(parseProjectRule('plain.md', text), { rule: { name: 'plain.md', body: text, anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null, doneField: null }, errors: [] });
 });
 
 test('an invalid field name is an error naming the file; the valid names still count, tess\'s own architecture among them', () => {
@@ -44,7 +44,7 @@ test('an invalid field name is an error naming the file; the valid names still c
 test('an opening fence with no closing fence is an unterminated-header error, and the file appends and declares nothing', () => {
 	const { rule, errors } = parseProjectRule('open.md', '---\nanchor-fields: features\nRule text.\n');
 
-	assert.deepEqual(rule, { name: 'open.md', body: '', anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null });
+	assert.deepEqual(rule, { name: 'open.md', body: '', anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null, doneField: null });
 	assert.deepEqual(errors, ['tickets/rules/open.md: unterminated header — line 1 is a fence with no closing fence, so the file appends and declares nothing']);
 });
 
@@ -178,4 +178,23 @@ test('gate-command and sync-verify-command: a non-empty command declares it; an 
 			assert.deepEqual({ command: folded[prop], errors: [...parsed.flatMap(p => p.errors), ...folded.errors] }, { command, errors }, `${field} ${JSON.stringify(files)}`);
 		}
 	}
+});
+
+test('done-field: names one header field; a malformed name and two different names are errors that declare nothing', () => {
+	const fold = files => {
+		const parsed = files.map(([name, text]) => parseProjectRule(name, text));
+		const folded = doneFieldOf(parsed.map(p => p.rule));
+		return { doneField: folded.doneField, errors: [...parsed.flatMap(p => p.errors), ...folded.errors] };
+	};
+
+	assert.deepEqual(fold([['a.md', 'Body only\n']]), { doneField: null, errors: [] });
+	assert.deepEqual(fold([['a.md', '---\ndone-field: step-performed\n---\n'], ['b.md', '---\ndone-field: step-performed\n---\n']]), { doneField: 'step-performed', errors: [] });
+	assert.deepEqual(fold([['a.md', '---\ndone-field: Step Performed\n---\n']]), {
+		doneField: null,
+		errors: ['tickets/rules/a.md: done-field: "Step Performed" is not a field name — use a lowercase letter followed by lowercase letters, digits or hyphens'],
+	});
+	assert.deepEqual(fold([['a.md', '---\ndone-field: step-performed\n---\n'], ['b.md', '---\ndone-field: performed\n---\n']]), {
+		doneField: null,
+		errors: ['done-field: tickets/rules/a.md says step-performed, tickets/rules/b.md says performed — declare one field, or the same field everywhere'],
+	});
 });

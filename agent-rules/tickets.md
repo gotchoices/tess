@@ -34,7 +34,7 @@ Stages (overview — full rules for your active stage under "Active stage detail
 - **plan** — design a feature; output plan/ or implement/ ticket(s); park out-of-scope work in backlog/.
 - **implement** — build it; ensure build + tests pass; output a review/ handoff honest about gaps (reviewer treats your work as a starting point, not a finish line).
 - **review** — adversarial pass over implement output: minor findings → fix inline; major → ticket(s) past the filing bar, else a tripwire; conditional/speculative → record as a tripwire, not a ticket. Output complete/ with a `## Review findings` section.
-- **blocked** — human's inbox: proposed text where the specification or architecture is silent or contradictory, or a dependency outside this repo. Never "a sibling ticket isn't done" — that's `prereq:`.
+- **blocked** — human's inbox: proposed text where the specification or architecture is silent or contradictory, or a dependency outside this repo. Never "a sibling ticket isn't done" — that's `prereq:`. Each carries a brief the dashboard shows the human as a card (see *A blocked ticket carries a brief*). The runner never works a ticket here; once the human answers, the ticket moves to the stage the answer names and is worked there (see *A ticket that arrives with a decision*).
 - **complete** — archived summary of finished work, including review findings.
 
 ## Active stage details
@@ -66,11 +66,7 @@ Stages (overview — full rules for your active stage under "Active stage detail
 <!-- /stage -->
 
 <!-- stage:blocked -->
-**Blocked** is the human's inbox — use it for the two things the runner genuinely cannot resolve on its own, and nothing else: (a) **The specification or architecture is silent or contradictory** on a product, design or go/no-go question — including one you surface *during review or planning* that blocks no in-flight ticket: it still goes here, not into `backlog/`. (b) **A dependency outside this repo** that `prereq:` cannot track — an external service or upstream library, a stub primitive that doesn't exist yet, or a premise mismatch with code beyond this repo.
-
-Use the form under *Before you file a ticket*, written for a human with no prior context (see *Write for a reader without your context*): the decider must be able to accept or edit the proposal without reconstructing your session.
-
-**Do not block on a sibling tess ticket.** If your only obstacle is that another ticket in this pipeline isn't done, that is *not* blocked — add it to `prereq:` and design as if it has already landed. The runner defers your dependent and re-picks it the moment the prereq chain clears, then cascades that deferral to anything depending on you; you never mirror this by hand. Also not blocked: uncertainty more research would resolve (do the research), or "we'll get to it later" (that's `backlog/`).
+**Blocked** — the human's inbox. The runner never works a ticket here: everything in `blocked/` waits on a human. When the human answers, the answer is written into the ticket's header and the ticket leaves for the stage the answer names, where it is worked like any other (see *A ticket that arrives with a decision*). How to file a ticket here is under *Before you file a ticket*.
 <!-- /stage -->
 
 <!-- stage:complete -->
@@ -78,6 +74,19 @@ Use the form under *Before you file a ticket*, written for a human with no prior
 <!-- /stage -->
 
 If the ticket contains a `<!-- resume-note -->` block, a prior agent run was interrupted before completion. Read the referenced log file to understand what was already done, check the current codebase state for partial changes, and resume from where it left off. If the prior run failed on a specific tool call or timed out, be careful not to just launch into the same situation.
+
+## A ticket that arrives with a decision
+
+A ticket whose header carries `decision:` was in `blocked/` until a human answered it. Answering moved it to your stage, with the answer and the brief it answers (`question:`, `options:`, …) still in the header, and the prompt's *The decision to apply* section restates the answer in words. Nothing has applied it yet: that is part of your stage's work on this ticket, and it comes first. The ticket body was written before anyone decided and argues for its own recommendation; the answer outranks it.
+
+- **An option was chosen** — `decision:` names a key from `options:`, and that option's text is now the rule. Make the specification say so: the capability wording, principle or mechanism the ticket proposed for that option goes into the document the ticket's anchor names. This ticket is the explicit authorisation for that edit. Then do your stage's ordinary work on what the option asks for, and hand off as your stage always does.
+- **`decision: other`** — none of the listed options; `decision-note:` is the answer in the human's own words. Apply it the same way.
+- **`decision: done`** — the ticket needed a step or an observation only a human could supply, and it has been supplied; `decision-note:` carries what they did or saw. Carry on with the work that waited on it.
+- **`decision-note:` refines the answer**, and wins wherever it differs from the option's text.
+- **A declined alternative a later reviewer would raise again** gets an accepted-tradeoff `NOTE:` at its site (see *Accepted tradeoffs*), so the decision is not re-argued.
+- **The ticket you hand off drops the brief and the answer.** `needs:`, `question:`, `options:`, `recommend:`, `if-nothing:`, `then:`, `reversible:`, `confidence:`, `checked:`, `decision:`, `decision-note:`, `decided:` and `ask:` describe a question that is now closed, and a ticket still carrying `decision:` reads as unapplied to everyone after you. Open the next ticket's body with one line recording the outcome — *Decided `<who>, <date>`: the chosen option's text, and the note* — and write the rest for its stage. Keep the anchors, `files:`, whatever research the next agent needs, and every other header field as it stands: a project's own tools may read one (a record that a step was performed, say).
+- **The stage it was sent to may not fit what is left to do.** The human, or the agent that wrote the brief, chose it before the work was looked at. If it landed in `implement/` and part of what the answer asks for is not yet designed, build what is settled and file the rest as a new `plan/` ticket with this one as its `prereq:`; never guess a design to stay in your stage. If it landed in `plan/` or `fix/` and applying the answer left nothing to build, say so in the implement ticket you emit and give it `review: skip`.
+- **If the answer cannot be applied as written** — it is ambiguous, it contradicts another explicit line of the specification, or the code has moved since `checked:` so the option no longer means what it said — do not guess, and do not choose for the human. Move the ticket back to `blocked/`, remove `decision:`, `decision-note:` and `decided:`, quote the answer in the body under *Answer received*, and rewrite the brief (see *A blocked ticket carries a brief*) with a `question:` that asks only what is still open.
 
 ## Tests must pay for themselves
 
@@ -190,7 +199,23 @@ grep -rl "<path or symbol>" tickets/backlog tickets/fix tickets/plan tickets/imp
 
 Hit → append your arm to that ticket's body, say so in your findings. File fresh only when nothing open touches the site.
 
-**A blocked ticket is a proposal, not a question.** What the spec can't settle — "should we do this at all" included — goes to `blocked/`, not `backlog/` (backlog is for settled shape, unsettled timing). Lead with one line: the blocked category and the exact thing that unblocks it. For a silent or contradictory specification or architecture, carry the proposed text — capability wording for a feature question, a principle or mechanism for an architecture question — as the recommended default for the human to accept or edit, with the alternatives you rejected and why, what happens if we do nothing, and how reversible the call is.
+**A blocked ticket is a proposal, not a question.** `blocked/` is the human's inbox — use it for the two things the runner cannot resolve on its own, and nothing else: (a) **the specification or architecture is silent or contradictory** on a product, design or go/no-go question, "should we do this at all" included, and including one you surface during review or planning that blocks no in-flight ticket (backlog is for settled shape, unsettled timing); (b) **a dependency outside this repo** that `prereq:` cannot track — an external service or upstream library, a step that needs a human's account or signature, a stub primitive that doesn't exist yet, or a premise mismatch with code beyond this repo. Not blocked: a sibling ticket that isn't done (add it to `prereq:` and design as if it has landed), uncertainty more research would resolve (do the research), or "we'll get to it later" (`backlog/`). Lead the body with one line: the blocked category and the exact thing that unblocks it. For a silent or contradictory specification or architecture, carry the proposed text — capability wording for a feature question, a principle or mechanism for an architecture question — as the recommended default for the human to accept or edit, with the alternatives you rejected and why, what happens if we do nothing, and how reversible the call is.
+
+**A blocked ticket carries a brief.** The human reads the inbox as cards on the dashboard and answers there; the cards are built from header fields, and the body is the evidence behind a card, opened only when the card is not enough. So restate the proposal in these fields, in plain language (see *Write for a reader without your context*):
+
+- `needs:` — `decision` (choose between options), `action` (a step only a human can take: an account, a key, a signature), `observation` (something only a human can look at or run, and report), or `upstream` (nothing to do but wait for something outside this repo).
+- `question:` — one sentence. For a `decision`, the question itself, answerable by picking an option. For an `action` or `observation`, the instruction ("Create the mapping account's key and set it on both backends"). For `upstream`, what is awaited and from whom.
+- `options:` — `decision` only. An indented list, one `- KEY: sentence` per option with keys `A`, `B`, …, each saying what happens under it. At least two; "change nothing" is an option when it is a real choice. Every option must be something an agent can carry out without asking again. End an option with `→ <stage>` to say where the ticket goes if it is chosen (see `then:`).
+- `recommend:` — `decision` only. The key you would choose, then ` — ` and the reason in one clause.
+- `if-nothing:` — what happens, and by when, if nobody answers.
+- `then:` and an option's `→ <stage>` — where the ticket goes once it is answered: `fix`, `plan`, `implement`, `review`, `complete`, `backlog`, or `backlog/<CODE>` for a later release listed in `tickets/releases.md`. Answering moves the ticket there at once, so name the stage whose work is what remains. A ticket that was being implemented or reviewed when it hit the question goes back to `implement` or `review`. An option that leaves nothing to do — close it, it already shipped, change nothing and record nothing — goes to `complete`. An option to put the work off goes to `backlog`. An option's own `→` says it for that option; `then:` says it for an `action`, an `observation`, and any option without one. Leave both off when what remains is to design the change: the ticket then goes to `fix` if its slug starts `bug-`, otherwise to `plan`.
+- `reversible:` — `yes`, `costly` or `no` for the recommended option, then ` — ` and what taking it back would involve.
+- `confidence:` — `high` or `low`: how sure you are of the recommendation. `low` when it turns on a fact you could not check, on taste, or on money, legal exposure or customer-facing wording that is the human's to weigh; say which after ` — `.
+- `checked:` — the date (`YYYY-MM-DD`) you verified the ticket's premise against the code and the specification.
+
+Keep every field to one short sentence, about twenty words: the card shows each in full, and a row of forty-word options is a ticket body again. Detail an option needs to be carried out stays in the body under that option's heading.
+
+Grade honestly: `reversible: yes` with `confidence: high` puts the ticket in the lane the human accepts with one click each, the recommendation already chosen. A wrong `high` gets a consequential choice waved through; a reflexive `low` buries the human in cards that needed no thought. Never write `decision:`, `decision-note:`, `decided:` or `ask:` — those fields are the human's answer.
 
 **No unmeasured magnitudes.** Complexity class, slowdown factor, blast radius — say how you measured. Didn't measure → write the weaker claim.
 
@@ -216,6 +241,15 @@ repro: <bug tickets only; verified|static|none — ran it and saw it / inferred 
 severity: <backlog bugs; corruption|wrong-result|edge-case|cosmetic — worst plausible user-visible effect.>
 likelihood: <backlog bugs; normal-use|unusual|contrived — how a user would actually hit it.>
 tradeoffs: <backlog tickets; one honest sentence on why a maintainer might decline or defer this.>
+needs: <blocked tickets; decision|action|observation|upstream — this and the seven fields below are the brief, see *A blocked ticket carries a brief*.>
+question: <blocked tickets; one plain sentence — the question, the instruction, or what is awaited.>
+options: <blocked decisions; leave empty and list `  - A: sentence → stage` lines beneath, at least two; the `→ stage` is optional.>
+recommend: <blocked decisions; KEY — reason.>
+if-nothing: <blocked tickets; what happens, and by when, if nobody answers.>
+then: <blocked tickets; optional — the stage the ticket goes to once answered, for any answer whose option names none. Default: fix for a bug- slug, else plan.>
+reversible: <blocked decisions; yes|costly|no — what taking the recommended option back involves.>
+confidence: <blocked decisions; high|low — how sure you are of the recommendation.>
+checked: <blocked tickets; YYYY-MM-DD you verified the premise against the tree.>
 ----
 <timeless architecture description focused on prose, diagrams, and interfaces/types/schema>
 

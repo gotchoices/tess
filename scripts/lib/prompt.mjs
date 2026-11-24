@@ -20,6 +20,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { bypassesReview, formatSeq, nextStageFor } from './tickets.mjs';
+import { DECISION_DONE, DECISION_OTHER, optionFor, parseBrief } from './brief.mjs';
 import { RULES_DIR, readProjectRules } from './project-rules.mjs';
 import { detectSearch } from './detect-search.mjs';
 import { boardCheckLines, inventoryText, releaseSummary } from './garden-inventory.mjs';
@@ -72,6 +73,7 @@ export async function buildPrompt(ticket, tessRoot, repoRoot, prereqNotes = []) 
 	}
 
 	if (bypassesReview(ticket)) sections.push(...reviewSkipSection());
+	if (ticket.decision) sections.push(...decisionSection(content));
 
 	if (searchServer) {
 		sections.push(searchDirective(searchServer));
@@ -107,6 +109,101 @@ function reviewSkipSection() {
 		'If the work turns out to need a review pass after all — it was less mechanical than the ticket assumed, or you are unsure of a change you made — write the `review/` ticket as normal and say why in it. The skip is the ticket author\'s estimate, not an instruction to lower the bar.',
 		'',
 	];
+}
+
+/**
+ * Told to the agent whose ticket still carries a human's answer — one that
+ * came out of `blocked/` when it was answered and has not been applied yet:
+ * the answer, resolved against the brief so "A" is never left for the agent to
+ * look up and misread.  Late in the prompt for the same reason as
+ * `reviewSkipSection`: the ticket body above it was written before anyone had
+ * decided, and argues for its own recommendation.
+ */
+function decisionSection(content) {
+	const brief = parseBrief(content);
+	const option = optionFor(brief, brief.decision);
+	const answer = option
+		? `option ${option.key}: ${option.text}`
+		: brief.decision === DECISION_DONE
+			? 'done — the human performed the step or made the observation this ticket waited on'
+			: brief.decision === DECISION_OTHER
+				? 'none of the listed options — the note below is the answer'
+				: `"${brief.decision}", which names no listed option — read it with the note below as the answer in the human's own words`;
+	return [
+		'',
+		'## The decision to apply',
+		'',
+		`- Decision: ${answer}`,
+		`- Note: ${brief.decisionNote ?? '(none)'}`,
+		`- Decided by: ${brief.decided ?? '(not recorded)'}`,
+		...(brief.recommend && option && option.key.toLowerCase() !== brief.recommend.key.toLowerCase()
+			? [`- This is NOT the option the ticket recommended (${brief.recommend.key}). Apply the human's choice; the recommendation was declined.`]
+			: []),
+		'',
+		'This ticket came out of `blocked/` when a human answered it, and nothing has applied the answer yet. Apply exactly this as part of this stage\'s work, as *A ticket that arrives with a decision* in the rules above describes. Where the note and the option text differ, the note wins. If it cannot be applied as written, do not guess: send the ticket back to `blocked/` with a sharper question.',
+		'',
+	];
+}
+
+/**
+ * Build the distill pass's prompt for one blocked ticket.
+ *
+ * `entry` is the ticket's inbox entry (lib/inbox.mjs `readInbox`), `reasons`
+ * why it is due this pass, `others` the rest of the inbox as entries (so the
+ * agent can see a sibling that the same answer would settle), and `rules` the
+ * project rules addenda.
+ */
+export async function buildDistillPrompt(tessRoot, repoRoot, { entry, reasons, others, rules, date }) {
+	const [distillRules, sharedRules, content, searchServer] = await Promise.all([
+		readFile(join(tessRoot, 'agent-rules', 'distill.md'), 'utf-8'),
+		readFile(join(tessRoot, 'agent-rules', 'tickets.md'), 'utf-8'),
+		readFile(entry.path, 'utf-8'),
+		detectSearch(repoRoot),
+	]);
+
+	const sections = [
+		`# Distill pass — tickets/blocked/${entry.file}`,
+		'',
+		'## Distill rules:',
+		'',
+		distillRules,
+		'',
+		'## Shared workflow conventions (stage-specific blocks removed):',
+		'',
+		filterStageBlocks(sharedRules, null),
+		...projectRuleSections(rules, null),
+		'',
+		`## Why this ticket is due`,
+		'',
+		...reasons.map(reason => `- ${reason}`),
+		'',
+		`Today is ${date}; that is the value \`checked:\` takes once you have verified the ticket against the tree.`,
+		'',
+		'## What waits on this ticket (derived from `prereq:` — do not write it into the ticket)',
+		'',
+		...(entry.waiting.length > 0 ? entry.waiting.map(w => `- ${w.slug} (${w.stage}/)`) : ['- nothing']),
+		'',
+		'## The rest of the inbox (one line each — read a file before you merge with it)',
+		'',
+		...(others.length > 0
+			? others.map(other => `- ${other.file}: ${other.brief.question ?? other.description ?? '(no description)'}`)
+			: ['- (no other blocked tickets)']),
+		'',
+		`## Contents of \`${entry.path}\`:`,
+		'',
+		content,
+		'',
+		'## End',
+	];
+
+	if (searchServer) sections.push(searchDirective(searchServer));
+
+	sections.push(
+		'Distill this one ticket as described above.',
+		'Do NOT commit — the runner handles the commit after you complete.',
+	);
+
+	return sections.join('\n');
 }
 
 /**

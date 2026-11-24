@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '../lib/api.js';
 	import { router } from '../lib/router.svelte.js';
+	import { renderMarkdown } from '../lib/markdown.js';
 	import type { TicketDetail } from '../lib/types.js';
 
 	let { stage, filename }: { stage: string; filename: string } = $props();
@@ -63,8 +64,8 @@
 
 	<div class="body-section">
 		<h3 class="section-label">Content</h3>
-		<div class="body-content">
-			<pre>{ticket.body}</pre>
+		<div class="body-content markdown">
+			{@html renderMarkdown(ticket.body)}
 		</div>
 	</div>
 {/if}

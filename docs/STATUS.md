@@ -80,3 +80,14 @@
 - [x] DESIGN.md: Backlog Gardening section (rationale, gardener duties, decline-via-code-comment)
 - [x] Gardener: `scripts/garden.mjs` + `agent-rules/garden.md` (backfill → cluster → rank → execute human feedback; writes `tickets/.garden-report.md`)
 - [ ] UI dashboard: surface `severity:`/`likelihood:` in backlog listing; sort/filter by them
+
+## Phase 8: Decisions (the blocked inbox)
+
+- [x] Brief and answer header fields: `lib/brief.mjs` (parse, completeness, lanes, header rewrite)
+- [x] Inbox: `lib/inbox.mjs` (what waits on a ticket, age, one-file answer commits, when distilling is due)
+- [x] Agent rules: blocked tickets are filed with a brief; the `blocked` stage applies a human's answer; `agent-rules/distill.md`
+- [x] Distill pass: `scripts/distill.mjs`
+- [x] Answering moves the ticket out of `blocked/` to the stage the answer names (an option's `→ stage`, `then:`, or the default); the runner is unchanged apart from restating a carried answer in the prompt
+- [x] UI dashboard: Decisions page (lanes, one-click accept per quick decision, keyboard, ask, withdraw, Distill button), markdown ticket bodies
+- [ ] Run an answered ticket end to end with a real agent (apply in `plan/` and in `implement/`, and send one back to `blocked/`) and tune *A ticket that arrives with a decision* against what it does
+- [x] Project rules: `done-field:` — the header field a project records a performed human step in, written with a `done` answer

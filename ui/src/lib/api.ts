@@ -9,19 +9,31 @@ import type {
 	IndexStatus,
 	IndexConfig,
 	IndexJob,
+	Inbox,
+	InboxDecision,
+	InboxWriteResult,
+	DistillState,
+	DistillStart,
+	DistillJob,
 } from './types.js';
 
-async function get<T>(url: string): Promise<T> {
-	const res = await fetch(url);
+async function send<T>(url: string, init?: RequestInit): Promise<T> {
+	const res = await fetch(url, init);
 	if (!res.ok) throw await asError(res);
 	return res.json();
 }
 
-async function post<T>(url: string): Promise<T> {
-	const res = await fetch(url, { method: 'POST' });
-	if (!res.ok) throw await asError(res);
-	return res.json();
-}
+const get = <T>(url: string) => send<T>(url);
+
+/** POST, with `body` sent as JSON when there is one. */
+const post = <T>(url: string, body?: unknown) => send<T>(url, {
+	method: 'POST',
+	...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+});
+
+const del = <T>(url: string) => send<T>(url, { method: 'DELETE' });
+
+const inboxUrl = (file: string, action: string) => `/api/inbox/${encodeURIComponent(file)}/${action}`;
 
 async function asError(res: Response): Promise<Error> {
 	let body: any = null;
@@ -64,4 +76,13 @@ export const api = {
 	indexJob: () => get<IndexJob | null>('/api/index/job'),
 	indexRefresh: () => post<IndexJob>('/api/index/refresh'),
 	indexRebuild: () => post<IndexJob>('/api/index/rebuild'),
+
+	inbox: () => get<Inbox>('/api/inbox'),
+	decide: (file: string, answer: InboxDecision) => post<InboxWriteResult>(inboxUrl(file, 'decision'), answer),
+	withdraw: (file: string) => del<InboxWriteResult>(inboxUrl(file, 'decision')),
+	ask: (file: string, question: string) => post<InboxWriteResult>(inboxUrl(file, 'ask'), { question }),
+
+	distill: () => get<DistillState>('/api/distill'),
+	distillStart: (start: DistillStart) => post<DistillJob>('/api/distill', start),
+	distillStop: () => post<{ job: DistillJob | null }>('/api/distill/stop', {}),
 };

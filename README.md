@@ -371,6 +371,96 @@ What it does (rules in `agent-rules/garden.md`):
 
 Options: `--agent` (default `claude`), `--difficulty` (model tier, default `hard`), `--decline-after-days` (default `60`), `--token-budget`, `--no-commit`, `--dry-run`. The pass commits as `tess: garden backlog (<n> removed, <m> added, <k> updated)`, counting removals and additions by slug across `backlog/` and its sub-folders, so neither a re-sequence nor a move between folders reads as churn. It reconciles the working tree first (see [Clean Working Tree](#clean-working-tree)) so leftovers do not land under that message.
 
+## Decisions (the blocked inbox)
+
+`blocked/` drains only through a human, and a blocked ticket is long: the proposal, the alternatives, the evidence. Three pieces turn that folder into something a person can clear in a sitting, with the ticket as the only place a question and its answer are recorded.
+
+### The brief
+
+Every blocked ticket restates its proposal in header fields — the **brief** — that the dashboard renders as a card:
+
+```markdown
+needs: decision
+question: May a failed preview read stop a customer from cancelling?
+options:
+  - A: Let them confirm anyway; say the history check could not run. → implement
+  - B: Keep the block as it is and close this. → complete
+recommend: A — cancelling is the customer's way out.
+if-nothing: Today's block goes live with the next promotion.
+reversible: yes — one condition, one sentence, one test assertion.
+confidence: high
+checked: 2026-11-23
+```
+
+| Field | Value |
+|---|---|
+| `needs:` | `decision` (choose between options), `action` (a step only a human can take), `observation` (something only a human can look at or run, and report), `upstream` (wait for something outside the repo) |
+| `question:` | One plain sentence: the question, the instruction, or what is awaited |
+| `options:` | Decisions only. Indented `- KEY: sentence` lines, at least two. An option may end `→ <stage>`: where the ticket goes if it is chosen |
+| `recommend:` | Decisions only. The key the agent would choose, ` — `, and why |
+| `if-nothing:` | What happens, and by when, if nobody answers |
+| `then:` | Optional. Where the ticket goes once answered, for any answer whose option names no stage |
+| `reversible:` | Decisions only. `yes`, `costly` or `no` for the recommended option, ` — `, and what undoing it involves |
+| `confidence:` | Decisions only. `high` or `low`: how sure the agent is of its recommendation |
+| `checked:` | The date the ticket's premise was last verified against the tree |
+
+Agents write the brief when they file a blocked ticket (`agent-rules/tickets.md` § *A blocked ticket carries a brief*). Two things a card shows are computed, not stored: the tickets waiting on it (every live ticket whose `prereq:` chain reaches it) and its age in `blocked/`.
+
+**Where an answered ticket goes.** A destination is `fix`, `plan`, `implement`, `review`, `complete`, `backlog`, or `backlog/<CODE>` for a later release in `tickets/releases.md`. The chosen option's own `→ <stage>` decides; failing that the brief's `then:`; failing that `fix` for a `bug-` slug and `plan` for anything else. The agent writing the brief names a stage when it knows better than that default: a ticket that was being implemented when it hit the question goes back to `implement`, an option that leaves nothing to do goes to `complete`, an option to put the work off goes to `backlog`. The human can override it when answering.
+
+### The distill pass
+
+```bash
+node tess/scripts/distill.mjs --dry-run    # list the due tickets and why
+node tess/scripts/distill.mjs              # one agent per due ticket
+node tess/scripts/distill.mjs --only user-auth-timeout,billing-rounding
+node tess/scripts/distill.mjs --all --max 10
+```
+
+A blocked ticket is **due** when its brief is missing or incomplete, when a human sent a question back (`ask:`), or when a file its `files:` header names has a commit after its `checked:` date. For each due ticket one agent (rules in `agent-rules/distill.md`) checks the ticket's premise against the current tree, writes or corrects the brief, answers the `ask:`, and folds together tickets that one answer would settle. A ticket whose question the code has since answered is not closed: its brief recommends closing it, so the human clears it with one click. The pass never answers a ticket, never moves one out of `blocked/`, never touches one a human has answered, and edits nothing outside `blocked/`.
+
+Tickets are worked most-waited-on first, then oldest. Options: `--only <slugs>`, `--all` (re-check every unanswered ticket), `--max <n>`, `--agent`, `--difficulty` (for a ticket that names none; default `medium`), `--token-budget`, `--no-commit`, `--ignore-runner`, `--dry-run`.
+
+Each ticket commits as `tess: distill <slug>`, and the commit takes only `tickets/blocked/` — the one folder the pass may touch — so unlike the runner and the gardener it neither needs nor makes a clean tree: other uncommitted work is left exactly where it is. A ticket whose agent failed is committed too, as `tess: distill <slug> (partial — the agent did not finish)`, so its half-written edits are not swept up later under another name. Two limits follow from sharing a checkout with the runner, whose commits do stage the whole tree:
+
+- The pass refuses to start (exit 2) while `tickets/.in-progress` says the runner is working a ticket here. `--ignore-runner` overrides it, for a marker left by a run that died.
+- It has a stop request of its own, honoured between tickets, and never reads `tickets/.stop`: consuming the runner's stop file would leave the runner running.
+
+The dashboard's Decisions page starts the same pass from a **Distill** button — all due tickets, the first *n*, or one ticket — shows which ticket it is on, and can ask it to stop after the current one.
+
+### Answering
+
+The dashboard's **Decisions** page (see [Web Dashboard](#web-dashboard)) sorts the inbox into lanes:
+
+| Lane | Tickets | How it is answered |
+|---|---|---|
+| Quick decisions | `reversible: yes` and `confidence: high` | One compact row each, the recommended option already chosen: one click accepts it, or pick another option first. Each row is answered on its own |
+| Needs thought | Every other decision | One card at a time: options, what happens if nothing is decided, what waits on it |
+| Yours to do | `action` and `observation` | Do the step, then mark it done with what you saw |
+| Decided | Answered and sent on, not yet applied | Withdraw an answer, which brings the ticket back |
+| Waiting | `upstream` | Nothing to do |
+| Not yet distilled | No usable brief | Run the distill pass |
+
+Answering does two things in one commit that touches only that ticket (`decision: <slug> — <value> → <stage>`). It writes the answer into the header:
+
+```markdown
+decision: A
+decision-note: Paige words the sentence.
+decided: Nate, 2026-11-23
+```
+
+and it moves the file out of `blocked/` to its destination. So `blocked/` only ever holds what still waits on a human, and nothing is left in the working tree for the runner's whole-tree commits to sweep up.
+
+`decision:` is an option key, `other` (the note is the answer), or `done` (the step was performed, or the observation made). Each option on a card shows where it sends the ticket, and the card lets you send it somewhere else. Asking instead of answering writes `ask: <question>` and leaves the ticket in `blocked/`, due for the distill pass. Answering by hand in an editor works exactly as well: add the fields and move the file.
+
+### Applying
+
+An answered ticket is an ordinary ticket in an ordinary stage, so **the runner has no special case for it**: it is discovered, sequenced, sharded, prereq-gated, `--only`-selected and anchor-checked like any other, and whatever decides which runner works which ticket decides it for this one too. Sent to `complete/` or `backlog/`, it is simply closed or parked, and no agent runs.
+
+In a working stage, the agent that picks it up finds `decision:` in the header and a section of its prompt restating the answer in words. Applying it is the first part of that stage's work (`agent-rules/tickets.md` § *A ticket that arrives with a decision*): write the chosen option into the specification, do the stage's work on what the option asks for, and hand off a ticket without the brief or the answer, its body opening with one line recording what was decided. An answer that cannot be applied as written is not guessed at: the ticket goes back to `blocked/` without its answer fields, its brief rewritten to ask only what is still open.
+
+Until that agent runs, the answer can be withdrawn from the Decided lane: the ticket returns to `blocked/` exactly as it was. A ticket sent to `complete/` or `backlog/` keeps its answer for good, and stays in the Decided lane for a week so a wrong click can be taken back. Withdrawing is refused for a ticket the runner in this checkout is working at that moment.
+
 ## Local Code Search (optional)
 
 Tess can build a local vector index of the repository and expose it to the agent as an MCP `search_code` tool.  No API keys, no network calls after the first model download.
@@ -463,7 +553,7 @@ backlog/ ─→ plan/ ─┐
 - **implement** — Build it, ensure tests pass, output review ticket (or, with `review: skip` in the header, a complete ticket)
 - **review** — Inspect code quality and hygiene, verify tests, update docs, output complete ticket
 - **complete** — Archived summary of finished work
-- **blocked** — The human's inbox: proposed text where the specification or architecture is silent or contradictory, plus dependencies outside this repo. Not for "a sibling ticket isn't done" — that's `prereq:`.
+- **blocked** — The human's inbox: proposed text where the specification or architecture is silent or contradictory, plus dependencies outside this repo. Not for "a sibling ticket isn't done" — that's `prereq:`. Each ticket carries a brief the dashboard shows as a card; answering one moves it to the stage the answer names. See [Decisions](#decisions-the-blocked-inbox).
 
 Before committing, the runner checks where the agent left the ticket. One left further along than the stage its prompt named — an `implement/` ticket written straight into `complete/` without `review: skip`, a `backlog/` ticket promoted past `plan/` — is not committed: the runner prints where it went, leaves the working tree as the agent made it, and exits 1. Move the ticket to the stage it was directed to and commit it as `ticket(<stage>): <slug>`, or commit it where it is with a subject that names the skipped stage, then re-run. A move sideways into `blocked/`, and a split into new slugs, are not overruns.
 
@@ -480,6 +570,7 @@ review: <optional: implement tickets only — `skip` advances implement/ straigh
 severity: <backlog bugs: corruption | wrong-result | edge-case | cosmetic>
 likelihood: <backlog bugs: normal-use | unusual | contrived>
 tradeoffs: <backlog tickets: one sentence on why a maintainer might decline or defer this>
+needs: <blocked tickets: decision | action | observation | upstream — the first field of the brief; see Decisions>
 ----
 <Architecture description — prose, diagrams, interfaces/types>
 
@@ -519,7 +610,8 @@ Rule text appended to every ticket prompt.
 - **`anchor-baseline:`** names a JSON file, relative to the project root, that grandfathers tickets filed before the anchor rule existed: a top-level object keyed by ticket slug, the same shape a project's own static anchor check already ledgers. A ticket whose slug is a key in that file counts as anchored even with no anchor field, so the ledger a project keeps for its own static check also clears the ticket for pickup. Opt-in and independent of `anchor-fields:` — a board with no declaration grandfathers nothing. A missing or unparsable file is a startup board error, same as a malformed `runner-shards:`, and grandfathers nothing while it stands (fails closed). Two addenda may declare the same path; different paths are an error.
 - **`gate-command:`** names a shell command tess runs after an agent succeeds and before it commits that ticket's stage transition — a generic post-agent, pre-commit hook, the one point every project sharing tess can plug its own check into regardless of what that project happens to be. It runs once per ticket, every stage, in the project root, with the transition in its environment — `TESS_TICKET_SLUG`, `TESS_TICKET_FROM_STAGE`, `TESS_TICKET_TO_STAGE` — so a project that only wants a heavy check at one stage (e.g. the project's own full test/lint gate, run only on the way into `review/` or `complete/`) reads those and no-ops elsewhere; tess itself has no notion of which stage deserves which check. A non-zero exit moves the ticket back to its source stage, adds a resume note carrying the command and its output, and resumes the same agent to fix it — once (`MAX_GATE_RETRIES` in `lib/gate-command.mjs`), since most gate failures (a lint error, a broken test) are things the agent that just finished can fix given the command's own output. Only once that retry also fails does the run halt exactly like a stage overrun: nothing is committed, the tree is left as the last attempt left it, and `ctx.gateCommandFailed` carries the diagnostic and exits the run non-zero. Opt-in and independent of the other fields — a board with no declaration runs nothing. Two addenda may declare the same command; different commands are an error.
 - **`sync-verify-command:`** names a shell command the [per-ticket sync](#per-ticket-sync) runs after a rebase that replayed this checkout's code onto new upstream code: the upstream had commits this checkout lacked, and both sides changed something outside the tickets folder. A rebase with no conflict can still break the build, when one side changed a shape that code the other side added still uses. It runs in the project root with the two ranges in its environment — `TESS_SYNC_OURS` (our commits as replayed) and `TESS_SYNC_THEIRS` (the upstream commits we lacked), each `<sha>..<sha>` — plus `TESS_TICKET_SLUG` and `TESS_TICKET_FROM_STAGE` when a ticket triggered the sync, so a project can check only what the two ranges touched. It is killed after 20 minutes (`SYNC_VERIFY_TIMEOUT_MS` in `lib/sync.mjs`), and its wall time is logged. Same declaration rules as `gate-command:`; what happens on a failure is under [Per-Ticket Sync](#per-ticket-sync).
-- **Other fields.** Tess reads only `anchor-fields:`, `runner-shards:`, `anchor-baseline:`, `gate-command:` and `sync-verify-command:`, so other tools can keep their settings in the same header.
+- **`done-field:`** names the ticket header field in which this project records that a human performed a step a blocked ticket waited on. Marking such a ticket done on the dashboard's [Decisions](#decisions-the-blocked-inbox) page then writes `<field>: <who>, <date>` beside `decision: done`, in the same one-ticket commit, and withdrawing the answer removes it. For a project whose own checks require that record before a ticket leaves `blocked/`. A field name like those under `anchor-fields:`; two addenda may declare the same field, different fields are an error. Without the declaration, done is recorded in `decision:` and `decided:` only.
+- **Other fields.** Tess reads only `anchor-fields:`, `runner-shards:`, `anchor-baseline:`, `gate-command:`, `sync-verify-command:` and `done-field:`, so other tools can keep their settings in the same header.
 - **Stage blocks.** A body may use the `<!-- stage:NAME -->` … `<!-- /stage -->` blocks of `agent-rules/tickets.md`, filtered the same way: a ticket's prompt keeps the block for its stage and drops the others. As in `tickets.md`, a body that has blocks but none for the ticket's stage is kept whole, markers included — so when a rule must stay out of some prompts, give every stage the runner works a block (an empty one is fine).
 - **Where addenda appear.** In a ticket prompt, each addendum follows the core workflow rules under a `## Project rules (tickets/rules/<name>)` heading. The gardener's prompt carries them after the shared conventions with every stage block stripped. An addendum with no text left after filtering — a declaration-only file — adds no heading. The pre-existing-failure triage prompt names the accepted anchor fields for any `fix/` ticket it files. Every prompt carries every addendum, so keep them to a few lines.
 - **Errors.** An opening fence with no closing fence (`unterminated header`), a malformed field name, a `runner-shards:` value that is not a whole number of 2 or more, two addenda declaring different `runner-shards:` counts, an empty `anchor-baseline:`, two addenda declaring different `anchor-baseline:` paths, a declared `anchor-baseline:` file that does not exist or is not a JSON object, an empty `gate-command:` or `sync-verify-command:`, two addenda declaring different commands for either, or a `tickets/rules` file where the folder should be is a [startup board error](#startup-board-check): the runner prints it and exits 1 before any agent runs, `--dry-run` included. The board check does not run again between tickets, so a ticket that an addendum broken mid-run leaves without an anchor lists those errors under its `Not runnable` line.
@@ -698,6 +790,10 @@ npm run dev
 ```
 
 The dashboard starts on `http://localhost:3004` by default.
+
+### Decisions
+
+The **Decisions** page is where the blocked inbox is answered: one card per ticket, built from its brief, sorted into lanes, with keyboard shortcuts for working through them (see [Decisions](#decisions-the-blocked-inbox)). It is the dashboard's one page that writes: each answer changes one ticket's header, moves it to the stage the answer names, and commits that one ticket as the checkout's git user. Set `TESS_UI_NO_COMMIT=1` to have it write and move the file and leave the commit to you — the runner will then salvage the change under its own subject the next time it starts a ticket.
 
 ### Cross-Linking
 

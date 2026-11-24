@@ -212,3 +212,40 @@ test('an ordinary implement ticket gets neither the complete next-stage line nor
 	assert.match(prompt, /^# Next stage: review$/m);
 	assert.doesNotMatch(prompt, /Review stage skipped/);
 });
+
+test('a ticket that still carries a human\'s answer is told the answer in words, late in the prompt, in whatever stage it was sent to', async () => {
+	const answered = withHeader(
+		'needs: decision',
+		'options:',
+		'  - A: Keep the block.',
+		'  - B: Let the customer confirm anyway.',
+		'recommend: A — it matches the other dialog.',
+		'decision: b',
+		'decision-note: Paige words the sentence.',
+		'decided: Nate, 2026-11-23',
+	);
+	const ticketsDir = await makeBoard({ implement: [['x.md', answered]] });
+	const tessRoot = await tessRootBeside(ticketsDir);
+	const [ticket] = await discoverTickets(ticketsDir, 'implement', Infinity);
+
+	const prompt = await buildPrompt(ticket, tessRoot, dirname(ticketsDir));
+
+	assert.match(prompt, /^# Next stage: review$/m);  // an ordinary ticket in an ordinary stage
+	assert.match(prompt, /^- Decision: option B: Let the customer confirm anyway\.$/m);
+	assert.match(prompt, /^- Note: Paige words the sentence\.$/m);
+	assert.match(prompt, /^- Decided by: Nate, 2026-11-23$/m);
+	assert.match(prompt, /NOT the option the ticket recommended \(A\)/);
+	assert.ok(prompt.indexOf('## The decision to apply') > prompt.indexOf('## End'));
+});
+
+test('an answer naming no option, and a step reported done, are each spelled out', async () => {
+	const promptWith = async decision => {
+		const ticketsDir = await makeBoard({ plan: [['x.md', withHeader(`decision: ${decision}`)]] });
+		const [ticket] = await discoverTickets(ticketsDir, 'plan', Infinity);
+		return buildPrompt(ticket, await tessRootBeside(ticketsDir), dirname(ticketsDir));
+	};
+
+	assert.match(await promptWith('done'), /^- Decision: done — the human performed the step/m);
+	assert.match(await promptWith('other'), /^- Decision: none of the listed options — the note below is the answer$/m);
+	assert.match(await promptWith('defer it'), /^- Decision: "defer it", which names no listed option/m);
+});

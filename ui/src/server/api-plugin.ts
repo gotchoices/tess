@@ -3,13 +3,17 @@ import { readdir, readFile, access, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { constants } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { ServerResponse } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { DistillDue, DistillStart } from '../lib/types.js';
+import { distillJob, isDistillRunning, markDistillStopRequested, startDistillJob } from './distill-job.js';
 
 interface ApiOptions {
 	projectRoot: string;
 	ticketsDir: string;
 	siblingDir?: string;
 	siblingPort?: number;
+	/** Commit each answer the Decisions page records (default true); false leaves it written but uncommitted. */
+	commitDecisions?: boolean;
 }
 
 const STAGES = ['backlog', 'fix', 'plan', 'implement', 'review', 'blocked', 'complete'] as const;
@@ -17,6 +21,47 @@ const STAGES = ['backlog', 'fix', 'plan', 'implement', 'review', 'blocked', 'com
 function json(res: ServerResponse, data: unknown, status = 200) {
 	res.writeHead(status, { 'Content-Type': 'application/json' });
 	res.end(JSON.stringify(data));
+}
+
+/** A request the API refuses, with the status to refuse it with. */
+class HttpError extends Error {
+	constructor(readonly status: number, message: string) {
+		super(message);
+	}
+}
+
+// An answer is a key and a note; nothing the Decisions page sends comes near this.
+const MAX_BODY_BYTES = 256 * 1024;
+
+/**
+ * A request's JSON object body.  Only `application/json` is read: a page on
+ * another origin cannot send that type without a CORS preflight, and these
+ * endpoints write to the working tree and commit.
+ */
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+	if (!/^application\/json\b/i.test(req.headers['content-type'] ?? '')) {
+		throw new HttpError(415, 'Content-Type must be application/json');
+	}
+	const chunks: Buffer[] = [];
+	let size = 0;
+	for await (const chunk of req) {
+		size += chunk.length;
+		if (size > MAX_BODY_BYTES) throw new HttpError(413, `body is larger than ${MAX_BODY_BYTES} bytes`);
+		chunks.push(chunk);
+	}
+	let body: unknown;
+	try {
+		body = JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+	} catch {
+		throw new HttpError(400, 'body is not valid JSON');
+	}
+	if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'body must be a JSON object');
+	return body as Record<string, unknown>;
+}
+
+/** `value` when it is a string with something in it, else null. */
+function nonEmptyString(value: unknown): string | null {
+	return typeof value === 'string' && value.trim() !== '' ? value : null;
 }
 
 async function dirExists(path: string): Promise<boolean> {
@@ -136,6 +181,21 @@ async function openSearchHandle(projectRoot: string): Promise<SearchHandle> {
 		}
 		throw err;
 	}
+}
+
+// ─── Inbox wiring ────────────────────────────────────────────────────────────
+
+// The blocked-ticket inbox and the writes a human's answer makes live in
+// scripts/lib/inbox.mjs, shared with the distill pass; the API only routes to it.
+type InboxLib = typeof import('../../../scripts/lib/inbox.mjs');
+
+async function loadInboxLib(): Promise<InboxLib> {
+	return await import('../../../scripts/lib/inbox.mjs');
+}
+
+/** A bare ticket file name — what inbox.mjs accepts, checked here so a bad one is a 400 and not a 500. */
+function isTicketFileName(file: string): boolean {
+	return file.endsWith('.md') && !/[\\/]/.test(file);
 }
 
 // ─── Index maintenance jobs ──────────────────────────────────────────────────
@@ -370,6 +430,122 @@ export function tessApi(opts: ApiOptions): Plugin {
 		return { name: 'teamos', url: `http://localhost:${siblingPort}` };
 	}
 
+	const commitDecisions = opts.commitDecisions ?? true;
+
+	/** What is in `blocked/`, then the answered tickets that have left it and can still be withdrawn. */
+	async function getInbox() {
+		const lib = await loadInboxLib();
+		const [blocked, decided, destinations] = await Promise.all([
+			lib.readInbox(ticketsDir),
+			lib.readDecided(ticketsDir),
+			lib.availableDestinations(ticketsDir),
+		]);
+		const entries = [...blocked, ...decided].map(({ path: _absolute, ...entry }) => entry);
+		return { who: lib.currentUserName(projectRoot), commits: commitDecisions, destinations, entries };
+	}
+
+	/**
+	 * Run one inbox write and reduce its result to what the page reads.  A ticket
+	 * that is not where the write looks for it is a 404; an answer the library
+	 * refuses (an option the ticket lacks, a bad or occupied destination) is a 400.
+	 */
+	async function inboxWrite(write: (lib: InboxLib) => ReturnType<InboxLib['recordAsk']>) {
+		try {
+			const { changed, movedTo, committed, error } = await write(await loadInboxLib());
+			dueCache = null;  // an answer takes a ticket out of the pass's list, a question puts one in
+			return { changed, movedTo, committed, error };
+		} catch (err: any) {
+			if (err?.code === 'ENOENT') throw new HttpError(404, err.message);
+			if (err?.code === 'EINVAL') throw new HttpError(400, err.message);
+			throw err;
+		}
+	}
+
+	async function decide(file: string, answer: { decision: string; note: string | null; to: string | null }) {
+		return inboxWrite(lib => lib.recordDecision(ticketsDir, file, {
+			...answer,
+			who: lib.currentUserName(projectRoot),
+			commit: commitDecisions,
+		}));
+	}
+
+	/**
+	 * The `{ decision, note?, to? }` of a request body or a batch item; a 400 when
+	 * there is no decision.  `to` overrides where the answer sends the ticket;
+	 * whether it names a destination is the library's to say.
+	 */
+	function parseAnswer(body: Record<string, unknown>) {
+		const decision = nonEmptyString(body.decision);
+		if (!decision) throw new HttpError(400, 'decision is required: an option key, "other" or "done"');
+		if (body.to != null && typeof body.to !== 'string') throw new HttpError(400, 'to must be a destination, as a string');
+		return { decision, note: nonEmptyString(body.note), to: nonEmptyString(body.to) };
+	}
+
+	function ticketFileParam(segment: string): string {
+		let file: string;
+		try { file = decodeURIComponent(segment); } catch { throw new HttpError(400, 'malformed ticket file name'); }
+		return checkedTicketFile(file);
+	}
+
+	function checkedTicketFile(file: unknown): string {
+		if (typeof file !== 'string' || !isTicketFileName(file)) throw new HttpError(400, `not a ticket file name: ${String(file)}`);
+		return file;
+	}
+
+	// ── Distill pass (scripts/distill.mjs, run as a job: ./distill-job.ts) ──
+
+	// How long a computed due list is served.  `dueForDistill` runs one `git log` per ticket, and
+	// the page reads this endpoint every couple of seconds while a pass runs.
+	const DUE_MAX_AGE_MS = 15_000;
+	let dueCache: { key: string; at: number; list: Promise<DistillDue[]> } | null = null;
+
+	/**
+	 * The tickets a plain pass would work now.  Computed again when the pass has
+	 * finished another ticket or ended, when an answer or a question was written
+	 * through this API (`inboxWrite`), and otherwise once the list is older than
+	 * `DUE_MAX_AGE_MS`: a commit made elsewhere can make a ticket due.
+	 */
+	function dueList(): Promise<DistillDue[]> {
+		const job = distillJob(projectRoot);
+		const key = job ? `${job.id}:${job.status}:${job.done}` : '';
+		const cached = dueCache;
+		if (cached && cached.key === key && (job?.status === 'running' || Date.now() - cached.at < DUE_MAX_AGE_MS)) return cached.list;
+
+		const list = loadInboxLib()
+			.then(lib => lib.dueForDistill(ticketsDir))
+			.then(due => due.map(({ entry, reasons }) => ({ file: entry.file, slug: entry.slug, reasons })));
+		dueCache = { key, at: Date.now(), list };
+		list.catch(() => { if (dueCache?.list === list) dueCache = null; });  // a failed read is not served again
+		return list;
+	}
+
+	/** The ticket the runner is working in this checkout, or null.  The pass refuses to start meanwhile: the runner's commit takes the whole tree. */
+	async function runnerAtWork(): Promise<{ stage: string; slug: string } | null> {
+		const { readInProgress } = await import('../../../scripts/lib/state.mjs');
+		const marker = await readInProgress(ticketsDir);
+		return marker ? { stage: String(marker.stage ?? '?'), slug: String(marker.slug ?? '?') } : null;
+	}
+
+	async function getDistill() {
+		const [due, runner] = await Promise.all([dueList(), runnerAtWork()]);
+		return { due, job: distillJob(projectRoot), runner };
+	}
+
+	const SLUG_RE = /^[a-z0-9][a-z0-9.-]*$/i;
+
+	/** A start request's `{ only?, all?, max?, dryRun? }`, checked: these become the script's command line. */
+	function parseDistillStart(body: Record<string, unknown>): DistillStart {
+		const { only, all, max, dryRun } = body;
+		if (only != null && !(Array.isArray(only) && only.length > 0 && only.every(slug => typeof slug === 'string' && SLUG_RE.test(slug)))) {
+			throw new HttpError(400, 'only must be a non-empty array of ticket slugs');
+		}
+		if (max != null && !(typeof max === 'number' && Number.isInteger(max) && max > 0)) throw new HttpError(400, 'max must be a positive integer');
+		for (const [name, flag] of [['all', all], ['dryRun', dryRun]] as const) {
+			if (flag != null && typeof flag !== 'boolean') throw new HttpError(400, `${name} must be true or false`);
+		}
+		return { only: (only as string[] | null) ?? null, all: all === true, max: (max as number | null) ?? null, dryRun: dryRun === true };
+	}
+
 	return {
 		name: 'tess-api',
 		configureServer(server) {
@@ -470,8 +646,59 @@ export function tessApi(opts: ApiOptions): Plugin {
 						return json(res, publicJob(currentJob), 202);
 					}
 
+					// ── Inbox (the Decisions page) ────────────────────
+					if (path === '/api/inbox' && method === 'GET') {
+						return json(res, await getInbox());
+					}
+
+					let match = path.match(/^\/api\/inbox\/([^/]+)\/(decision|ask)$/);
+					if (match) {
+						const file = ticketFileParam(match[1]);
+						if (match[2] === 'decision' && method === 'POST') {
+							return json(res, await decide(file, parseAnswer(await readJsonBody(req))));
+						}
+						if (match[2] === 'decision' && method === 'DELETE') {
+							return json(res, await inboxWrite(lib => lib.withdrawDecision(ticketsDir, file, { commit: commitDecisions })));
+						}
+						if (match[2] === 'ask' && method === 'POST') {
+							const question = nonEmptyString((await readJsonBody(req)).question);
+							if (!question) throw new HttpError(400, 'question is required');
+							return json(res, await inboxWrite(lib => lib.recordAsk(ticketsDir, file, { question, commit: commitDecisions })));
+						}
+						return json(res, { error: 'Method not allowed' }, 405);
+					}
+
+					// ── Distill pass ──────────────────────────────────
+					if (path === '/api/distill' && method === 'GET') {
+						return json(res, await getDistill());
+					}
+
+					if (path === '/api/distill' && method === 'POST') {
+						const start = parseDistillStart(await readJsonBody(req));
+						const runner = await runnerAtWork();
+						if (runner) {
+							return json(res, {
+								error: 'runner-busy',
+								message: `The runner is working ${runner.stage}/${runner.slug} in this checkout; start the pass when it is idle.`,
+								runner,
+							}, 409);
+						}
+						// Checked last, with nothing awaited between the check and the start: two requests cannot both pass it.
+						if (isDistillRunning(projectRoot)) {
+							return json(res, { error: 'busy', message: 'A distill pass is already running.', job: distillJob(projectRoot) }, 409);
+						}
+						return json(res, startDistillJob(projectRoot, start, file => parseFilename(file).slug), 202);
+					}
+
+					if (path === '/api/distill/stop' && method === 'POST') {
+						await readJsonBody(req);
+						// Asked through the library's own stop file, so a pass started from a terminal stops too.
+						await (await loadInboxLib()).requestDistillStop(ticketsDir);
+						return json(res, { job: markDistillStopRequested(projectRoot) });
+					}
+
 					// ── Existing endpoints ────────────────────────────
-					let match = path.match(/^\/api\/stages\/([^/]+)$/);
+					match = path.match(/^\/api\/stages\/([^/]+)$/);
 					if (match) {
 						const stage = decodeURIComponent(match[1]);
 						if (!STAGES.includes(stage as typeof STAGES[number])) {
@@ -494,6 +721,7 @@ export function tessApi(opts: ApiOptions): Plugin {
 
 					json(res, { error: 'Not found' }, 404);
 				} catch (err: any) {
+					if (err instanceof HttpError) return json(res, { error: err.message }, err.status);
 					console.error('[tess-api]', err);
 					json(res, { error: err.message }, 500);
 				}

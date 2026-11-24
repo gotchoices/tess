@@ -189,6 +189,39 @@ The gardener never promotes to `plan/` on its own, never moves a ticket between 
 
 ---
 
+## Decisions
+
+### Why
+
+`blocked/` has the same single drain as `backlog/` — the human — and a worse reading cost: a blocked ticket is a proposal with its evidence, several kilobytes each, written under whatever headings its author chose. With fifty of them the human cannot see which are a one-word confirmation and which deserve an hour. A hand-made summary sheet fixes that for a few days and then misleads: it is a second copy of the tickets, it goes stale as they come and go, and the answers given against it travel through a conversation instead of the board.
+
+### What
+
+The summary lives in the ticket, in a fixed shape — the **brief**: `needs:`, `question:`, `options:`, `recommend:`, `if-nothing:`, `reversible:`, `confidence:`, `checked:` (`lib/brief.mjs`). The answer lives there too: `decision:`, `decision-note:`, `decided:`. One carrier for each, so nothing has to be kept in step:
+
+- **Filing** — an agent parking a ticket in `blocked/` writes the brief with it (`agent-rules/tickets.md`).
+- **Distilling** — `scripts/distill.mjs` runs one agent per ticket whose brief is missing, questioned (`ask:`) or older than the files it names. It re-checks the premise before it writes anything, because the commonest defect in an old blocked ticket is not a missing summary but a question the code has since answered.
+- **Answering** — the dashboard's Decisions page renders briefs as cards in lanes, writes the answer into the header, and moves the ticket out of `blocked/` to the stage the answer names.
+- **Applying** — the agent that next picks the ticket up, in that stage, applies the answer as the first part of its work.
+
+Two grades decide how much of the human's attention a ticket takes: `reversible:` and `confidence:`. A decision that is cheap to undo and confidently recommended is listed as a compact row with its recommendation already chosen, accepted with one click; everything else gets a card of its own. Each row is accepted singly, not the lane at once: a row that appeared a moment ago, from a distill pass still running, must not be answered by a click aimed at the ones already read. The grades are the agent's, which is why the filing rules tell it what each misgrading costs.
+
+What waits on a ticket and how long it has sat in `blocked/` are derived at read time (the prereq graph, `lib/stage-arrivals.mjs`), never written into the ticket, where they would be wrong by the next commit.
+
+### Mechanics
+
+**Why the dashboard commits.** Every runner commit stages the whole tree, and the clean-tree invariant salvages whatever it finds dirty under the name of the ticket that last ran. An answer left uncommitted would land under some unrelated ticket's subject. So each answer is its own path-scoped commit (`git commit --only -- <old path> <new path>`), which also works while the tree is dirty with an agent's work in progress.
+
+**Why answering moves the ticket, and the runner has no `blocked` stage.** The first version left an answered ticket in `blocked/` and had the runner work `blocked` as a stage that yielded only tickets carrying `decision:`. That needed a discovery filter, a stage with no `nextStageFor`, exemptions from the prereq gate (`blocked` has no rank, so every prereq reads as behind) and from the anchor check, and a guard in `live` against re-picking a ticket whose agent left the answer in place. It also gave the runner work that nothing upstream of it had assigned: on a board where a coordinator hands each runner its tickets by `--only`, an answered ticket was either invisible to that coordinator or picked up by a runner started with default stages, behind its back. Moving the ticket when it is answered removes all of it. The ticket is an ordinary one in an ordinary stage; the gates, the shard split and the coordinator apply unchanged; `blocked/` means "waits on a human" without exception; and an agent that cannot apply an answer moves the ticket sideways into `blocked/`, which the runner already allowed.
+
+**Why the destination is in the brief.** Moving at the moment of the answer means no agent is in between to choose where the ticket goes, so the choice is made earlier, by whoever wrote the brief: per option (`→ implement`, `→ complete`), or once for the ticket (`then:`). It differs by option because the options do — one resumes the work, another closes the question — and by ticket because a ticket blocked half-way through implementation goes back there, not to `plan/`. The default covers the brief that says nothing: `fix/` for a `bug-` slug, `plan/` otherwise, the two stages whose job is to turn a settled question into implement tickets. The human can override it on the card, and the receiving stage's rules say what to do when the stage does not fit what is left.
+
+**Why distilling is its own script, and commits only `blocked/`.** It changes no stage and is wanted on demand, like gardening — and, unlike gardening, from a button on the dashboard, where the person pressing it has not thought about the state of their working tree. So it does not take the gardener's route of salvaging the tree and committing all of it: its agents may touch nothing but `tickets/blocked/`, and each ticket's commit is scoped to that folder. The one thing that scoping cannot protect is its own half-written brief from a runner's whole-tree commit in the same checkout, so it refuses to start while the runner is mid-ticket, and it keeps a stop request separate from the runner's `.stop`, which it would otherwise consume.
+
+**Withdrawal.** An answer can be taken back while the ticket still carries `decision:`: the fields come off and the ticket returns to `blocked/`. In a working stage that window closes when an agent applies the answer and drops the field. `complete/` and `backlog/` are worked by nobody, so a ticket sent there carries its answer for good; the dashboard lists those for a week, long enough to undo a wrong click, and reads the date from `decided:` to do it.
+
+---
+
 ## Open Questions
 
 ### Q1: Should any `tickets/` subfolders be renamed for agile/kanban compatibility?

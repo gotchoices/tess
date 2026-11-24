@@ -639,6 +639,42 @@ export function headerBounds(content) {
 	return { lines, opened, start, end, closed: end < lines.length };
 }
 
+const FIELD_LINE_RE = /^[A-Za-z][A-Za-z0-9-]*:/;
+const CONTINUATION_RE = /^[ \t]+\S/;
+
+/**
+ * The index just past the leading run of field lines in header lines
+ * `[start, end)`: blank lines, then field lines and their indented
+ * continuations, up to the first line that is neither.
+ */
+export function fieldRunEnd(lines, start, end) {
+	let i = start;
+	while (i < end && lines[i].trim() === '') i++;
+	const first = i;
+	while (i < end && (FIELD_LINE_RE.test(lines[i]) || (i > first && CONTINUATION_RE.test(lines[i])))) i++;
+	return i;
+}
+
+/**
+ * The part of a ticket's header that can be trusted to hold only fields, as
+ * `{ lines, start, end }`: the whole header when a fence closes it, otherwise
+ * its leading run of field lines.  An unfenced ticket's header region runs to
+ * the end of the file, so a prose line beginning `Decision:` would read as the
+ * field.  For most fields that costs a wrong value; `decision:` makes the
+ * runner work the ticket and the dashboard rewrite it, so the fields a human's
+ * answer lives in (lib/brief.mjs) are read from here.
+ */
+export function trustedHeaderBounds(content) {
+	const { lines, start, end, closed } = headerBounds(content);
+	return { lines, start, end: closed ? end : fieldRunEnd(lines, start, end) };
+}
+
+/** `trustedHeaderBounds` as text: a region with no fence in it, which `headerField` and `parseListField` read whole. */
+export function trustedHeader(content) {
+	const { lines, start, end } = trustedHeaderBounds(content);
+	return lines.slice(start, end).join('\n');
+}
+
 /** An indented `- item` line of a list-valued header field; group 1 is the item, when there is one. */
 const LIST_ITEM_RE = /^[ \t]+-(?:[ \t]+(.*))?$/;
 
@@ -746,6 +782,18 @@ export function parseReview(content) {
 	return value ? value.toLowerCase() : null;
 }
 
+/**
+ * Parse the `decision:` header field — a human's answer to a blocked ticket
+ * (an option key, `other` or `done`; lib/brief.mjs) — or null when absent or
+ * empty.  Answering moves the ticket out of `blocked/` into the stage the
+ * answer names (lib/inbox.mjs `recordDecision`), so the field is found on a
+ * ticket in a working stage, and the agent that picks it up applies it and
+ * drops it.  Kept verbatim: that agent reads the option it names.
+ */
+export function parseDecision(content) {
+	return headerField(trustedHeader(content), 'decision') || null;
+}
+
 /** The ticket object discovery hands to strategies, validators and the agent prompt. */
 function buildTicket({ entry, folder, path }, stage, content, releases) {
 	return {
@@ -760,6 +808,7 @@ function buildTicket({ entry, folder, path }, stage, content, releases) {
 		difficulty: parseDifficulty(content),
 		target: parseTarget(content),
 		review: parseReview(content),             // raw: 'skip', an unrecognised value, or null
+		decision: parseDecision(content),         // a human's answer, carried from blocked/ until an agent applies it; or null
 		header: headerRegion(content),
 		arrival: null,                            // epoch seconds it reached the stage; discoverTickets fills it when it orders by it
 	};

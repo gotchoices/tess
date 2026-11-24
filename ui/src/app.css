@@ -82,3 +82,78 @@ pre {
 	white-space: pre-wrap;
 	word-wrap: break-word;
 }
+
+/* Buttons the Decisions page and its parts share; a component's scoped styles do not reach its children. */
+.btn {
+	font-size: 0.8rem;
+	font-weight: 600;
+	padding: 0.4rem 0.8rem;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--surface);
+	color: var(--text-muted);
+	transition: all var(--transition);
+	white-space: nowrap;
+}
+.btn:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: var(--on-primary); }
+.btn.primary:hover:not(:disabled) { background: var(--primary-hover); color: var(--on-primary); }
+.btn.small { font-size: 0.75rem; padding: 0.25rem 0.6rem; }
+/* An action that is there when wanted and not offered: no box until hovered. */
+.btn.quiet { border-color: transparent; background: none; font-weight: 500; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Output of lib/markdown.ts, placed with {@html} — global because a component's scoped styles do not reach it. */
+.markdown {
+	font-size: 0.875rem;
+	line-height: 1.65;
+	overflow-wrap: anywhere;
+}
+.markdown > * + * { margin-top: 0.75em; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 {
+	font-weight: 700;
+	line-height: 1.3;
+}
+.markdown > * + :is(h1, h2, h3, h4, h5, h6) { margin-top: 1.4em; }
+.markdown h1 { font-size: 1.2rem; }
+.markdown h2 { font-size: 1.05rem; }
+.markdown h3 { font-size: 0.95rem; }
+.markdown h4, .markdown h5, .markdown h6 { font-size: 0.875rem; color: var(--text-muted); }
+.markdown ul, .markdown ol { padding-left: 1.5em; }
+.markdown li + li { margin-top: 0.2em; }
+.markdown li > * + * { margin-top: 0.35em; }
+.markdown code {
+	font-family: var(--font-mono);
+	font-size: 0.85em;
+	background: var(--bg);
+	border-radius: 4px;
+	padding: 0.1em 0.3em;
+}
+.markdown pre {
+	font-family: var(--font-mono);
+	font-size: 0.8rem;
+	line-height: 1.5;
+	white-space: pre;
+	overflow-x: auto;
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 0.75rem;
+}
+.markdown pre code { background: none; padding: 0; font-size: inherit; }
+.markdown blockquote {
+	border-left: 3px solid var(--border);
+	padding-left: 0.875rem;
+	color: var(--text-muted);
+}
+.markdown blockquote > * + * { margin-top: 0.5em; }
+.markdown hr { border: none; border-top: 1px solid var(--border); }
+.markdown .table-wrap { overflow-x: auto; }
+.markdown table { border-collapse: collapse; font-size: 0.825rem; }
+.markdown th, .markdown td {
+	border: 1px solid var(--border);
+	padding: 0.3rem 0.6rem;
+	text-align: left;
+	vertical-align: top;
+}
+.markdown th { background: var(--surface-raised); font-weight: 600; }

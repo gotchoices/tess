@@ -12,6 +12,8 @@ export default defineConfig({
 			projectRoot,
 			ticketsDir: resolve(projectRoot, 'tickets'),
 			siblingDir: resolve(projectRoot, 'teamos'),
+			// TESS_UI_NO_COMMIT=1: answers recorded on the Decisions page are written but not committed.
+			commitDecisions: process.env.TESS_UI_NO_COMMIT !== '1',
 		}),
 	],
 	server: {

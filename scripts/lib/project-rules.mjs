@@ -79,10 +79,10 @@ const FIELD_NAME_RE = /^[a-z][a-z0-9-]*$/;
 const RUNNER_SHARDS_RE = /^\d+$/;
 
 /**
- * Parse one addendum.  Returns `{ rule: { name, body, anchorFields, runnerShards, anchorBaseline, gateCommand, syncVerifyCommand }, errors }`,
- * `runnerShards` a number or null, `anchorBaseline`, `gateCommand` and
- * `syncVerifyCommand` each a string or null, each null when the header does
- * not declare a valid one.
+ * Parse one addendum.  Returns `{ rule: { name, body, anchorFields, runnerShards, anchorBaseline, gateCommand, syncVerifyCommand, doneField }, errors }`,
+ * `runnerShards` a number or null, `anchorBaseline`, `gateCommand`,
+ * `syncVerifyCommand` and `doneField` each a string or null, each null when
+ * the header does not declare a valid one.
  * A rule with errors is still returned with what could be read; the board
  * check decides what the errors mean.  Line endings are normalised to LF and a
  * byte-order mark is dropped, so the fence on line 1 is found either way.
@@ -91,7 +91,7 @@ export function parseProjectRule(name, text) {
 	const path = `${DISPLAY_DIR}/${name}`;
 	const normalized = text.replace(/^﻿/, '').replace(/\r\n/g, '\n');
 	const { lines, opened, start, end, closed } = headerBounds(normalized);
-	const declaresNothing = { anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null };
+	const declaresNothing = { anchorFields: [], runnerShards: null, anchorBaseline: null, gateCommand: null, syncVerifyCommand: null, doneField: null };
 
 	if (!opened) return { rule: { name, body: normalized, ...declaresNothing }, errors: [] };
 	if (!closed) {
@@ -134,7 +134,17 @@ export function parseProjectRule(name, text) {
 
 	const gateCommand = commandField(header, 'gate-command', path, errors);
 	const syncVerifyCommand = commandField(header, 'sync-verify-command', path, errors);
-	return { rule: { name, body: lines.slice(end + 1).join('\n'), anchorFields, runnerShards, anchorBaseline, gateCommand, syncVerifyCommand }, errors };
+
+	let doneField = null;
+	const done = headerField(header, 'done-field');
+	if (done !== null) {
+		if (FIELD_NAME_RE.test(done)) {
+			doneField = done;
+		} else {
+			errors.push(`${path}: done-field: "${done}" is not a field name — use a lowercase letter followed by lowercase letters, digits or hyphens`);
+		}
+	}
+	return { rule: { name, body: lines.slice(end + 1).join('\n'), anchorFields, runnerShards, anchorBaseline, gateCommand, syncVerifyCommand, doneField }, errors };
 }
 
 /** A header field naming a shell command: the command, or null when absent or empty (an empty one is also an error). */
@@ -244,6 +254,25 @@ export function gateCommandOf(rules) {
 export function syncVerifyCommandOf(rules) {
 	const { command, errors } = agreedCommand(rules, 'syncVerifyCommand', 'sync-verify-command');
 	return { syncVerifyCommand: command, errors };
+}
+
+/**
+ * The board's declared `done-field:`, as `{ doneField, errors }` — the header
+ * field in which this project records that a human performed a step a blocked
+ * ticket waited on (`<who>, <date>`), or null when no addendum declares one.
+ * Marking such a ticket done on the dashboard then writes that field in the
+ * same one-ticket commit as the answer (lib/inbox.mjs `recordDecision`), so a
+ * project whose own checks read the field needs no second, hand-made commit.
+ * Addenda that disagree are an error and declare nothing.
+ */
+export function doneFieldOf(rules) {
+	const declaring = rules.filter(r => r.doneField !== null);
+	if (declaring.length === 0) return { doneField: null, errors: [] };
+	if (new Set(declaring.map(r => r.doneField)).size > 1) {
+		const said = declaring.map(r => `${DISPLAY_DIR}/${r.name} says ${r.doneField}`).join(', ');
+		return { doneField: null, errors: [`done-field: ${said} — declare one field, or the same field everywhere`] };
+	}
+	return { doneField: declaring[0].doneField, errors: [] };
 }
 
 /** `{ command: { command, declaredIn } | null, errors }` for the command field `prop` (`field:` in a header) every declaring addendum agrees on. */

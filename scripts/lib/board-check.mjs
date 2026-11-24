@@ -17,7 +17,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { dirname, join as joinPath } from 'node:path';
-import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, gateCommandOf, readProjectRules, runnerShardsOf, syncVerifyCommandOf } from './project-rules.mjs';
+import { anchorBaselineOf, anchorFieldsOf, anchorsRequiredBy, doneFieldOf, gateCommandOf, readProjectRules, runnerShardsOf, syncVerifyCommandOf } from './project-rules.mjs';
 import { RELEASES_FILE, currentRelease, rankOf, readReleases } from './releases.mjs';
 import { REVIEW_VALUES, boardLocation, deferralReason, parseListField, parseSlug, readBacklogLayout, resolvePrereqs } from './tickets.mjs';
 
@@ -67,7 +67,9 @@ async function loadAnchorBaseline(ticketsDir, declared) {
  * declared runner count, `{ count, declaredIn }` or null (`runnerShardsOf`);
  * `gateCommand` is the declared post-agent, pre-commit hook, `{ command,
  * declaredIn }` or null (`gateCommandOf`); `syncVerifyCommand` the declared
- * post-rebase check, in the same shape (`syncVerifyCommandOf`).
+ * post-rebase check, in the same shape (`syncVerifyCommandOf`); `doneField`
+ * the header field the project records a performed human step in, or null
+ * (`doneFieldOf`).
  */
 export async function readBoardContext(ticketsDir) {
 	const [releases, read] = await Promise.all([readReleases(ticketsDir), readProjectRules(ticketsDir)]);
@@ -76,7 +78,8 @@ export async function readBoardContext(ticketsDir) {
 	const baseline = await loadAnchorBaseline(ticketsDir, baselineDecl.anchorBaseline);
 	const gate = gateCommandOf(read.rules);
 	const syncVerify = syncVerifyCommandOf(read.rules);
-	const rules = { rules: read.rules, errors: [...read.errors, ...shards.errors, ...baselineDecl.errors, ...baseline.errors, ...gate.errors, ...syncVerify.errors] };
+	const done = doneFieldOf(read.rules);
+	const rules = { rules: read.rules, errors: [...read.errors, ...shards.errors, ...baselineDecl.errors, ...baseline.errors, ...gate.errors, ...syncVerify.errors, ...done.errors] };
 	return {
 		releases,
 		rules,
@@ -86,6 +89,7 @@ export async function readBoardContext(ticketsDir) {
 		runnerShards: shards.runnerShards,
 		gateCommand: gate.gateCommand,
 		syncVerifyCommand: syncVerify.syncVerifyCommand,
+		doneField: done.doneField,
 	};
 }
 

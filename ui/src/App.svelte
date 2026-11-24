@@ -7,6 +7,8 @@
 	import TicketDetail from './components/TicketDetail.svelte';
 	import Search from './components/Search.svelte';
 	import IndexStatus from './components/IndexStatus.svelte';
+	import Decisions from './components/Decisions.svelte';
+	import { inbox } from './lib/inbox.svelte.js';
 
 	let sibling: SiblingInfo | null = $state(null);
 
@@ -14,9 +16,11 @@
 	const ticketMatch = $derived(router.match('/ticket/:stage/:filename'));
 	const isSearch = $derived(router.path === '/search');
 	const isIndex = $derived(router.path === '/index');
+	const isDecisions = $derived(router.path === '/decisions');
 
 	$effect(() => {
 		api.sibling().then(s => sibling = s).catch(() => {});
+		inbox.load();  // for the nav's count; the Decisions page reloads it after every answer
 	});
 </script>
 
@@ -24,6 +28,10 @@
 	<a class="nav-brand" href="#/">Tess</a>
 	<div class="nav-links">
 		<a class="nav-link" class:active={router.path === '/'} href="#/">Pipeline</a>
+		<a class="nav-link" class:active={isDecisions} href="#/decisions">
+			Decisions
+			{#if inbox.openCount > 0}<span class="nav-count">{inbox.openCount}</span>{/if}
+		</a>
 		<a class="nav-link" class:active={isSearch} href="#/search">Search</a>
 		<a class="nav-link" class:active={isIndex} href="#/index">Index</a>
 	</div>
@@ -43,6 +51,8 @@
 		<Search />
 	{:else if isIndex}
 		<IndexStatus />
+	{:else if isDecisions}
+		<Decisions />
 	{:else}
 		<Pipeline />
 	{/if}
@@ -80,6 +90,15 @@
 	}
 	.nav-link:hover { background: var(--bg); color: var(--text); text-decoration: none; }
 	.nav-link.active { background: var(--primary-subtle); color: var(--primary); }
+	.nav-count {
+		font-size: 0.7rem;
+		font-weight: 700;
+		padding: 0.05rem 0.4rem;
+		margin-left: 0.125rem;
+		border-radius: 999px;
+		background: var(--danger);
+		color: var(--on-primary);
+	}
 	.sibling-link {
 		font-size: 0.8rem;
 		font-weight: 600;
